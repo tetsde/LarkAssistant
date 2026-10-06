@@ -1,0 +1,15 @@
+# Team Index
+
+- [[Marketing Strategy]] (team_01)
+- [[Digital Marketing]] (team_02)
+- [[Content Team]] (team_03)
+- [[Backend Engineering]] (team_04)
+- [[Frontend Engineering]] (team_05)
+- [[DevOps]] (team_06)
+- [[QA Team]] (team_07)
+- [[Enterprise Sales]] (team_08)
+- [[SMB Sales]] (team_09)
+- [[Product Core]] (team_10)
+- [[Product Growth]] (team_11)
+- [[Logistics]] (team_12)
+- [[Talent Acquisition]] (team_13)
