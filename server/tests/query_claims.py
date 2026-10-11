@@ -57,6 +57,7 @@ C_CYAN = "\033[96m"
 C_DIM = "\033[2m"
 
 
+DEFAULT_DATA_SOURCE = "MONGODB"
 DEFAULT_SESSION_FILE = os.path.join(SERVER_ROOT, "tests", "interactive_session_output.json")
 DATA_DIR = os.path.join(SERVER_ROOT, "utils", "data")
 ENTITY_STORE_PATH = os.path.join(DATA_DIR, "entity_store.json")
@@ -66,11 +67,11 @@ FACT_STORE_PATH = os.path.join(DATA_DIR, "fact_store.json")
 class ClaimQuerier:
     """
     Công cụ truy vấn Mệnh đề / Facts từ bộ nhớ phân cấp.
-    Hỗ trợ nạp từ interactive_session_output.json, entity/fact store hoặc object truyền vào.
+    Mặc định truy vấn TRỰC TIẾP từ MongoDB (Database: LarkAssistant, Collections: memories, claims).
     """
 
     def __init__(self, data_source: Optional[Union[str, Dict[str, Any]]] = None):
-        self.data_source = data_source or self._discover_data_source()
+        self.data_source = data_source or DEFAULT_DATA_SOURCE
         self.entities: List[Dict[str, Any]] = []
         self.facts: List[Dict[str, Any]] = []
         self.history_steps: List[Dict[str, Any]] = []
@@ -86,33 +87,49 @@ class ClaimQuerier:
         self.reload()
 
     def _discover_data_source(self) -> str:
-        """Tự động tìm kiếm file dữ liệu sẵn có."""
-        if os.path.exists(DEFAULT_SESSION_FILE):
-            return DEFAULT_SESSION_FILE
-        if os.path.exists(ENTITY_STORE_PATH) and os.path.exists(FACT_STORE_PATH):
-            return "STORE_FILES"
-        return DEFAULT_SESSION_FILE
+        """Mặc định sử dụng nguồn MongoDB."""
+        return DEFAULT_DATA_SOURCE
 
     def reload(self) -> None:
-        """Nạp lại dữ liệu và xây dựng lại indexes."""
+        """Nạp lại dữ liệu và xây dựng lại indexes từ MongoDB."""
         self.entities = []
         self.facts = []
         self.history_steps = []
 
         if isinstance(self.data_source, dict):
             self._load_from_dict(self.data_source)
+        elif self.data_source == "MONGODB":
+            self._load_from_mongodb()
         elif isinstance(self.data_source, str):
-            if self.data_source == "STORE_FILES":
-                self._load_from_stores()
-            elif os.path.exists(self.data_source):
+            if os.path.exists(self.data_source):
                 try:
                     with open(self.data_source, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         self._load_from_dict(data)
                 except Exception as e:
                     print(f"{C_RED}Lỗi khi đọc file {self.data_source}: {e}{C_RESET}")
-        
+            else:
+                self._load_from_mongodb()
+        else:
+            self._load_from_mongodb()
+
         self._build_indexes()
+
+    def _load_from_mongodb(self) -> None:
+        """Nạp trực tiếp từ MongoDB (collections memories & claims)."""
+        try:
+            from database.db import get_all_entities_sync, get_all_facts_sync
+            raw_entities = get_all_entities_sync()
+            raw_facts = get_all_facts_sync()
+            if build_entity_tree:
+                self.entities = build_entity_tree(raw_entities, raw_facts)
+            else:
+                self.entities = raw_entities
+            self.facts = raw_facts
+        except Exception as e:
+            print(f"{C_RED}Lỗi khi nạp dữ liệu từ MongoDB: {e}{C_RESET}")
+
+
 
     def _load_from_dict(self, data: Dict[str, Any]) -> None:
         """Nạp từ cấu trúc JSON session."""
@@ -664,9 +681,9 @@ def interactive_cli():
     print("   🤖 HILARK MEMORY QA - TRỢ LÝ TRUY VẤN DỰA TRÊN MỆNH ĐỀ (CLAIMS)")
     print("   LLM suy luận & trả lời HOÀN TOÀN dựa trên các Claims/Facts đã trích xuất")
     print("=" * 76 + C_RESET)
-    print(f"{C_DIM}Nguồn dữ liệu: {querier.data_source}{C_RESET}")
+    print(f"{C_GREEN}Nguồn dữ liệu: MongoDB (Database: LarkAssistant | collections: memories, claims){C_RESET}")
     print(f"Tổng số Entities: {C_BOLD}{len(querier.entities)}{C_RESET} | Tổng số Facts: {C_BOLD}{len(querier.facts_by_id)}{C_RESET}\n")
-    print(f"{C_DIM}Gõ câu hỏi tự nhiên để LLM trả lời (vd: 'Ngân sách Atlas bao nhiêu?', 'Ai đang lead?')")
+    print(f"{C_DIM}Gõ câu hỏi tự nhiên để LLM trả lời (vd: 'Ngân sách Alpha bao nhiêu?', 'Ai làm module Payment?')")
     print(f"Lệnh nhanh: /entities | /entity <tên> | /timeline <tên> <thuộc_tính> | /search <từ> | /reload | /exit{C_RESET}\n")
 
     while True:
@@ -684,7 +701,7 @@ def interactive_cli():
             # Lệnh làm mới dữ liệu
             if user_input.lower() in ("/reload", "/r", "reload"):
                 querier.reload()
-                print(f"\n{C_GREEN}✅ Đã nạp lại dữ liệu Claims từ: {querier.data_source}{C_RESET}")
+                print(f"\n{C_GREEN}✅ Đã nạp lại dữ liệu Claims từ MongoDB (LarkAssistant){C_RESET}")
                 print(f"Tổng Entities: {len(querier.entities)} | Tổng Facts: {len(querier.facts_by_id)}\n")
                 continue
 

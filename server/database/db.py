@@ -292,3 +292,136 @@ async def clear_mongo_stores() -> None:
     claims_col = get_claims_collection()
     await memories_col.delete_many({})
     await claims_col.delete_many({})
+
+
+# ==========================================
+# SYNC HELPERS (DÀNH CHO SCRIPTS / CLI / TESTS)
+# ==========================================
+
+def get_sync_memories_collection():
+    """Collection memories dạng sync."""
+    db = get_sync_db()
+    return db[settings.MONGO_MEMORY_COLLECTION]
+
+
+def get_sync_claims_collection():
+    """Collection claims dạng sync."""
+    db = get_sync_db()
+    return db[settings.MONGO_CLAIMS_COLLECTION]
+
+
+def get_all_entities_sync(workspace_id: str = "default") -> List[Dict[str, Any]]:
+    """Lấy toàn bộ entities từ MongoDB (sync)."""
+    col = get_sync_memories_collection()
+    query = {"workspace_id": workspace_id} if workspace_id else {}
+    return [_clean_mongo_doc(doc) for doc in col.find(query)]
+
+
+def get_all_facts_sync(entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Lấy toàn bộ facts từ MongoDB (sync)."""
+    col = get_sync_claims_collection()
+    query = {"entity_id": entity_id} if entity_id else {}
+    return [_clean_mongo_doc(doc) for doc in col.find(query)]
+
+
+def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
+    """Upsert entity vào MongoDB (sync)."""
+    col = get_sync_memories_collection()
+    entity_id = entity.get("id")
+    if not entity_id:
+        raise ValueError("Entity thiếu trường 'id'")
+
+    existing = col.find_one({"id": entity_id})
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if existing:
+        existing_aliases = existing.get("aliases", [])
+        new_aliases = entity.get("aliases", [])
+        merged_aliases = list(dict.fromkeys(existing_aliases + new_aliases))
+        entity["aliases"] = merged_aliases
+        entity["updated_at"] = now_iso
+        col.update_one(
+            {"id": entity_id},
+            {"$set": {k: v for k, v in entity.items() if k != "_id"}},
+        )
+    else:
+        entity["created_at"] = entity.get("created_at") or now_iso
+        entity["updated_at"] = now_iso
+        col.insert_one(entity)
+
+    saved = col.find_one({"id": entity_id})
+    return _clean_mongo_doc(saved)
+
+
+def supersede_facts_by_ids_sync(fact_ids: List[str]) -> int:
+    """Đánh dấu superseded cho danh sách fact_ids (sync)."""
+    if not fact_ids:
+        return 0
+    col = get_sync_claims_collection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = col.update_many(
+        {"id": {"$in": fact_ids}},
+        {
+            "$set": {
+                "status": FactStatus.SUPERSEDED.value,
+                "updated_at": now_iso,
+            }
+        },
+    )
+    return result.modified_count
+
+
+def save_extraction_to_mongo_sync(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Lưu kết quả trích xuất vào MongoDB đồng bộ (sync)."""
+    new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
+    new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
+    superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
+
+    for ent in new_entities:
+        upsert_entity_sync(ent)
+
+    superseded_ids = [
+        f.get("id") or f.get("_id")
+        for f in superseded_facts
+        if (f.get("id") or f.get("_id"))
+    ]
+    if superseded_ids:
+        supersede_facts_by_ids_sync(superseded_ids)
+
+    claims_col = get_sync_claims_collection()
+    for fact in new_facts:
+        fid = fact.get("id")
+        if not fid:
+            continue
+        fact_copy = dict(fact)
+        fact_copy.pop("_id", None)
+        claims_col.update_one(
+            {"id": fid},
+            {"$set": fact_copy},
+            upsert=True,
+        )
+
+    memories_col = get_sync_memories_collection()
+    total_entities = memories_col.count_documents({})
+    total_facts = claims_col.count_documents({})
+
+    return {
+        "entities": new_entities,
+        "facts": new_facts,
+        "superseded_facts": superseded_facts,
+        "total_stored_entities": total_entities,
+        "total_stored_facts": total_facts,
+        "memory": new_entities,
+        "claims": new_facts,
+        "superseded_claims": superseded_facts,
+        "total_stored_claims": total_facts,
+    }
+
+
+def clear_mongo_stores_sync() -> None:
+    """Xóa sạch 2 collection memories và claims (sync)."""
+    memories_col = get_sync_memories_collection()
+    claims_col = get_sync_claims_collection()
+    memories_col.delete_many({})
+    claims_col.delete_many({})
+

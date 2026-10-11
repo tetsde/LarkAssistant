@@ -13,6 +13,10 @@ from database.db import (
     supersede_facts_by_ids,
     save_extraction_to_mongo,
     clear_mongo_stores,
+    get_all_entities_sync,
+    get_all_facts_sync,
+    save_extraction_to_mongo_sync,
+    clear_mongo_stores_sync,
 )
 
 __all__ = [
@@ -30,4 +34,9 @@ __all__ = [
     "supersede_facts_by_ids",
     "save_extraction_to_mongo",
     "clear_mongo_stores",
+    "get_all_entities_sync",
+    "get_all_facts_sync",
+    "save_extraction_to_mongo_sync",
+    "clear_mongo_stores_sync",
 ]
+

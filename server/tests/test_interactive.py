@@ -1,32 +1,45 @@
 #!/usr/bin/env python3
 """
-Interactive Multi-Message Test Console cho LLM Extractor (Entity & Fact)
-========================================================================
+Interactive Multi-Message Test Console cho LLM Extractor (MongoDB Edition)
+==========================================================================
 Vị trí: server/tests/test_interactive.py
 Cách chạy:
     cd /Users/hoainam/Desktop/HiLark/server
-    .venv/bin/python tests/test_interactive.py
+    .venv/bin/python tests/test_interactive.py             # Chế độ nhập tương tác trực tiếp
+    .venv/bin/python tests/test_interactive.py --scenario  # Chạy tự động kịch bản 5 tin nhắn
 
 Chức năng:
-    - Nhận tin nhắn tuần tự liên tục từ người dùng (Multi-message session).
+    - Nhận tin nhắn tuần tự (Multi-turn chat).
     - Tự động duy trì và tích lũy trạng thái:
         + Nhánh 1 (Entities): Tích lũy và cập nhật thực thể kinh doanh (Parent).
-        + Nhánh 2 (Facts): Tự động phát hiện thay thế (replaces/superseded), mơ hồ (uncertain) hay mâu thuẫn (conflicted).
-    - Lưu kết quả phiên test vào file: server/tests/interactive_session_output.json theo cây Parent-Child.
+        + Nhánh 2 (Facts): Tự động phát hiện thay thế (replaces/superseded), mơ hồ hay mâu thuẫn.
+    - Lưu TRỰC TIẾP vào MongoDB (Database: LarkAssistant, Collections: memories, claims).
 """
 
-import json
+from __future__ import annotations
+
+import argparse
 import os
 import sys
+import time
 from datetime import datetime
+from typing import Any, Dict, List
 
 # Đảm bảo import được modules từ server
 SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
-from utils.llm_extractor import extract
 from models.memory import build_entity_tree
+from utils.llm_extractor import extract
+from database.db import (
+    get_all_entities_sync,
+    get_all_facts_sync,
+    save_extraction_to_mongo_sync,
+    clear_mongo_stores_sync,
+    get_sync_memories_collection,
+    get_sync_claims_collection,
+)
 
 # ANSI Color codes cho terminal
 C_RESET = "\033[0m"
@@ -39,15 +52,14 @@ C_PURPLE = "\033[95m"
 C_CYAN = "\033[96m"
 C_DIM = "\033[2m"
 
-OUTPUT_JSON_PATH = os.path.join(SERVER_ROOT, "tests", "interactive_session_output.json")
-
 
 def print_banner():
-    print(f"\n{C_CYAN}{C_BOLD}" + "=" * 76)
-    print("      🚀 HILARK LLM EXTRACTOR - INTERACTIVE TEST CONSOLE")
-    print("   Nhận tin nhắn tuần tự -> Bóc tách Entities & Facts (Parent - Child)")
-    print("=" * 76 + C_RESET)
-    print(f"{C_DIM}Lệnh hỗ trợ: Gõ 'clear' để làm mới bộ nhớ | Gõ 'exit' hoặc 'quit' để thoát.{C_RESET}\n")
+    print(f"\n{C_CYAN}{C_BOLD}" + "=" * 78)
+    print("      🚀 HILARK LLM EXTRACTOR - INTERACTIVE TEST CONSOLE (MONGODB)")
+    print("   Nhận tin nhắn tuần tự -> Bóc tách Entities & Facts -> Lưu trữ MongoDB")
+    print("   Database: LarkAssistant | Collections: memories (entities), claims (facts)")
+    print("=" * 78 + C_RESET)
+    print(f"{C_DIM}Lệnh hỗ trợ: 'scenario' (chạy 5 turn mẫu) | 'clear' (xóa DB) | 'exit' (thoát){C_RESET}\n")
 
 
 def display_turn_result(turn_num: int, query: str, entity_list: list, new_facts: list, superseded_facts: list):
@@ -101,14 +113,14 @@ def display_turn_result(turn_num: int, query: str, entity_list: list, new_facts:
             prop = old.get("property") or old.get("predicate", "info")
             print(f"   • {C_RED}[SUPERSEDED]{C_RESET} ID: {C_DIM}{old.get('id') or old.get('_id')}{C_RESET} | {prop} = \"{old.get('value')}\"")
 
-    print(f"\n{C_DIM}" + "-" * 76 + C_RESET)
+    print(f"\n{C_DIM}" + "-" * 78 + C_RESET)
 
 
 def display_session_summary(session_entities: list, session_facts: list):
     tree = build_entity_tree(session_entities, session_facts)
 
-    print(f"{C_BOLD}📊 BỘ NHỚ PHÂN CẤP HIỆN TẠI (PARENT - CHILD):{C_RESET}")
-    print(f"   • Tổng số Entities: {C_BOLD}{len(tree)}{C_RESET}")
+    print(f"{C_BOLD}📊 BỘ NHỚ PHÂN CẤP TRONG MONGODB (PARENT - CHILD):{C_RESET}")
+    print(f"   • Tổng số Entities trong DB: {C_BOLD}{len(tree)}{C_RESET}")
     for ent in tree:
         n_active = len(ent.get("active_facts", []))
         n_hist = len(ent.get("history_facts", []))
@@ -120,71 +132,145 @@ def display_session_summary(session_entities: list, session_facts: list):
         for f in ent.get("active_facts", []):
             prop = f.get("property") or f.get("predicate", "info")
             print(f"        • {C_BOLD}{prop}{C_RESET}: {C_GREEN}\"{f.get('value')}\"{C_RESET}")
-    print(f"{C_DIM}Đã lưu bộ nhớ phân cấp Parent-Child vào: {OUTPUT_JSON_PATH}{C_RESET}\n")
+        for f in ent.get("history_facts", []):
+            prop = f.get("property") or f.get("predicate", "info")
+            print(f"        • {C_DIM}[SUPERSEDED] {prop}: \"{f.get('value')}\"{C_RESET}")
+
+    mem_count = get_sync_memories_collection().count_documents({})
+    claim_count = get_sync_claims_collection().count_documents({})
+    print(f"\n{C_DIM}💾 Trạng thái MongoDB: collections.memories={mem_count} docs | collections.claims={claim_count} docs{C_RESET}\n")
 
 
-def save_session_to_json(history: list, session_entities: list, session_facts: list):
-    """Lưu toàn bộ phiên theo cấu trúc phân cấp Parent-Child trực quan."""
-    entity_tree = build_entity_tree(session_entities, session_facts)
+def process_message_turn(
+    step: int,
+    user_input: str,
+    session_entities: List[Dict[str, Any]],
+    session_facts: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Xử lý 1 lượt tin nhắn: Trích xuất -> Lưu MongoDB -> Trả về entities & facts mới nhất.
+    """
+    print(f"{C_DIM}⏳ Đang gửi tin nhắn qua LLM Extractor (context {len(session_entities)} entities, {len(session_facts)} facts)...{C_RESET}")
 
-    clean_history = []
-    for step_item in history:
-        clean_step = {
-            "step": step_item.get("step"),
-            "message": step_item.get("message"),
-            "timestamp": step_item.get("timestamp"),
-            "new_entities": [
-                {
-                    "id": e.get("id") or e.get("_id"),
-                    "name": e.get("name") or e.get("canonical_name"),
-                    "type": e.get("type") or e.get("entity_type"),
-                    "aliases": e.get("aliases", []),
-                    "description": e.get("description", ""),
-                }
-                for e in (step_item.get("extracted_entities") or step_item.get("extracted_memory", []))
-            ],
-            "new_facts": [
-                {
-                    "id": f.get("id") or f.get("_id"),
-                    "entity_id": f.get("entity_id"),
-                    "property": f.get("property") or f.get("predicate"),
-                    "value": f.get("value"),
-                    "status": f.get("status"),
-                    "replaces": f.get("replaces") or f.get("supersedes"),
-                    "source": f.get("source", {}).get("snippet") if isinstance(f.get("source"), dict) else f.get("source"),
-                }
-                for f in (step_item.get("extracted_facts") or step_item.get("extracted_claims", []))
-            ],
-            "replaced_facts": [
-                {
-                    "id": s.get("id") or s.get("_id"),
-                    "entity_id": s.get("entity_id"),
-                    "property": s.get("property") or s.get("predicate"),
-                    "value": s.get("value"),
-                    "status": "superseded",
-                }
-                for s in (step_item.get("superseded_facts") or step_item.get("superseded_claims", []))
-            ]
-        }
-        clean_history.append(clean_step)
+    result = extract(
+        query=user_input,
+        workspace_id="default",
+        source_message_id=f"msg_{step:03d}",
+        sender="User",
+        existing_entities=session_entities,
+        existing_facts=session_facts,
+    )
 
-    payload = {
-        "updated_at": datetime.now().isoformat(),
-        "total_messages": len(history),
-        "total_entities": len(entity_tree),
-        "entities": entity_tree,
-        "history": clean_history,
-    }
-    with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    new_entities = result.get("entities") or result.get("memory", [])
+    new_facts = result.get("facts") or result.get("claims", [])
+    superseded_facts = result.get("superseded_facts") or result.get("superseded_claims", [])
+
+    # Lưu trực tiếp vào MongoDB
+    save_extraction_to_mongo_sync(result)
+
+    # Nạp lại dữ liệu đồng bộ chính xác nhất từ MongoDB
+    latest_entities = get_all_entities_sync()
+    latest_facts = get_all_facts_sync()
+
+    # In kết quả lượt này
+    display_turn_result(step, user_input, new_entities, new_facts, superseded_facts)
+    display_session_summary(latest_entities, latest_facts)
+
+    return latest_entities, latest_facts
+
+
+def run_5_turn_scenario():
+    """
+    Chạy tự động kịch bản 5 tin nhắn đa lượt (Multi-turn chat) thực tế:
+      Turn 1: Khởi tạo Dự án & Phân công Nhân sự
+      Turn 2: Bổ sung Khách hàng & Ngân sách dự án
+      Turn 3: Biến động thuộc tính (Khách hàng tăng ngân sách & dời deadline)
+      Turn 4: Tạo Feature/Module mới thuộc dự án & người làm
+      Turn 5: Thay đổi người phụ trách Module (Superseded assignee)
+    """
+    print(f"\n{C_BOLD}{C_GREEN}══════════════════════════════════════════════════════════════════════════════{C_RESET}")
+    print(f"{C_BOLD}{C_GREEN}  ▶ BẮT ĐẦU CHẠY KỊCH BẢN 5 MULTI-TURN CHAT (LƯU TRỰC TIẾP VÀO MONGODB)        {C_RESET}")
+    print(f"{C_BOLD}{C_GREEN}══════════════════════════════════════════════════════════════════════════════{C_RESET}\n")
+
+    scenario_turns = [
+        (
+            1,
+            "Team mình khởi động dự án Alpha, Nam làm Project Lead và Tuấn làm Tech Lead, hạn chót ngày 15/11.",
+            "Khởi tạo dự án Alpha, 2 nhân sự Nam (Project Lead) & Tuấn (Tech Lead), deadline 15/11."
+        ),
+        (
+            2,
+            "Dự án Alpha này ký hợp đồng với khách hàng Vingroup, ngân sách được duyệt là 400 triệu.",
+            "Bổ sung thuộc tính khách hàng Vingroup & ngân sách ban đầu 400 triệu cho Alpha."
+        ),
+        (
+            3,
+            "Khách hàng Vingroup vừa bổ sung thêm yêu cầu nên tăng ngân sách lên 600 triệu và lùi deadline sang 30/11.",
+            "Biến động: Ngân sách tăng 400M -> 600M (replaces) & Deadline đổi 15/11 -> 30/11 (replaces)."
+        ),
+        (
+            4,
+            "Tuấn đang phụ trách phát triển module Payment Gateway cho dự án Alpha, dự kiến xong trước 20/11.",
+            "Tạo thực thể mới Payment Gateway thuộc Alpha do Tuấn phụ trách, deadline 20/11."
+        ),
+        (
+            5,
+            "Do Tuấn bận dự án khác nên chuyển module Payment Gateway sang cho Hoàng làm.",
+            "Biến động: Phụ trách Payment Gateway đổi từ Tuấn -> Hoàng (replaces assignee)."
+        ),
+    ]
+
+    # Làm sạch DB trước khi chạy kịch bản để có số liệu chuẩn xác
+    print(f"{C_YELLOW}🧹 Đang làm mới database MongoDB (LarkAssistant) để chạy kịch bản...{C_RESET}")
+    clear_mongo_stores_sync()
+    session_entities = []
+    session_facts = []
+
+    for step, message, goal in scenario_turns:
+        print(f"\n{C_BOLD}{C_YELLOW}=============================================================================={C_RESET}")
+        print(f"{C_BOLD}{C_YELLOW} 👉 TURN #{step}: {C_CYAN}\"{message}\"{C_RESET}")
+        print(f"{C_DIM}    Mục tiêu: {goal}{C_RESET}")
+        print(f"{C_BOLD}{C_YELLOW}=============================================================================={C_RESET}")
+
+        session_entities, session_facts = process_message_turn(
+            step=step,
+            user_input=message,
+            session_entities=session_entities,
+            session_facts=session_facts,
+        )
+
+        time.sleep(1)
+
+    print(f"\n{C_BOLD}{C_GREEN}══════════════════════════════════════════════════════════════════════════════{C_RESET}")
+    print(f"{C_BOLD}{C_GREEN}  🎉 HOÀN THÀNH KỊCH BẢN 5 MULTI-TURN CHAT!                                      {C_RESET}")
+    print(f"{C_BOLD}{C_GREEN}  Toàn bộ Entities & Facts/Claims đã được lưu an toàn trong MongoDB.            {C_RESET}")
+    print(f"{C_BOLD}{C_GREEN}══════════════════════════════════════════════════════════════════════════════{C_RESET}\n")
 
 
 def main():
+    parser = argparse.ArgumentParser(description="HiLark LLM Extractor Interactive Console (MongoDB)")
+    parser.add_argument("--scenario", action="store_true", help="Chạy tự động kịch bản 5 multi-turn chat")
+    parser.add_argument("--clear", action="store_true", help="Xóa sạch database MongoDB trước khi bắt đầu")
+    args = parser.parse_args()
+
+    if args.clear:
+        clear_mongo_stores_sync()
+        print(f"{C_YELLOW}🧹 Đã xóa sạch dữ liệu trong MongoDB!{C_RESET}")
+
+    if args.scenario:
+        run_5_turn_scenario()
+        return
+
     print_banner()
 
-    session_entities = []
-    session_facts = []
-    history = []
+    # Nạp dữ liệu hiện có trong MongoDB
+    session_entities = get_all_entities_sync()
+    session_facts = get_all_facts_sync()
+    if session_entities or session_facts:
+        print(f"{C_GREEN}✔ Đã nạp từ MongoDB: {len(session_entities)} Entities | {len(session_facts)} Facts{C_RESET}\n")
+    else:
+        print(f"{C_DIM}Database MongoDB hiện đang rỗng. Sẵn sàng nhận tin nhắn đầu tiên!{C_RESET}\n")
+
     step = 1
 
     while True:
@@ -195,77 +281,31 @@ def main():
             if not user_input:
                 continue
 
-            # Xử lý lệnh thoát
             if user_input.lower() in ("exit", "quit", "q"):
                 print(f"\n{C_CYAN}👋 Đã kết thúc phiên test. Tạm biệt!{C_RESET}\n")
                 break
 
-            # Xử lý lệnh làm mới bộ nhớ
             if user_input.lower() in ("clear", "reset", "cls"):
+                clear_mongo_stores_sync()
                 session_entities = []
                 session_facts = []
-                history = []
                 step = 1
-                if os.path.exists(OUTPUT_JSON_PATH):
-                    try:
-                        os.remove(OUTPUT_JSON_PATH)
-                    except Exception:
-                        pass
-                print(f"\n{C_YELLOW}🧹 Đã xóa sạch bộ nhớ phiên test (Reset)!{C_RESET}\n")
+                print(f"\n{C_YELLOW}🧹 Đã xóa sạch bộ nhớ trong MongoDB (Reset)!{C_RESET}\n")
                 continue
 
-            print(f"{C_DIM}⏳ Đang gửi tin nhắn qua LLM Extractor...{C_RESET}")
+            if user_input.lower() in ("scenario", "test5"):
+                run_5_turn_scenario()
+                session_entities = get_all_entities_sync()
+                session_facts = get_all_facts_sync()
+                step = 6
+                continue
 
-            # Gọi LLM Extractor với đầy đủ context tích lũy từ các tin nhắn trước
-            result = extract(
-                query=user_input,
-                workspace_id="default_ws",
-                source_message_id=f"msg_{step:03d}",
-                sender="User",
-                existing_entities=session_entities,
-                existing_facts=session_facts,
+            session_entities, session_facts = process_message_turn(
+                step=step,
+                user_input=user_input,
+                session_entities=session_entities,
+                session_facts=session_facts,
             )
-
-            new_entities = result.get("entities") or result.get("memory", [])
-            new_facts = result.get("facts") or result.get("claims", [])
-            superseded_facts = result.get("superseded_facts") or result.get("superseded_claims", [])
-
-            # 1. Cập nhật session_entities (Upsert theo id)
-            for ent in new_entities:
-                ent_id = ent.get("id") or ent.get("_id")
-                idx = next((i for i, e in enumerate(session_entities) if (e.get("id") or e.get("_id")) == ent_id), None)
-                if idx is not None:
-                    session_entities[idx] = ent
-                else:
-                    session_entities.append(ent)
-
-            # 2. Cập nhật các facts cũ bị superseded trong session_facts
-            superseded_ids = {f.get("id") or f.get("_id") for f in superseded_facts if (f.get("id") or f.get("_id"))}
-            for f in session_facts:
-                if (f.get("id") or f.get("_id")) in superseded_ids:
-                    f["status"] = "superseded"
-                    f["updated_at"] = datetime.now().isoformat()
-
-            # 3. Thêm các facts mới vào session_facts
-            session_facts.extend(new_facts)
-
-            # 4. Ghi nhận lịch sử
-            history.append({
-                "step": step,
-                "message": user_input,
-                "timestamp": datetime.now().isoformat(),
-                "extracted_entities": new_entities,
-                "extracted_facts": new_facts,
-                "superseded_facts": superseded_facts,
-            })
-
-            # 5. Lưu ra file JSON theo cấu trúc Parent-Child
-            save_session_to_json(history, session_entities, session_facts)
-
-            # 6. In kết quả trực quan
-            display_turn_result(step, user_input, new_entities, new_facts, superseded_facts)
-            display_session_summary(session_entities, session_facts)
-
             step += 1
 
         except (KeyboardInterrupt, EOFError):
