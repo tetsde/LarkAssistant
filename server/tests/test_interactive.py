@@ -84,8 +84,9 @@ def display_turn_result(turn_num: int, query: str, memory_list: list, new_claims
             else:
                 st_color = C_DIM
 
-            conf = c.get("confidence", 1.0)
-            print(f"   {idx}. {st_color}[{status.upper()}]{C_RESET} {C_BOLD}{c.get('predicate')}{C_RESET} = {C_GREEN}\"{c.get('value')}\"{C_RESET} (độ tin cậy: {conf:.2f})")
+            conf = c.get("confidence")
+            conf_str = f" (độ tin cậy: {conf:.2f})" if conf is not None else ""
+            print(f"   {idx}. {st_color}[{status.upper()}]{C_RESET} {C_BOLD}{c.get('predicate')}{C_RESET} = {C_GREEN}\"{c.get('value')}\"{C_RESET}{conf_str}")
             print(f"      • Claim ID:  {C_DIM}{c.get('_id')}{C_RESET}  |  Entity ID: {C_PURPLE}{c.get('entity_id')}{C_RESET}")
             
             # Highlight nếu thay thế claim cũ

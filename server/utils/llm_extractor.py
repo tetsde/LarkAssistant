@@ -80,6 +80,55 @@ def clean_json_text(text: str) -> str:
     return text.strip()
 
 
+def safe_parse_json_list(raw_text: str, fallback_type: str = "items") -> List[Dict[str, Any]]:
+    """
+    Parse an toàn JSON trả về từ LLM thành danh sách các dictionary:
+      - Bóc markdown block ```json ... ```
+      - Thử parse JSON trực tiếp (list hoặc dict)
+      - Fallback regex quét tìm mảng [...] hoặc đối tượng {...}
+      - Tuyệt đối không ném ngoại lệ làm crash server (Graceful Degradation).
+    """
+    if not raw_text or not isinstance(raw_text, str):
+        return []
+
+    cleaned = clean_json_text(raw_text)
+    if not cleaned:
+        return []
+
+    # 1. Thử parse trực tiếp
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            return [data]
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Fallback regex tìm mảng [...]
+    array_match = re.search(r"\[\s*\{.*?\}\s*\]", cleaned, re.DOTALL)
+    if array_match:
+        try:
+            data = json.loads(array_match.group(0))
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Fallback regex tìm đối tượng đơn lẻ {...}
+    obj_match = re.search(r"\{.*?\}", cleaned, re.DOTALL)
+    if obj_match:
+        try:
+            data = json.loads(obj_match.group(0))
+            if isinstance(data, dict):
+                return [data]
+        except json.JSONDecodeError:
+            pass
+
+    print(f"[CẢNH BÁO] Không thể parse JSON từ phản hồi LLM cho {fallback_type}. Nội dung: {raw_text[:200]}")
+    return []
+
+
 def normalize_predicate(predicate: str) -> str:
     """Chuẩn hoá predicate về dạng chữ thường, snake_case đơn giản."""
     p = predicate.strip().lower()
@@ -176,9 +225,8 @@ QUY TẮC TRÍCH XUẤT CLAIMS (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
    - "superseded": Thông tin cũ đã bị thay thế.
    - "conflicted": Khi có mâu thuẫn trực tiếp giữa các nguồn.
    - "uncertain": Khi thông tin mơ hồ, phỏng đoán, chưa chốt ("hình như", "có thể", "khoảng", "nghe nói", "dự kiến").
-5. "confidence": Số thực 0.0 đến 1.0 (1.0 nếu khẳng định chắc chắn; <= 0.7 nếu phỏng đoán/chưa chốt).
-6. "source_snippet": Trích dẫn nguyên văn câu văn bản làm chứng cứ.
-7. "supersedes": Nếu thông tin mới này THAY THẾ một claim cũ (cùng entity_id và cùng thuộc tính, ví dụ đổi deadline từ 18/10 thành 30/10), hãy điền chính xác "_id" của claim cũ đó (ví dụ "clm_001"). Nếu không thay thế claim nào, để null.
+5. "source_snippet": Trích dẫn nguyên văn câu văn bản làm chứng cứ.
+6. "supersedes": Nếu thông tin mới này THAY THẾ một claim cũ (cùng entity_id và cùng thuộc tính, ví dụ đổi deadline từ 18/10 thành 30/10), hãy điền chính xác "_id" của claim cũ đó (ví dụ "clm_001"). Nếu không thay thế claim nào, để null.
 
 Chỉ trả về JSON Array các claims hợp lệ theo thứ tự ưu tiên (tối đa 1-3 claims cốt lõi):
 [
@@ -187,7 +235,6 @@ Chỉ trả về JSON Array các claims hợp lệ theo thứ tự ưu tiên (t�
     "predicate": "deadline",
     "value": "30/10",
     "status": "current",
-    "confidence": 0.95,
     "source_snippet": "dời từ ngày 18 sang ngày 30 nhé",
     "supersedes": "clm_000"
   }}
@@ -205,12 +252,19 @@ class GeminiClient:
     DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY or settings.gemini_api
-        if not self.api_key:
+        # Lưu key nếu có, nếu chưa có thì lúc generate mới kiểm tra để tránh crash lúc import module (Issue 2)
+        self.api_key = api_key or getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "gemini_api", None)
+
+    def _ensure_api_key(self) -> str:
+        """Lazy validation: chỉ raise error khi thực sự cần gọi Gemini API."""
+        key = self.api_key or getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "gemini_api", None)
+        if not key:
             raise ValueError("Chưa tìm thấy GEMINI_API_KEY trong cấu hình hoặc file .env (key: gemini_api).")
+        return key
 
     def _get_url(self, model_name: str) -> str:
-        return f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        key = self._ensure_api_key()
+        return f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
 
     def generate(self, prompt: str, model_name: Optional[str] = None) -> str:
         """Gọi Gemini API đồng bộ (sync)."""
@@ -235,9 +289,24 @@ class GeminiClient:
                         data = resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
+                            finish_reason = candidates[0].get("finishReason")
+                            if finish_reason == "SAFETY":
+                                last_error = f"Gemini model {model} đã chặn câu trả lời do bộ lọc an toàn (finishReason: SAFETY)."
+                                continue
                             parts = candidates[0].get("content", {}).get("parts", [])
                             if parts:
                                 return parts[0].get("text", "")
+
+                        # Kiểm tra safety filter ở promptFeedback
+                        prompt_fb = data.get("promptFeedback", {})
+                        if prompt_fb.get("blockReason"):
+                            last_error = f"Gemini prompt bị chặn bởi Safety Filter ({prompt_fb.get('blockReason')})."
+                            continue
+
+                        last_error = f"Gemini model {model} trả về 200 nhưng không có parts text hợp lệ."
+                    elif resp.status_code == 429:
+                        last_error = f"Gemini Rate Limit / Quota Exceeded (HTTP 429) ở model {model}."
+                        continue
                     elif resp.status_code == 404:
                         continue
                     else:
@@ -270,9 +339,23 @@ class GeminiClient:
                         data = resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
+                            finish_reason = candidates[0].get("finishReason")
+                            if finish_reason == "SAFETY":
+                                last_error = f"Gemini model {model} đã chặn câu trả lời do bộ lọc an toàn (finishReason: SAFETY)."
+                                continue
                             parts = candidates[0].get("content", {}).get("parts", [])
                             if parts:
                                 return parts[0].get("text", "")
+
+                        prompt_fb = data.get("promptFeedback", {})
+                        if prompt_fb.get("blockReason"):
+                            last_error = f"Gemini prompt bị chặn bởi Safety Filter ({prompt_fb.get('blockReason')})."
+                            continue
+
+                        last_error = f"Gemini model {model} trả về 200 nhưng không có parts text hợp lệ."
+                    elif resp.status_code == 429:
+                        last_error = f"Gemini Rate Limit / Quota Exceeded (HTTP 429) ở model {model}."
+                        continue
                     elif resp.status_code == 404:
                         continue
                     else:
@@ -340,18 +423,9 @@ def parse_memory_entities(
     existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
 ) -> List[MemoryEntity]:
     """Parse JSON trả về từ LLM và chuyển đổi thành MemoryEntity."""
-    cleaned = clean_json_text(raw_response)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as err:
-        match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-        else:
-            raise ValueError(f"LLM không trả về định dạng JSON hợp lệ: {raw_response}") from err
-
-    if not isinstance(data, list):
-        data = [data] if isinstance(data, dict) else []
+    data = safe_parse_json_list(raw_response, fallback_type="Memory Entities")
+    if not data:
+        return []
 
     message_ids = [source_message_id] if source_message_id else []
     existing = existing_entities or []
@@ -500,18 +574,9 @@ def parse_claims(
     sender: Optional[str] = None,
 ) -> List[Claim]:
     """Parse JSON trả về từ LLM và chuyển đổi thành danh sách Claim."""
-    cleaned = clean_json_text(raw_response)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as err:
-        match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-        if match:
-            data = json.loads(match.group(0))
-        else:
-            raise ValueError(f"LLM không trả về định dạng JSON hợp lệ: {raw_response}") from err
-
-    if not isinstance(data, list):
-        data = [data] if isinstance(data, dict) else []
+    data = safe_parse_json_list(raw_response, fallback_type="Claims")
+    if not data:
+        return []
 
     # Map tra cứu entity_id hợp lệ
     known_entity_ids = {e.get("_id") for e in resolved_entities if e.get("_id")}
@@ -568,11 +633,6 @@ def parse_claims(
             else:
                 claim_status = ClaimStatus.CURRENT
 
-        confidence = float(item.get("confidence", 1.0))
-        # Nếu uncertain, giới hạn confidence không vượt quá 0.7
-        if claim_status == ClaimStatus.UNCERTAIN and confidence > 0.7:
-            confidence = 0.6
-
         # Source context
         source_snippet = str(item.get("source_snippet", item.get("source", ""))).strip()
         source_meta: Dict[str, Any] = {
@@ -607,7 +667,6 @@ def parse_claims(
             predicate=predicate,
             value=value,
             status=claim_status,
-            confidence=confidence,
             source=source_meta,
             supersedes=supersedes_id,
             created_at=now_iso,
@@ -616,17 +675,16 @@ def parse_claims(
         claims.append(new_claim)
 
     # BƯỚC 3: COMPACTNESS & DEDUPLICATION (GỘP & GIỚI HẠN SỐ LƯỢNG)
-    # 1. Khử trùng lặp cùng 1 (entity_id, predicate): giữ claim có confidence cao nhất
+    # 1. Khử trùng lặp cùng 1 (entity_id, predicate): giữ claim xuất hiện đầu tiên
     seen_keys: Dict[tuple, Claim] = {}
     for c in claims:
         key = (c.entity_id, c.predicate)
-        if key not in seen_keys or c.confidence >= seen_keys[key].confidence:
+        if key not in seen_keys:
             seen_keys[key] = c
     deduped_claims = list(seen_keys.values())
 
-    # 2. Giới hạn trần an toàn (Safety Cap: tối đa 3 claims theo độ tin cậy từ LLM)
+    # 2. Giới hạn trần an toàn (Safety Cap: tối đa 3 claims theo thứ tự ưu tiên từ LLM)
     if len(deduped_claims) > 3:
-        deduped_claims.sort(key=lambda c: c.confidence, reverse=True)
         deduped_claims = deduped_claims[:3]
 
     return deduped_claims

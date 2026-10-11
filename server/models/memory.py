@@ -78,7 +78,7 @@ class Claim(BaseModel):
     predicate: str = Field(..., description="Thuộc tính/sự kiện, ví dụ deadline, owner, budget")
     value: Any = Field(..., description="Giá trị có cấu trúc linh hoạt")
     status: ClaimStatus = Field(default=ClaimStatus.CURRENT, description="current, superseded, conflicted, uncertain")
-    confidence: float = Field(default=1.0, description="Độ tin cậy do hệ thống đánh giá (0.0 - 1.0)")
+    confidence: Optional[float] = Field(default=None, description="Độ tin cậy nếu có")
     source: Union[str, Dict[str, Any]] = Field(default="", description="Nguồn để kiểm chứng claim")
     supersedes: Optional[str] = Field(default=None, description="ID claim cũ mà claim mới thay thế")
     created_at: str = Field(
