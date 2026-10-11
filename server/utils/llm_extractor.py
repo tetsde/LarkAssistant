@@ -39,101 +39,15 @@ from core.config import settings
 
 
 # ==============================================================================
-# 1. ENUMS & SCHEMAS
+# 1. ENUMS & SCHEMAS (IMPORTED FROM MODELS)
 # ==============================================================================
 
-class EntityStatus(str, Enum):
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    MERGED = "merged"
-
-
-class ClaimStatus(str, Enum):
-    CURRENT = "current"        # Thông tin hiện tại còn hiệu lực
-    SUPERSEDED = "superseded"  # Đã bị thay thế bởi claim mới hơn
-    CONFLICTED = "conflicted"  # Có mâu thuẫn trực tiếp giữa các nguồn
-    UNCERTAIN = "uncertain"    # Mơ hồ, chưa chốt, phỏng đoán (hình như, có thể...)
-
-
-class MemoryEntity(BaseModel):
-    """
-    Schema đại diện cho một thực thể (Memory Node) trong bộ nhớ.
-    
-    Ý nghĩa các trường:
-      - _id: ID ổn định do Python tạo (deterministic theo workspace + canonical_name)
-      - workspace_id: Phạm vi thực thể, tránh nhầm giữa các workspace
-      - canonical_name: Tên chuẩn của thực thể
-      - entity_type: person, project, team, customer, document, ...
-      - aliases: Những tên gọi khác đã có bằng chứng rõ ràng
-      - description: Tóm tắt ngữ cảnh để nhận diện
-      - attributes: Thông tin bổ sung có cấu trúc linh hoạt
-      - status: active, inactive, merged
-      - source_message_ids: Danh sách ID tin nhắn làm căn cứ tạo/cập nhật entity
-    """
-    id: str = Field(..., alias="_id", description="ID ổn định do Python tạo")
-    workspace_id: str = Field(default="default", description="Phạm vi thực thể, tránh nhầm giữa các workspace")
-    canonical_name: str = Field(..., description="Tên chuẩn của thực thể")
-    entity_type: str = Field(..., description="person, project, team, customer, document...")
-    aliases: List[str] = Field(default_factory=list, description="Những tên gọi khác đã có bằng chứng")
-    description: str = Field(default="", description="Tóm tắt ngữ cảnh để nhận diện")
-    attributes: Dict[str, Any] = Field(default_factory=dict, description="Thông tin bổ sung có cấu trúc linh hoạt")
-    status: EntityStatus = Field(default=EntityStatus.ACTIVE, description="active, inactive, merged")
-    source_message_ids: List[str] = Field(default_factory=list, description="Tin nhắn làm căn cứ tạo/cập nhật entity")
-
-    model_config = {
-        "populate_by_name": True,
-        "use_enum_values": True,
-    }
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Xuất ra dict đúng chuẩn với key '_id'."""
-        return self.model_dump(by_alias=True)
-
-
-class Claim(BaseModel):
-    """
-    Schema đại diện cho một mệnh đề thông tin (Claim).
-    
-    Mục tiêu: Trả lời:
-      "Thông tin gì đã được nói, áp dụng cho entity nào, còn hiệu lực không và lấy từ đâu?"
-      
-    Ý nghĩa các trường:
-      - _id: ID của claim (vd: clm_001, clm_xxxx)
-      - entity_id: Liên kết đến entity chuẩn (_id trong MemoryEntity)
-      - predicate: Thuộc tính/sự kiện, ví dụ deadline, owner, budget, role...
-      - value: Giá trị có cấu trúc linh hoạt (string, int, float, dict, list...)
-      - status: current, superseded, conflicted, uncertain
-      - confidence: Độ tin cậy do hệ thống đánh giá (0.0 đến 1.0)
-      - source: Nguồn để kiểm chứng claim (text snippet, message_id, sender...)
-      - supersedes: ID claim cũ mà claim mới thay thế (hoặc None)
-      - created_at: Thời điểm hệ thống ghi nhận (ISO-8601)
-      - updated_at: Thời điểm document được cập nhật (ISO-8601)
-    """
-    id: str = Field(..., alias="_id", description="ID của claim (vd: clm_001)")
-    entity_id: str = Field(..., description="Liên kết đến entity chuẩn")
-    predicate: str = Field(..., description="Thuộc tính/sự kiện, ví dụ deadline, owner, budget")
-    value: Any = Field(..., description="Giá trị có cấu trúc linh hoạt")
-    status: ClaimStatus = Field(default=ClaimStatus.CURRENT, description="current, superseded, conflicted, uncertain")
-    confidence: float = Field(default=1.0, description="Độ tin cậy do hệ thống đánh giá (0.0 - 1.0)")
-    source: Union[str, Dict[str, Any]] = Field(default="", description="Nguồn để kiểm chứng claim")
-    supersedes: Optional[str] = Field(default=None, description="ID claim cũ mà claim mới thay thế")
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="Thời điểm hệ thống ghi nhận"
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-        description="Thời điểm document được cập nhật"
-    )
-
-    model_config = {
-        "populate_by_name": True,
-        "use_enum_values": True,
-    }
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Xuất ra dict đúng chuẩn với key '_id'."""
-        return self.model_dump(by_alias=True)
+from models.memory import (
+    EntityStatus,
+    ClaimStatus,
+    MemoryEntity,
+    Claim,
+)
 
 
 # ==============================================================================
@@ -172,76 +86,6 @@ def normalize_predicate(predicate: str) -> str:
     p = re.sub(r"[^\w\s]", "", p)
     p = re.sub(r"\s+", "_", p)
     return p
-
-
-# ------------------------------------------------------------------------------
-# Danh sách Blacklist & Whitelist phục vụ Bước 2 & Bước 3 (Focus Filter & Compactness)
-# ------------------------------------------------------------------------------
-
-# Đại từ nhân xưng & danh từ chung không được tạo Entity tri thức
-ENTITY_BLACKLIST_PRONOUNS = {
-    "anh", "em", "các bạn", "bên mình", "tôi", "ta", "mình", "người ta",
-    "chúng tôi", "bọn anh", "bọn em", "sếp", "bạn", "ông ấy", "bà ấy",
-    "người gửi", "người nhận", "người gửi yêu cầu", "người thông báo nghỉ việc",
-    "người nhận thông báo", "tổ chức nội bộ", "tổ chức", "ai đó", "khách",
-}
-
-# Các danh từ chung dễ gây bẫy merge nhầm
-GENERIC_ENTITY_NOUNS = {
-    "khách hàng", "khách", "bên khách hàng", "dự án", "project",
-    "đối tác", "công ty", "nhóm", "team", "nhóm làm việc",
-    "hợp đồng", "tài liệu", "document", "tính năng", "feature",
-}
-
-# Dấu hiệu chỉ đối tượng mới hoặc khác biệt (New Instance Signal)
-NOVELTY_SIGNALS = {
-    "mới", "khác", "thứ hai", "tiếp theo", "new", "another", "khác nhé", "riêng"
-}
-
-# Predicates rác hội thoại (chatter actions) bị loại bỏ (Bước 2: Focus Filter)
-CHATTER_PREDICATES = {
-    "action", "chat", "message", "sent_message", "received_message",
-    "urging_deadline", "bao_lai", "nhan_tin", "thong_bao", "action_required",
-    "contact_action", "communication", "thong_tin", "yeu_cau_lien_he"
-}
-
-# Chuẩn hoá các predicate đồng nghĩa về predicate nghiệp vụ cốt lõi
-PREDICATE_CANONICAL_MAP = {
-    "delivery_deadline": "deadline",
-    "due_date": "deadline",
-    "han_chot": "deadline",
-    "target_date": "deadline",
-    "assignee": "owner",
-    "nguoi_phu_trach": "owner",
-    "responsible_person": "owner",
-    "requirement": "scope",
-    "yeu_cau": "scope",
-    "feature_request": "scope",
-    "contract_status": "status",
-    "employment_status": "status",
-    "position_status": "status",
-}
-
-
-def is_blacklisted_entity(name: str, aliases: List[str]) -> bool:
-    """Kiểm tra xem tên thực thể có phải đại từ nhân xưng hoặc mốc thời gian không."""
-    clean_name = re.sub(r"\s+", " ", name.strip().lower())
-    if clean_name in ENTITY_BLACKLIST_PRONOUNS:
-        return True
-
-    # Danh từ chung chung mô tả người gửi/nhận
-    for p in ("người gửi", "người nhận", "người thông báo", "tổ chức nội bộ"):
-        if p in clean_name:
-            return True
-
-    # Mốc thời gian đơn lẻ: "ngày 30", "ngày 18", "năm sau", v.v. (là Value của Claim, không phải Entity)
-    if re.match(r"^(ngày|tháng|năm|hôm nay|ngày mai|hôm qua|tuần sau|năm sau)\b", clean_name):
-        return True
-    if re.match(r"^\d{1,2}([/.-]\d{1,2})?([/.-]\d{2,4})?$", clean_name):
-        return True
-
-    return False
-
 
 # ==============================================================================
 # 3. PROMPT TEMPLATES (NHÁNH 1 & NHÁNH 2)
@@ -318,11 +162,15 @@ QUY TẮC TRÍCH XUẤT CLAIMS (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
 ⛔ BLACKLIST - TUYỆT ĐỐI KHÔNG BÓC TÁCH CÁC MỆNH ĐỀ GIAO TIẾP VỤN VẶT (CHATTER):
 - CẤM tạo các predicate giao tiếp đời thường như: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "báo lại", "nhắn tin". Hệ thống chỉ lưu tri thức nghiệp vụ, không lưu nhật ký hành vi nhắn tin!
 
-🎯 QUY TẮC CÔ ĐỌNG & GIỚI HẠN SỐ LƯỢNG (COMPACTNESS):
-- Mỗi tin nhắn CHỈ ĐƯỢC sinh tối đa 1 đến 2 (tối đa 3) claims cô đọng nhất!
-- KHÔNG PHÂN MẢNH THUỘC TÍNH: Cùng 1 hạn chót ngày 30 thì chỉ tạo duy nhất 1 claim predicate="deadline", KHÔNG ĐƯỢC vừa tạo "delivery_deadline", vừa tạo "deadline", vừa tạo "task_assigned"!
+🎯 QUY TẮC CÔ ĐỌNG & XẾP HẠNG OUTPUT (STRICT OUTPUT CONTROL & RANKING):
+- Số lượng: Mỗi tin nhắn CHỈ ĐƯỢC sinh tối đa từ 1 đến 3 claims cô đọng nhất.
+- Thứ tự ưu tiên: Sắp xếp mảng claims theo thứ tự giảm dần theo mức độ quan trọng nghiệp vụ (claim quan trọng nhất đứng đầu tiên).
+- Phân loại giá trị: Ưu tiên bóc tách các sự kiện hoặc thuộc tính then chốt (deadline, status, owner/assignee, scope, budget, milestones).
+- KHÔNG phân mảnh thuộc tính: Cùng 1 sự việc chỉ tạo 1 claim duy nhất, không chia nhỏ thành nhiều predicate gây nhiễu.
 
-3. "value": Giá trị ngắn gọn, rõ ràng (ví dụ: "30/10", "signed", "resigning", "Tuấn PM").
+3. "value": Giá trị cực kỳ ngắn gọn, cô đọng (TỐI ĐA 10 TỪ / DƯỚI 20 TOKENS).
+   - Ví dụ hợp lệ: "30/10", "signed", "resigned", "Tuấn PM", "200M VND".
+   - TUYỆT ĐỐI KHÔNG copy cả câu hoặc đoạn văn dài vào "value" (trích dẫn nguyên văn câu thì để ở trường "source_snippet").
 4. "status":
    - "current": Thông tin mới được khẳng định rõ ràng và có hiệu lực.
    - "superseded": Thông tin cũ đã bị thay thế.
@@ -332,7 +180,7 @@ QUY TẮC TRÍCH XUẤT CLAIMS (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
 6. "source_snippet": Trích dẫn nguyên văn câu văn bản làm chứng cứ.
 7. "supersedes": Nếu thông tin mới này THAY THẾ một claim cũ (cùng entity_id và cùng thuộc tính, ví dụ đổi deadline từ 18/10 thành 30/10), hãy điền chính xác "_id" của claim cũ đó (ví dụ "clm_001"). Nếu không thay thế claim nào, để null.
 
-Chỉ trả về JSON Array các claims hợp lệ (tối đa 1-2 claims cốt lõi):
+Chỉ trả về JSON Array các claims hợp lệ theo thứ tự ưu tiên (tối đa 1-3 claims cốt lõi):
 [
   {{
     "entity_id": "ent_...",
@@ -374,6 +222,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
+                "maxOutputTokens": 800,
             },
         }
 
@@ -408,6 +257,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
+                "maxOutputTokens": 800,
             },
         }
 
@@ -447,16 +297,9 @@ def find_matching_entity(
     Quy tắc 1:
       - Chỉ merge khi trùng chính xác canonical_name hoặc trùng một alias đã được ghi nhận.
       - Tên gần giống nhau (như 'Dự án Alpha' vs 'Dự án Atlas') KHÔNG ĐƯỢC MERGE.
-      - Phân biệt đối tượng mới (New Instance): Nếu có tín hiệu 'mới', 'khác' hoặc đối tượng là danh từ chung
-        (như 'Khách hàng', 'Dự án'), TUYỆT ĐỐI KHÔNG merge vào đối tượng cũ.
     """
     cand_norm = re.sub(r"\s+", " ", candidate_name.strip().lower())
     cand_alias_norms = {re.sub(r"\s+", " ", a.strip().lower()) for a in candidate_aliases if a.strip()}
-
-    cand_tokens = set(re.findall(r"\w+", cand_norm))
-    cand_has_novelty = bool(cand_tokens & NOVELTY_SIGNALS) or any(
-        bool(set(re.findall(r"\w+", a)) & NOVELTY_SIGNALS) for a in cand_alias_norms
-    )
 
     for ent in existing_entities:
         ent_dict = ent.to_dict() if isinstance(ent, MemoryEntity) else ent
@@ -466,16 +309,6 @@ def find_matching_entity(
             for a in ent_dict.get("aliases", [])
             if str(a).strip()
         }
-        e_tokens = set(re.findall(r"\w+", c_name))
-        e_has_novelty = bool(e_tokens & NOVELTY_SIGNALS)
-
-        # Xử lý bẫy danh từ chung (Generic Nouns Trap):
-        # Nếu là danh từ chung (Khách hàng, Dự án...) và một bên có chữ "mới" / "khác", KHÔNG MERGE!
-        if cand_norm in GENERIC_ENTITY_NOUNS or c_name in GENERIC_ENTITY_NOUNS:
-            if cand_has_novelty != e_has_novelty:
-                continue
-            if cand_norm != c_name:
-                continue
 
         # 1. Trùng canonical_name
         if cand_norm and cand_norm == c_name:
@@ -483,18 +316,14 @@ def find_matching_entity(
 
         # 2. Tên ứng viên nằm trong aliases của entity đã có
         if cand_norm and cand_norm in e_aliases:
-            if cand_norm not in GENERIC_ENTITY_NOUNS:
-                return ent_dict
+            return ent_dict
 
         # 3. Một alias của ứng viên trùng với canonical_name của entity đã có
         if c_name and c_name in cand_alias_norms:
-            if c_name not in GENERIC_ENTITY_NOUNS:
-                return ent_dict
+            return ent_dict
 
-        # 4. Trùng khớp alias có bằng chứng (loại trừ danh từ chung)
-        common_aliases = cand_alias_norms & e_aliases
-        meaningful_common = {a for a in common_aliases if a not in GENERIC_ENTITY_NOUNS}
-        if meaningful_common:
+        # 4. Trùng khớp alias có bằng chứng
+        if cand_alias_norms and (cand_alias_norms & e_aliases):
             return ent_dict
 
     return None
@@ -538,11 +367,6 @@ def parse_memory_entities(
 
         entity_type = str(item.get("entity_type", "entity")).strip().lower()
         aliases = [str(a).strip() for a in item.get("aliases", []) if str(a).strip()]
-
-        # Bỏ qua đại từ nhân xưng và mốc thời gian không mang giá trị tri thức thực thể
-        if is_blacklisted_entity(canonical_name, aliases):
-            continue
-
         description = str(item.get("description", "")).strip()
         attributes = item.get("attributes", {})
         if not isinstance(attributes, dict):
@@ -721,39 +545,28 @@ def parse_claims(
                     # Bỏ qua nếu không thể gán vào entity nào có căn cứ
                     continue
 
-        raw_pred = normalize_predicate(str(item.get("predicate", "info")))
-        predicate = PREDICATE_CANONICAL_MAP.get(raw_pred, raw_pred)
-
-        # BƯỚC 2: FOCUS FILTER - Bỏ qua rác hội thoại (chatter)
-        if (
-            predicate in CHATTER_PREDICATES
-            or predicate.startswith("action_")
-            or predicate.startswith("chat_")
-        ):
-            continue
-
+        predicate = normalize_predicate(str(item.get("predicate", "info")))
         value = item.get("value")
         if value is None:
             continue
+        if isinstance(value, str):
+            value = value.strip()
+            # Trần an toàn: giới hạn độ dài value tối đa 15 từ / 120 ký tự
+            words = value.split()
+            if len(words) > 15:
+                value = " ".join(words[:15]) + "..."
+            elif len(value) > 120:
+                value = value[:117] + "..."
 
-        # Bỏ qua các value thuần hành vi giao tiếp nhắn tin
-        val_str = str(value).strip().lower()
-        if any(chatter_val in val_str for chatter_val in [
-            "sent message", "received message", "urging deadline",
-            "nhắn tin", "báo lại", "hối deadline"
-        ]):
-            continue
-
-        # Status validation (Quy tắc 3: uncertain, conflicted, current, superseded)
-        status_str = str(item.get("status", "current")).strip().lower()
-        if status_str in ("uncertain", "mo_ho", "doubt"):
-            claim_status = ClaimStatus.UNCERTAIN
-        elif status_str in ("conflicted", "mau_thuan", "conflict"):
-            claim_status = ClaimStatus.CONFLICTED
-        elif status_str in ("superseded", "da_thay_the", "old"):
-            claim_status = ClaimStatus.SUPERSEDED
-        else:
-            claim_status = ClaimStatus.CURRENT
+        # Status validation (current, superseded, conflicted, uncertain)
+        status_str = str(item.get("status", ClaimStatus.CURRENT.value)).strip().lower()
+        try:
+            claim_status = ClaimStatus(status_str)
+        except ValueError:
+            if status_str == "conflict":
+                claim_status = ClaimStatus.CONFLICTED
+            else:
+                claim_status = ClaimStatus.CURRENT
 
         confidence = float(item.get("confidence", 1.0))
         # Nếu uncertain, giới hạn confidence không vượt quá 0.7
@@ -811,13 +624,9 @@ def parse_claims(
             seen_keys[key] = c
     deduped_claims = list(seen_keys.values())
 
-    # 2. Giới hạn tối đa 3 claims cốt lõi nhất cho mỗi tin nhắn
+    # 2. Giới hạn trần an toàn (Safety Cap: tối đa 3 claims theo độ tin cậy từ LLM)
     if len(deduped_claims) > 3:
-        priority_preds = {"deadline": 5, "status": 4, "owner": 3, "scope": 2, "budget": 1}
-        deduped_claims.sort(
-            key=lambda c: (priority_preds.get(c.predicate, 0), c.confidence),
-            reverse=True
-        )
+        deduped_claims.sort(key=lambda c: c.confidence, reverse=True)
         deduped_claims = deduped_claims[:3]
 
     return deduped_claims
@@ -1299,63 +1108,3 @@ def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, An
         "total_stored_entities": len(stored_entities),
         "total_stored_claims": len(stored_claims),
     }
-
-
-# ==============================================================================
-# 10. TEST TRỰC TIẾP MODULE (DEMO KỊCH BẢN THAY THẾ & MƠ HỒ)
-# ==============================================================================
-
-if __name__ == "__main__":
-    print("=" * 75)
-    print("🚀 TEST 2 NHÁNH: MEMORY (ENTITIES) & CLAIM EXTRACTOR")
-    print("=" * 75)
-
-    extractor = LLMExtractor()
-
-    # BƯỚC 1: Tin nhắn ban đầu
-    msg_1 = "Dự án Atlas deadline ngày 15/10 nhé"
-    print(f"\n[BƯỚC 1] Nhận tin: \"{msg_1}\"")
-    step1 = extractor.extract(
-        query=msg_1,
-        workspace_id="ws_01",
-        source_message_id="msg_001",
-        sender="Project Manager",
-    )
-    print("\n📦 Memory (Entities):")
-    print(json.dumps(step1["memory"], ensure_ascii=False, indent=2))
-    print("\n📋 Claims:")
-    print(json.dumps(step1["claims"], ensure_ascii=False, indent=2))
-
-    # BƯỚC 2: Cập nhật thay thế thông tin cũ (Dự án ngày 15/10 đổi deadline thành 30/10)
-    msg_2 = "Dự án ngày 15/10 đổi deadline thành 30/10 nhé"
-    print(f"\n" + "-" * 75)
-    print(f"[BƯỚC 2] Nhận tin sửa đổi: \"{msg_2}\"")
-    step2 = extractor.extract(
-        query=msg_2,
-        workspace_id="ws_01",
-        source_message_id="msg_002",
-        sender="Project Manager",
-        existing_entities=step1["memory"],
-        existing_claims=step1["claims"],
-    )
-    print("\n📦 Memory (Entities):")
-    print(json.dumps(step2["memory"], ensure_ascii=False, indent=2))
-    print("\n📋 Claims mới (phải có supersedes trỏ về claim cũ):")
-    print(json.dumps(step2["claims"], ensure_ascii=False, indent=2))
-    print("\n⚠️ Claims cũ bị superseded:")
-    print(json.dumps(step2["superseded_claims"], ensure_ascii=False, indent=2))
-
-    # BƯỚC 3: Tin nhắn mơ hồ (Quy tắc 3: uncertain)
-    msg_3 = "Hình như dự án Atlas có thể dời deadline sang 05/11, chưa chắc chắn"
-    print(f"\n" + "-" * 75)
-    print(f"[BƯỚC 3] Nhận tin mơ hồ: \"{msg_3}\"")
-    step3 = extractor.extract(
-        query=msg_3,
-        workspace_id="ws_01",
-        source_message_id="msg_003",
-        sender="Tech Lead",
-        existing_entities=step1["memory"],
-        existing_claims=step2["claims"],
-    )
-    print("\n📋 Claims mới (phải có status='uncertain', không đè claim 'current'):")
-    print(json.dumps(step3["claims"], ensure_ascii=False, indent=2))

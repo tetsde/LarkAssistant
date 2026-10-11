@@ -1,9 +1,7 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
-from models.chat import ChatRequest
+from models import ChatRequest, MemoryRequest
 from services.weknora import WeKnoraService
 from services.jev import jev_service
 from utils.text_filter import text_filter
@@ -107,10 +105,6 @@ async def chat(request: ChatRequest):
         "weknora_response": response_data,
         "message": "Đã tạo câu trả lời tự động." if jev_action == "REPLY_ONLY" else "Đã trích xuất Thực thể & Mệnh đề vào bộ nhớ và tạo câu trả lời khẩn!"
     }
-
-
-class MemoryRequest(BaseModel):
-    text: str
 
 
 @router.post("/memory")
