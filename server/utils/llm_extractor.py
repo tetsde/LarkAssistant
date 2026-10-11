@@ -152,21 +152,31 @@ INPUT TEXT:
 MANDATORY RULES:
 1. "canonical_name": The standardized, official name of the entity.
 2. "entity_type": Must be one of the core domain categories:
-   - "project": A specific project or product (e.g., HiLark, Atlas).
-   - "feature": A specific capability or module of a product/project (e.g., QR Payment, Cart Checkout).
+   - "project": A specific project or product (e.g., HiLark, Atlas, or a distinct unnamed project).
+   - "feature": A specific capability or module of a product/project (e.g., QR Payment, Cart Checkout, API).
    - "team": A department, group, or work unit (e.g., Tech Team, Executive Board).
    - "customer": A client company or business partner (e.g., LarkTech, Client A).
    - "person": A specific individual with a clear name or distinct role (e.g., Tuan PM, Lead Engineer Long).
    - "document": Contracts, specifications, or key operating procedures.
-3. "aliases": Alternative names, acronyms, or nicknames with clear evidence in the text.
+3. "aliases": Alternative names, conversational references, or nicknames with clear evidence in the text.
 4. "description": A concise one-sentence summary of the entity's role or purpose.
 
-⛔ RESTRICTIONS - DO NOT CREATE ENTITIES FOR:
-- Pronouns or generic references: "I", "you", "we", "they", "our side", "someone", "customer" (when used as a generic common noun).
-- Timestamps and dates: "today", "tomorrow", "next year", "Oct 18", "the 30th". Dates are values of Claims (e.g., deadlines), NOT entities!
+🌟 CONTEXTUAL ENTITIES (UNNAMED BUT DISTINCT WORK ITEMS):
+- If the text refers to a project, task, or deliverable that does NOT yet have a formal brand name (e.g., "dự án bữa anh giao", "dự án 20/10", "chỗ API", "hợp đồng mới"), DO NOT IGNORE IT!
+- Create a distinct Contextual Entity:
+  * "canonical_name": A clear descriptive name capturing its context (e.g., "Dự án giao đợt 20/10" or "Dự án API").
+  * "aliases": Include verbatim phrases used in chat (e.g., ["dự án bữa anh giao", "dự án 20/10"]).
+  * "entity_type": Choose the matching type (e.g., "project" or "feature").
+  * "description": Brief context from the message.
 
-⚠️ NEW INSTANCE RULE:
-- When the text refers to "a new customer", "another project", "new contract", create a distinctly named entity (e.g., "New Customer (Q4 Contract)"), NEVER merge it into older generic entities.
+🔄 ENTITY RESOLUTION WITH EXISTING ENTITIES:
+- Look at EXISTING ENTITIES IN WORKSPACE above.
+- If the input text refers to an existing entity (by its canonical_name, an alias, or matching context), RE-USE that entity's canonical_name and update its description/aliases. DO NOT create duplicate entities!
+- When the text refers to "a new customer", "another project", or a distinct separate work item, create a distinctly named entity (e.g., "New Customer (Alpha Project)"), NEVER merge it into older unrelated entities.
+
+⛔ RESTRICTIONS:
+- DO NOT create entities for bare conversational pronouns or particles: "anh", "em", "chúng tôi", "ai đó", "dạ", "alo".
+- Timestamps and dates alone ("today", "tomorrow", "Oct 18") are NOT entities. Dates are values of Claims (e.g. deadlines), linked to the project entity!
 
 Return ONLY a valid JSON Array (max 1-3 core entities):
 [
