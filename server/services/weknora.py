@@ -1,0 +1,102 @@
+import httpx
+from fastapi import HTTPException
+from core.config import settings
+from models.chat import ChatRequest
+
+class WeKnoraService:
+    def __init__(self):
+        self.api_key = settings.WEKNORA_API_KEY
+        self.base_url = settings.BASE_URL
+        self.headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+    async def create_session(self, client: httpx.AsyncClient) -> str:
+        try:
+            response = await client.post(
+                f"{self.base_url}/sessions",
+                headers=self.headers,
+                json={}
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            session_id = data.get("id") or data.get("session_id")
+            if not session_id and "data" in data:
+                session_id = data["data"].get("id")
+
+            if not session_id:
+                raise ValueError(f"Could not find session id in response: {data}")
+                
+            return session_id
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
+
+    async def get_chat_response(self, request: ChatRequest) -> dict:
+        import json
+        if not self.api_key or not self.base_url:
+            raise HTTPException(status_code=500, detail="Missing environment variables (api_weknora or base_url) in .env")
+
+        async with httpx.AsyncClient() as client:
+            # 1. Tạo session
+            session_id = await self.create_session(client)
+            chat_url = f"{self.base_url}/agent-chat/{session_id}"
+            
+            # 2. Gọi Agent Chat và hứng dữ liệu
+            async with httpx.AsyncClient() as stream_client:
+                async with stream_client.stream(
+                    "POST",
+                    chat_url,
+                    headers=self.headers,
+                    json=request.model_dump(), 
+                    timeout=httpx.Timeout(120.0) # Đợi full câu trả lời có thể lâu hơn
+                ) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        raise HTTPException(status_code=response.status_code, detail=error_text.decode('utf-8'))
+                        
+                    # Lọc luồng SSE để lấy dòng final_content cuối cùng
+                    final_answer = ""
+                    async for line in response.aiter_lines():
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip() # Bỏ chữ "data:"
+                            if not data_str:
+                                continue
+                            try:
+                                payload = json.loads(data_str)
+                                # Lấy final_content từ event complete
+                                if payload.get("response_type") == "complete":
+                                    final_answer = payload.get("data", {}).get("final_content", "")
+                                    break
+                            except json.JSONDecodeError:
+                                pass
+                    
+                    if not final_answer:
+                        raise HTTPException(status_code=500, detail="Could not parse final answer from WeKnora SSE stream.")
+                        
+                    return {"session_id": session_id, "answer": final_answer}
+
+    async def save_to_kb(self, text: str, dataset_id: str = None) -> dict:
+        dataset_id = dataset_id or settings.WEKNORA_DATASET_ID
+        if not dataset_id:
+            raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
+            
+        url = f"{self.base_url}/datasets/{dataset_id}/document/create_by_text"
+        payload = {
+            "name": f"Memory_{text[:10]}...",
+            "text": text,
+            "indexing_technique": "high_quality",
+            "process_rule": {
+                "mode": "automatic"
+            }
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=self.headers, json=payload)
+            if response.status_code != 200:
+                # We can ignore or raise
+                raise HTTPException(status_code=response.status_code, detail=f"Failed to save to KB: {response.text}")
+            
+            return response.json()
+
