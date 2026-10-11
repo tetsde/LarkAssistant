@@ -1,18 +1,13 @@
 """
 LLM Extractor Module for HiLark
 ================================
-Tiện ích sử dụng LLM để phân tích và bóc tách một truy vấn/tin nhắn đầu vào thành 2 nhánh:
-  - Nhánh 1: Memory (Thực thể chuẩn, nhận diện thực thể, đồng bộ danh tính)
-  - Nhánh 2: Claim (Mệnh đề thông tin động, kiểm chứng nguồn gốc, audit trail và lịch sử thay đổi)
+Phân tích và bóc tách thông tin từ tin nhắn hội thoại thành 2 nhánh dữ liệu:
+  - Nhánh 1: Entities (Thực thể kinh doanh chuẩn: Project, Person, Team, Customer, Feature, Document)
+  - Nhánh 2: Facts (Mệnh đề sự thật gắn với Entity: deadline, assignee, status, budget, scope...)
 
-Mục tiêu cốt lõi của 2 collections:
-  1. Entities (Memory):
-     ent_001 — Dự án Atlas: Tên chuẩn + aliases + mô tả ngữ cảnh.
-     * Quy tắc: Chỉ tạo entity mới khi không tìm được entity phù hợp. Tên gần giống chưa đủ để merge.
-  2. Claims:
-     Trả lời: "Thông tin gì đã được nói, áp dụng cho entity nào, còn hiệu lực không và lấy từ đâu?"
-     * Quy tắc: Thông tin mới thay thế thông tin cũ -> claim cũ thành superseded, claim mới liên kết bằng supersedes.
-     * Mơ hồ hoặc mâu thuẫn: Lưu trạng thái uncertain hoặc conflicted; không tự chọn một entity/giá trị chỉ vì LLM tự tin.
+Mô hình dữ liệu trực quan:
+  Parent (Entity: id, name, type, aliases, description)
+    └── Children (Facts: id, entity_id, property, value, status, replaces, source)
 """
 
 from __future__ import annotations
@@ -37,13 +32,17 @@ if SERVER_ROOT not in sys.path:
 
 from core.config import settings
 
-
 # ==============================================================================
 # 1. ENUMS & SCHEMAS (IMPORTED FROM MODELS)
 # ==============================================================================
 
 from models.memory import (
     EntityStatus,
+    FactStatus,
+    Entity,
+    Fact,
+    build_entity_tree,
+    # Backward compatibility aliases
     ClaimStatus,
     MemoryEntity,
     Claim,
@@ -54,21 +53,25 @@ from models.memory import (
 # 2. HELPER FUNCTIONS: ID GENERATION & STRING CLEANING
 # ==============================================================================
 
-def generate_stable_entity_id(workspace_id: str, canonical_name: str) -> str:
+def generate_stable_entity_id(workspace_id: str, name: str) -> str:
     """
     Tạo ID ổn định do Python sinh ra (Deterministic ID dựa trên uuid5).
-    Đảm bảo cùng một thực thể trong cùng một workspace sẽ luôn có _id đồng nhất.
+    Đảm bảo cùng một thực thể trong cùng một workspace luôn có id đồng nhất.
     """
-    clean_name = re.sub(r"\s+", " ", canonical_name.strip().lower())
+    clean_name = re.sub(r"\s+", " ", name.strip().lower())
     clean_ws = workspace_id.strip().lower()
     seed = f"{clean_ws}:{clean_name}"
     stable_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, seed)
     return f"ent_{stable_uuid.hex[:12]}"
 
 
-def generate_claim_id() -> str:
-    """Tạo ID cho claim mới (clm_xxxx)."""
-    return f"clm_{uuid.uuid4().hex[:8]}"
+def generate_fact_id() -> str:
+    """Tạo ID cho fact mới (fact_xxxx)."""
+    return f"fact_{uuid.uuid4().hex[:8]}"
+
+
+# Backward compatibility alias
+generate_claim_id = generate_fact_id
 
 
 def clean_json_text(text: str) -> str:
@@ -86,7 +89,7 @@ def safe_parse_json_list(raw_text: str, fallback_type: str = "items") -> List[Di
       - Bóc markdown block ```json ... ```
       - Thử parse JSON trực tiếp (list hoặc dict)
       - Fallback regex quét tìm mảng [...] hoặc đối tượng {...}
-      - Tuyệt đối không ném ngoại lệ làm crash server (Graceful Degradation).
+      - Graceful Degradation: Không crash server nếu output bị lỗi format.
     """
     if not raw_text or not isinstance(raw_text, str):
         return []
@@ -129,18 +132,23 @@ def safe_parse_json_list(raw_text: str, fallback_type: str = "items") -> List[Di
     return []
 
 
-def normalize_predicate(predicate: str) -> str:
-    """Chuẩn hoá predicate về dạng chữ thường, snake_case đơn giản."""
-    p = predicate.strip().lower()
+def normalize_property(property_name: str) -> str:
+    """Chuẩn hoá tên thuộc tính/property về chữ thường snake_case."""
+    p = property_name.strip().lower()
     p = re.sub(r"[^\w\s]", "", p)
     p = re.sub(r"\s+", "_", p)
     return p
 
+
+# Backward compatibility alias
+normalize_predicate = normalize_property
+
+
 # ==============================================================================
-# 3. PROMPT TEMPLATES (NHÁNH 1 & NHÁNH 2)
+# 3. PROMPT TEMPLATES (ENTITIES & FACTS)
 # ==============================================================================
 
-MEMORY_EXTRACTION_PROMPT = """\
+ENTITY_EXTRACTION_PROMPT = """\
 You are an expert in Named Entity Recognition & Entity Resolution.
 Your task is to analyze the input text and extract CORE BUSINESS ENTITIES that hold long-term operational value.
 
@@ -150,8 +158,8 @@ INPUT TEXT:
 {context_existing_entities}
 
 MANDATORY RULES:
-1. "canonical_name": The standardized, official name of the entity.
-2. "entity_type": Must be one of the core domain categories:
+1. "name": The standardized, official name of the entity.
+2. "type": Must be one of the core domain categories:
    - "project": A specific project or product (e.g., HiLark, Atlas, or a distinct unnamed project).
    - "feature": A specific capability or module of a product/project (e.g., QR Payment, Cart Checkout, API).
    - "team": A department, group, or work unit (e.g., Tech Team, Executive Board).
@@ -164,25 +172,27 @@ MANDATORY RULES:
 🌟 CONTEXTUAL ENTITIES (UNNAMED BUT DISTINCT WORK ITEMS):
 - If the text refers to a project, task, or deliverable that does NOT yet have a formal brand name (e.g., "dự án bữa anh giao", "dự án 20/10", "chỗ API", "hợp đồng mới"), DO NOT IGNORE IT!
 - Create a distinct Contextual Entity:
-  * "canonical_name": A clear descriptive name capturing its context (e.g., "Dự án giao đợt 20/10" or "Dự án API").
+  * "name": A clear descriptive name capturing its context (e.g., "Dự án giao đợt 20/10" or "Dự án API").
   * "aliases": Include verbatim phrases used in chat (e.g., ["dự án bữa anh giao", "dự án 20/10"]).
-  * "entity_type": Choose the matching type (e.g., "project" or "feature").
+  * "type": Choose the matching type (e.g., "project" or "feature").
   * "description": Brief context from the message.
 
 🔄 ENTITY RESOLUTION WITH EXISTING ENTITIES:
 - Look at EXISTING ENTITIES IN WORKSPACE above.
-- If the input text refers to an existing entity (by its canonical_name, an alias, or matching context), RE-USE that entity's canonical_name and update its description/aliases. DO NOT create duplicate entities!
+- If the input text refers to an existing entity (by its name, an alias, or matching context), RE-USE that entity's name and update its description/aliases. DO NOT create duplicate entities!
 - When the text refers to "a new customer", "another project", or a distinct separate work item, create a distinctly named entity (e.g., "New Customer (Alpha Project)"), NEVER merge it into older unrelated entities.
 
 ⛔ RESTRICTIONS:
 - DO NOT create entities for bare conversational pronouns or particles: "anh", "em", "chúng tôi", "ai đó", "dạ", "alo".
-- Timestamps and dates alone ("today", "tomorrow", "Oct 18") are NOT entities. Dates are values of Claims (e.g. deadlines), linked to the project entity!
+- Timestamps and dates alone ("today", "tomorrow", "Oct 18") are NOT entities. Dates are values of Facts (e.g. deadlines), linked to the project entity!
+- VIETNAMESE DISAMBIGUATION: The word "Mai" at sentence starts in Vietnamese almost always means "Tomorrow" (temporal marker), NOT a person named Mai, unless preceded by explicit honorifics like "chị Mai" or "bạn Mai".
+- PERSON ASSIGNMENT: In phrases like "giao [X] lead" or "cho [X] phụ trách", [X] is the person being assigned even if written in lowercase (e.g., "giao nguyên lead" -> person name is "Nguyên").
 
 Return ONLY a valid JSON Array (max 1-3 core entities):
 [
   {{
-    "canonical_name": "Atlas",
-    "entity_type": "project",
+    "name": "Atlas",
+    "type": "project",
     "aliases": ["Atlas Project"],
     "description": "Software development project.",
     "attributes": {{}}
@@ -190,9 +200,12 @@ Return ONLY a valid JSON Array (max 1-3 core entities):
 ]
 """
 
+# Alias for backward compatibility
+MEMORY_EXTRACTION_PROMPT = ENTITY_EXTRACTION_PROMPT
 
-CLAIM_EXTRACTION_PROMPT = """\
-You are an expert in Fact & Claim Extraction and Temporal Knowledge Graphs.
+
+FACT_EXTRACTION_PROMPT = """\
+You are an expert in Fact Extraction and Business Knowledge Graphs.
 Your goal is to answer:
 "What fact was stated, about which entity, is it currently valid, and what is the source?"
 
@@ -202,30 +215,30 @@ INPUT TEXT:
 IDENTIFIED ENTITIES:
 {entities_json}
 
-CURRENT CLAIMS IN MEMORY (ACTIVE FACTS):
-{existing_claims_json}
+CURRENT FACTS IN MEMORY (ACTIVE FACTS):
+{existing_facts_json}
 
 SOURCE METADATA:
 - Message ID: {source_message_id}
 - Sender: {sender}
 
 EXTRACTION RULES:
-1. "entity_id": MUST accurately reference the "_id" of an entity from the IDENTIFIED ENTITIES list above.
-2. "predicate": Extract ONLY core business attributes:
+1. "entity_id": MUST accurately reference the "id" of an entity from the IDENTIFIED ENTITIES list above.
+2. "property": Extract ONLY core business attributes:
    - "deadline": Target dates, due dates, completion milestones (e.g., value: "30/10", "next year").
-   - "owner" / "assignee": Responsible person or team (e.g., value: "Tuan PM").
+   - "assignee" / "owner": Responsible person or team (e.g., value: "Tuan PM").
    - "status": Operational status of a task, project, or contract (e.g., value: "signed", "in_progress", "resigned").
    - "scope" / "requirement": Feature request, deliverable, or functional scope.
    - "budget": Monetary cost or allocated funds.
 
 ⛔ RESTRICTIONS - DO NOT EXTRACT CHATTER / CONVERSATIONAL NOISE:
-- FORBIDDEN predicates: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "notify". The system only records persistent business facts, not communication activity logs.
+- FORBIDDEN properties: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "notify". The system only records persistent business facts, not communication activity logs.
 
 🎯 OUTPUT CONTROL & RANKING RULES:
-- Quantity: Extract a MAXIMUM of 1 to 3 concise claims per message.
+- Quantity: Extract a MAXIMUM of 1 to 3 concise facts per message.
 - Priority Ranking: Order the array by descending business importance (most critical fact first).
 - Focus on Milestones: Prioritize deadlines, statuses, owners, scope, and key contractual events.
-- Do NOT fragment facts: A single event (e.g., a deadline change) must generate only ONE claim with predicate="deadline".
+- Do NOT fragment facts: A single event (e.g., a deadline change) must generate only ONE fact with property="deadline".
 
 3. "value": Highly concise value (MAXIMUM 10 WORDS / UNDER 20 TOKENS).
    - Valid examples: "30/10", "signed", "resigned", "Tuan PM", "200M VND".
@@ -236,20 +249,23 @@ EXTRACTION RULES:
    - "conflicted": Direct contradiction across sources.
    - "uncertain": Ambiguous, speculative, or unconfirmed ("maybe", "looks like", "around", "tentative").
 5. "source_snippet": Exact verbatim quotation from the input text as evidence.
-6. "supersedes": If this fact REPLACES an existing claim (same entity_id and same predicate, e.g., changing deadline from 18/10 to 30/10), specify the exact "_id" of the replaced claim (e.g., "clm_001"). If it does not replace any claim, set to null.
+6. "replaces": If this fact REPLACES an existing fact (same entity_id and same property, e.g., changing deadline from 18/10 to 30/10), specify the exact "id" of the replaced fact (e.g., "fact_001"). If it does not replace any fact, set to null.
 
-Return ONLY a valid JSON Array ordered by priority (max 1-3 core claims):
+Return ONLY a valid JSON Array ordered by priority (max 1-3 core facts):
 [
   {{
     "entity_id": "ent_...",
-    "predicate": "deadline",
+    "property": "deadline",
     "value": "30/10",
     "status": "current",
     "source_snippet": "moved from the 18th to the 30th",
-    "supersedes": "clm_000"
+    "replaces": "fact_000"
   }}
 ]
 """
+
+# Alias for backward compatibility
+CLAIM_EXTRACTION_PROMPT = FACT_EXTRACTION_PROMPT
 
 
 # ==============================================================================
@@ -262,7 +278,6 @@ class GeminiClient:
     DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"]
 
     def __init__(self, api_key: Optional[str] = None):
-        # Lưu key nếu có, nếu chưa có thì lúc generate mới kiểm tra để tránh crash lúc import module (Issue 2)
         self.api_key = api_key or getattr(settings, "GEMINI_API_KEY", None) or getattr(settings, "gemini_api", None)
 
     def _ensure_api_key(self) -> str:
@@ -299,32 +314,19 @@ class GeminiClient:
                         data = resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
-                            finish_reason = candidates[0].get("finishReason")
-                            if finish_reason == "SAFETY":
-                                last_error = f"Gemini model {model} đã chặn câu trả lời do bộ lọc an toàn (finishReason: SAFETY)."
-                                continue
                             parts = candidates[0].get("content", {}).get("parts", [])
                             if parts:
                                 return parts[0].get("text", "")
-
-                        # Kiểm tra safety filter ở promptFeedback
-                        prompt_fb = data.get("promptFeedback", {})
-                        if prompt_fb.get("blockReason"):
-                            last_error = f"Gemini prompt bị chặn bởi Safety Filter ({prompt_fb.get('blockReason')})."
-                            continue
-
-                        last_error = f"Gemini model {model} trả về 200 nhưng không có parts text hợp lệ."
-                    elif resp.status_code == 429:
-                        last_error = f"Gemini Rate Limit / Quota Exceeded (HTTP 429) ở model {model}."
-                        continue
-                    elif resp.status_code == 404:
+                    elif resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
                         continue
                     else:
-                        last_error = f"HTTP {resp.status_code}: {resp.text}"
+                        resp.raise_for_status()
                 except Exception as e:
-                    last_error = str(e)
+                    last_error = e
+                    continue
 
-        raise RuntimeError(f"Không thể gọi Gemini API sau khi thử các models. Chi tiết: {last_error}")
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
 
     async def generate_async(self, prompt: str, model_name: Optional[str] = None) -> str:
         """Gọi Gemini API bất đồng bộ (async)."""
@@ -349,61 +351,50 @@ class GeminiClient:
                         data = resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
-                            finish_reason = candidates[0].get("finishReason")
-                            if finish_reason == "SAFETY":
-                                last_error = f"Gemini model {model} đã chặn câu trả lời do bộ lọc an toàn (finishReason: SAFETY)."
-                                continue
                             parts = candidates[0].get("content", {}).get("parts", [])
                             if parts:
                                 return parts[0].get("text", "")
-
-                        prompt_fb = data.get("promptFeedback", {})
-                        if prompt_fb.get("blockReason"):
-                            last_error = f"Gemini prompt bị chặn bởi Safety Filter ({prompt_fb.get('blockReason')})."
-                            continue
-
-                        last_error = f"Gemini model {model} trả về 200 nhưng không có parts text hợp lệ."
-                    elif resp.status_code == 429:
-                        last_error = f"Gemini Rate Limit / Quota Exceeded (HTTP 429) ở model {model}."
-                        continue
-                    elif resp.status_code == 404:
+                    elif resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
                         continue
                     else:
-                        last_error = f"HTTP {resp.status_code}: {resp.text}"
+                        resp.raise_for_status()
                 except Exception as e:
-                    last_error = str(e)
+                    last_error = e
+                    continue
 
-        raise RuntimeError(f"Không thể gọi Gemini API (async). Chi tiết: {last_error}")
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
 
 
 # ==============================================================================
-# 5. ENTITY MATCHING & RESOLUTION (QUY TẮC 1: KHÔNG MERGE TÙY TIỆN)
+# 5. ENTITY MATCHING & RESOLUTION (QUY TẮC: KHÔNG MERGE TÙY TIỆN)
 # ==============================================================================
 
 def find_matching_entity(
     candidate_name: str,
     candidate_aliases: List[str],
-    existing_entities: List[Union[MemoryEntity, Dict[str, Any]]],
+    existing_entities: List[Union[Entity, Dict[str, Any]]],
 ) -> Optional[Dict[str, Any]]:
     """
     Tìm entity phù hợp từ danh sách entities đã có.
-    Quy tắc 1:
-      - Chỉ merge khi trùng chính xác canonical_name hoặc trùng một alias đã được ghi nhận.
+    Quy tắc:
+      - Chỉ merge khi trùng chính xác name hoặc trùng một alias đã được ghi nhận.
       - Tên gần giống nhau (như 'Dự án Alpha' vs 'Dự án Atlas') KHÔNG ĐƯỢC MERGE.
     """
     cand_norm = re.sub(r"\s+", " ", candidate_name.strip().lower())
     cand_alias_norms = {re.sub(r"\s+", " ", a.strip().lower()) for a in candidate_aliases if a.strip()}
 
     for ent in existing_entities:
-        ent_dict = ent.to_dict() if isinstance(ent, MemoryEntity) else ent
-        c_name = re.sub(r"\s+", " ", str(ent_dict.get("canonical_name", "")).strip().lower())
+        ent_dict = ent.to_dict() if isinstance(ent, Entity) else ent
+        e_name = ent_dict.get("name") or ent_dict.get("canonical_name", "")
+        c_name = re.sub(r"\s+", " ", str(e_name).strip().lower())
         e_aliases = {
             re.sub(r"\s+", " ", str(a).strip().lower())
             for a in ent_dict.get("aliases", [])
             if str(a).strip()
         }
 
-        # 1. Trùng canonical_name
+        # 1. Trùng name
         if cand_norm and cand_norm == c_name:
             return ent_dict
 
@@ -411,7 +402,7 @@ def find_matching_entity(
         if cand_norm and cand_norm in e_aliases:
             return ent_dict
 
-        # 3. Một alias của ứng viên trùng với canonical_name của entity đã có
+        # 3. Một alias của ứng viên trùng với name của entity đã có
         if c_name and c_name in cand_alias_norms:
             return ent_dict
 
@@ -423,33 +414,33 @@ def find_matching_entity(
 
 
 # ==============================================================================
-# 6. CORE LOGIC: NHÁNH 1 (MEMORY)
+# 6. CORE LOGIC: NHÁNH 1 (ENTITIES)
 # ==============================================================================
 
-def parse_memory_entities(
+def parse_entities(
     raw_response: str,
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
-    existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
-) -> List[MemoryEntity]:
-    """Parse JSON trả về từ LLM và chuyển đổi thành MemoryEntity."""
-    data = safe_parse_json_list(raw_response, fallback_type="Memory Entities")
+    existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+) -> List[Entity]:
+    """Parse JSON trả về từ LLM và chuyển đổi thành Entity."""
+    data = safe_parse_json_list(raw_response, fallback_type="Entities")
     if not data:
         return []
 
     message_ids = [source_message_id] if source_message_id else []
     existing = existing_entities or []
-    entities: List[MemoryEntity] = []
+    entities: List[Entity] = []
 
     for item in data:
         if not isinstance(item, dict):
             continue
 
-        canonical_name = str(item.get("canonical_name", "")).strip()
-        if not canonical_name:
+        name = str(item.get("name") or item.get("canonical_name", "")).strip()
+        if not name:
             continue
 
-        entity_type = str(item.get("entity_type", "entity")).strip().lower()
+        ent_type = str(item.get("type") or item.get("entity_type", "project")).strip().lower()
         aliases = [str(a).strip() for a in item.get("aliases", []) if str(a).strip()]
         description = str(item.get("description", "")).strip()
         attributes = item.get("attributes", {})
@@ -457,21 +448,22 @@ def parse_memory_entities(
             attributes = {"raw_value": attributes}
 
         # Kiểm tra xem có match với entity đã có không
-        matched = find_matching_entity(canonical_name, aliases, existing)
+        matched = find_matching_entity(name, aliases, existing)
         if matched:
-            # Tái sử dụng ID ổn định đã có
-            entity_id = matched.get("_id") or matched.get("id")
-            # Gộp aliases (không trùng lặp)
+            entity_id = matched.get("id") or matched.get("_id")
             merged_aliases = list(dict.fromkeys(matched.get("aliases", []) + aliases))
             merged_sources = list(dict.fromkeys(matched.get("source_message_ids", []) + message_ids))
             merged_attrs = dict(matched.get("attributes", {}))
             merged_attrs.update(attributes)
 
-            entity = MemoryEntity(
-                _id=entity_id,
+            matched_name = matched.get("name") or matched.get("canonical_name", name)
+            matched_type = matched.get("type") or matched.get("entity_type", ent_type)
+
+            entity = Entity(
+                id=entity_id,
                 workspace_id=matched.get("workspace_id", workspace_id),
-                canonical_name=matched.get("canonical_name", canonical_name),
-                entity_type=matched.get("entity_type", entity_type),
+                name=matched_name,
+                type=matched_type,
                 aliases=merged_aliases,
                 description=description or matched.get("description", ""),
                 attributes=merged_attrs,
@@ -479,13 +471,12 @@ def parse_memory_entities(
                 source_message_ids=merged_sources,
             )
         else:
-            # Tạo entity mới (Quy tắc 1: Chỉ tạo mới khi không tìm được entity phù hợp)
-            stable_id = generate_stable_entity_id(workspace_id=workspace_id, canonical_name=canonical_name)
-            entity = MemoryEntity(
-                _id=stable_id,
+            stable_id = generate_stable_entity_id(workspace_id=workspace_id, name=name)
+            entity = Entity(
+                id=stable_id,
                 workspace_id=workspace_id,
-                canonical_name=canonical_name,
-                entity_type=entity_type,
+                name=name,
+                type=ent_type,
                 aliases=aliases,
                 description=description,
                 attributes=attributes,
@@ -498,35 +489,40 @@ def parse_memory_entities(
     return entities
 
 
-def extract_memory(
+# Backward compatibility alias
+parse_memory_entities = parse_entities
+
+
+def extract_entities(
     query: str,
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
-    existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
+    existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> List[Dict[str, Any]]:
-    """Trích xuất Nhánh 1: Memory (Sync)."""
+    """Trích xuất Nhánh 1: Entities (Sync)."""
     llm_client = client or GeminiClient(api_key=api_key)
 
     context_str = ""
     if existing_entities:
         simple_list = [
             {
-                "_id": e.get("_id") if isinstance(e, dict) else e.id,
-                "canonical_name": e.get("canonical_name") if isinstance(e, dict) else e.canonical_name,
+                "id": e.get("id") or e.get("_id") if isinstance(e, dict) else e.id,
+                "name": e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name,
+                "type": e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type,
                 "aliases": e.get("aliases", []) if isinstance(e, dict) else e.aliases,
             }
             for e in existing_entities
         ]
         context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
-    prompt = MEMORY_EXTRACTION_PROMPT.format(
+    prompt = ENTITY_EXTRACTION_PROMPT.format(
         query=query,
         context_existing_entities=context_str,
     )
     raw_response = llm_client.generate(prompt)
-    entities = parse_memory_entities(
+    entities = parse_entities(
         raw_response=raw_response,
         workspace_id=workspace_id,
         source_message_id=source_message_id,
@@ -535,35 +531,40 @@ def extract_memory(
     return [e.to_dict() for e in entities]
 
 
-async def extract_memory_async(
+# Backward compatibility alias
+extract_memory = extract_entities
+
+
+async def extract_entities_async(
     query: str,
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
-    existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
+    existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> List[Dict[str, Any]]:
-    """Trích xuất Nhánh 1: Memory (Async)."""
+    """Trích xuất Nhánh 1: Entities (Async)."""
     llm_client = client or GeminiClient(api_key=api_key)
 
     context_str = ""
     if existing_entities:
         simple_list = [
             {
-                "_id": e.get("_id") if isinstance(e, dict) else e.id,
-                "canonical_name": e.get("canonical_name") if isinstance(e, dict) else e.canonical_name,
+                "id": e.get("id") or e.get("_id") if isinstance(e, dict) else e.id,
+                "name": e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name,
+                "type": e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type,
                 "aliases": e.get("aliases", []) if isinstance(e, dict) else e.aliases,
             }
             for e in existing_entities
         ]
         context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
-    prompt = MEMORY_EXTRACTION_PROMPT.format(
+    prompt = ENTITY_EXTRACTION_PROMPT.format(
         query=query,
         context_existing_entities=context_str,
     )
     raw_response = await llm_client.generate_async(prompt)
-    entities = parse_memory_entities(
+    entities = parse_entities(
         raw_response=raw_response,
         workspace_id=workspace_id,
         source_message_id=source_message_id,
@@ -572,61 +573,63 @@ async def extract_memory_async(
     return [e.to_dict() for e in entities]
 
 
+# Backward compatibility alias
+extract_memory_async = extract_entities_async
+
+
 # ==============================================================================
-# 7. CORE LOGIC: NHÁNH 2 (CLAIMS)
+# 7. CORE LOGIC: NHÁNH 2 (FACTS)
 # ==============================================================================
 
-def parse_claims(
+def parse_facts(
     raw_response: str,
     resolved_entities: List[Dict[str, Any]],
-    existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
-) -> List[Claim]:
-    """Parse JSON trả về từ LLM và chuyển đổi thành danh sách Claim."""
-    data = safe_parse_json_list(raw_response, fallback_type="Claims")
+) -> List[Fact]:
+    """Parse JSON trả về từ LLM và chuyển đổi thành danh sách Fact."""
+    data = safe_parse_json_list(raw_response, fallback_type="Facts")
     if not data:
         return []
 
     # Map tra cứu entity_id hợp lệ
-    known_entity_ids = {e.get("_id") for e in resolved_entities if e.get("_id")}
+    known_entity_ids = {e.get("id") or e.get("_id") for e in resolved_entities if (e.get("id") or e.get("_id"))}
     # Map name -> entity_id fallback nếu LLM trả về tên thay vì ID
     name_to_id = {}
     for e in resolved_entities:
-        eid = e.get("_id")
+        eid = e.get("id") or e.get("_id")
         if eid:
-            name_to_id[str(e.get("canonical_name", "")).strip().lower()] = eid
+            ename = e.get("name") or e.get("canonical_name", "")
+            name_to_id[str(ename).strip().lower()] = eid
             for a in e.get("aliases", []):
                 name_to_id[str(a).strip().lower()] = eid
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    claims: List[Claim] = []
+    facts: List[Fact] = []
 
     for item in data:
         if not isinstance(item, dict):
             continue
 
         raw_ent_id = str(item.get("entity_id", "")).strip()
-        # Fallback map nếu LLM trả về canonical_name thay vì entity_id
+        # Fallback map nếu LLM trả về name thay vì entity_id
         if raw_ent_id in known_entity_ids:
             entity_id = raw_ent_id
         else:
             entity_id = name_to_id.get(raw_ent_id.lower())
             if not entity_id:
-                # Nếu vẫn không match và chỉ có 1 entity duy nhất vừa được trích xuất
                 if len(resolved_entities) == 1:
-                    entity_id = resolved_entities[0].get("_id")
+                    entity_id = resolved_entities[0].get("id") or resolved_entities[0].get("_id")
                 else:
-                    # Bỏ qua nếu không thể gán vào entity nào có căn cứ
                     continue
 
-        predicate = normalize_predicate(str(item.get("predicate", "info")))
+        prop = normalize_property(str(item.get("property") or item.get("predicate", "info")))
         value = item.get("value")
         if value is None:
             continue
         if isinstance(value, str):
             value = value.strip()
-            # Trần an toàn: giới hạn độ dài value tối đa 15 từ / 120 ký tự
             words = value.split()
             if len(words) > 15:
                 value = " ".join(words[:15]) + "..."
@@ -634,14 +637,14 @@ def parse_claims(
                 value = value[:117] + "..."
 
         # Status validation (current, superseded, conflicted, uncertain)
-        status_str = str(item.get("status", ClaimStatus.CURRENT.value)).strip().lower()
+        status_str = str(item.get("status", FactStatus.CURRENT.value)).strip().lower()
         try:
-            claim_status = ClaimStatus(status_str)
+            fact_status = FactStatus(status_str)
         except ValueError:
             if status_str == "conflict":
-                claim_status = ClaimStatus.CONFLICTED
+                fact_status = FactStatus.CONFLICTED
             else:
-                claim_status = ClaimStatus.CURRENT
+                fact_status = FactStatus.CURRENT
 
         # Source context
         source_snippet = str(item.get("source_snippet", item.get("source", ""))).strip()
@@ -651,242 +654,274 @@ def parse_claims(
             "sender": sender or "User",
         }
 
-        # Supersedes tracking (Quy tắc 2)
-        supersedes_id = item.get("supersedes")
-        if supersedes_id and str(supersedes_id).strip().lower() in ("null", "none", ""):
-            supersedes_id = None
+        # Replaces tracking
+        replaces_id = item.get("replaces") or item.get("supersedes")
+        if replaces_id and str(replaces_id).strip().lower() in ("null", "none", ""):
+            replaces_id = None
         else:
-            supersedes_id = str(supersedes_id).strip() if supersedes_id else None
+            replaces_id = str(replaces_id).strip() if replaces_id else None
 
-        # Tự động phát hiện claim cũ bị thay thế nếu LLM chưa kịp điền trường supersedes
-        if not supersedes_id and claim_status == ClaimStatus.CURRENT and existing_claims:
-            for old_c in existing_claims:
-                old_dict = old_c.to_dict() if isinstance(old_c, Claim) else old_c
+        # Tự động phát hiện fact cũ bị thay thế nếu LLM chưa điền trường replaces
+        if not replaces_id and fact_status == FactStatus.CURRENT and existing_facts:
+            for old_f in existing_facts:
+                old_dict = old_f.to_dict() if isinstance(old_f, Fact) else old_f
+                old_prop = normalize_property(str(old_dict.get("property") or old_dict.get("predicate", "")))
                 if (
                     old_dict.get("entity_id") == entity_id
-                    and normalize_predicate(str(old_dict.get("predicate", ""))) == predicate
-                    and old_dict.get("status") == ClaimStatus.CURRENT.value
+                    and old_prop == prop
+                    and old_dict.get("status") == FactStatus.CURRENT.value
                     and str(old_dict.get("value")) != str(value)
                 ):
-                    supersedes_id = old_dict.get("_id") or old_dict.get("id")
+                    replaces_id = old_dict.get("id") or old_dict.get("_id")
                     break
 
-        new_claim = Claim(
-            _id=generate_claim_id(),
+        new_fact = Fact(
+            id=generate_fact_id(),
             entity_id=entity_id,
-            predicate=predicate,
+            property=prop,
             value=value,
-            status=claim_status,
+            status=fact_status,
             source=source_meta,
-            supersedes=supersedes_id,
+            replaces=replaces_id,
             created_at=now_iso,
             updated_at=now_iso,
         )
-        claims.append(new_claim)
+        facts.append(new_fact)
 
-    # BƯỚC 3: COMPACTNESS & DEDUPLICATION (GỘP & GIỚI HẠN SỐ LƯỢNG)
-    # 1. Khử trùng lặp cùng 1 (entity_id, predicate): giữ claim xuất hiện đầu tiên
-    seen_keys: Dict[tuple, Claim] = {}
-    for c in claims:
-        key = (c.entity_id, c.predicate)
+    # Khử trùng lặp cùng 1 (entity_id, property): giữ fact xuất hiện đầu tiên
+    seen_keys: Dict[tuple, Fact] = {}
+    for f in facts:
+        key = (f.entity_id, f.property)
         if key not in seen_keys:
-            seen_keys[key] = c
-    deduped_claims = list(seen_keys.values())
+            seen_keys[key] = f
+    deduped_facts = list(seen_keys.values())
 
-    # 2. Giới hạn trần an toàn (Safety Cap: tối đa 3 claims theo thứ tự ưu tiên từ LLM)
-    if len(deduped_claims) > 3:
-        deduped_claims = deduped_claims[:3]
+    # Giới hạn an toàn (tối đa 3 facts quan trọng nhất)
+    if len(deduped_facts) > 3:
+        deduped_facts = deduped_facts[:3]
 
-    return deduped_claims
+    return deduped_facts
 
 
-def extract_claims(
+# Backward compatibility alias
+parse_claims = parse_facts
+
+
+def extract_facts(
     query: str,
-    entities: List[Union[MemoryEntity, Dict[str, Any]]],
-    existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+    entities: List[Union[Entity, Dict[str, Any]]],
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> Dict[str, Any]:
     """
-    Trích xuất Nhánh 2: Claims (Sync).
+    Trích xuất Nhánh 2: Facts (Sync).
     
     Returns:
         {
-            "claims": [Claim dict...],              # Các claims mới trích xuất
-            "superseded_claims": [Claim dict...],   # Các claims cũ trong existing_claims vừa bị đánh dấu superseded
+            "facts": [Fact dict...],              # Các facts mới trích xuất
+            "superseded_facts": [Fact dict...],   # Các facts cũ vừa bị đánh dấu superseded
         }
     """
     if not entities:
-        return {"claims": [], "superseded_claims": []}
+        return {
+            "facts": [],
+            "superseded_facts": [],
+            "claims": [],
+            "superseded_claims": [],
+        }
 
     llm_client = client or GeminiClient(api_key=api_key)
 
-    entities_dicts = [e.to_dict() if isinstance(e, MemoryEntity) else e for e in entities]
+    entities_dicts = [e.to_dict() if isinstance(e, Entity) else e for e in entities]
     clean_entities = [
         {
-            "_id": e.get("_id"),
-            "canonical_name": e.get("canonical_name"),
-            "entity_type": e.get("entity_type"),
+            "id": e.get("id") or e.get("_id"),
+            "name": e.get("name") or e.get("canonical_name"),
+            "type": e.get("type") or e.get("entity_type"),
             "aliases": e.get("aliases", []),
             "description": e.get("description", ""),
         }
         for e in entities_dicts
     ]
 
-    # Chỉ đưa các claims đang CURRENT của các entities này vào ngữ cảnh
-    relevant_existing_claims = []
-    if existing_claims:
-        target_ids = {e.get("_id") for e in clean_entities}
-        for c in existing_claims:
-            c_dict = c.to_dict() if isinstance(c, Claim) else c
-            if c_dict.get("entity_id") in target_ids and c_dict.get("status") == ClaimStatus.CURRENT.value:
-                relevant_existing_claims.append({
-                    "_id": c_dict.get("_id") or c_dict.get("id"),
-                    "entity_id": c_dict.get("entity_id"),
-                    "predicate": c_dict.get("predicate"),
-                    "value": c_dict.get("value"),
-                    "status": c_dict.get("status"),
+    # Chỉ đưa các facts đang CURRENT vào context
+    relevant_existing_facts = []
+    if existing_facts:
+        target_ids = {e.get("id") or e.get("_id") for e in clean_entities}
+        for f in existing_facts:
+            f_dict = f.to_dict() if isinstance(f, Fact) else f
+            if f_dict.get("entity_id") in target_ids and f_dict.get("status") == FactStatus.CURRENT.value:
+                relevant_existing_facts.append({
+                    "id": f_dict.get("id") or f_dict.get("_id"),
+                    "entity_id": f_dict.get("entity_id"),
+                    "property": f_dict.get("property") or f_dict.get("predicate"),
+                    "value": f_dict.get("value"),
+                    "status": f_dict.get("status"),
                 })
 
-    prompt = CLAIM_EXTRACTION_PROMPT.format(
+    prompt = FACT_EXTRACTION_PROMPT.format(
         query=query,
         entities_json=json.dumps(clean_entities, ensure_ascii=False, indent=2),
-        existing_claims_json=json.dumps(relevant_existing_claims, ensure_ascii=False, indent=2),
+        existing_facts_json=json.dumps(relevant_existing_facts, ensure_ascii=False, indent=2),
         source_message_id=source_message_id or "unknown_msg",
         sender=sender or "User",
     )
 
     raw_response = llm_client.generate(prompt)
-    new_claims = parse_claims(
+    new_facts = parse_facts(
         raw_response=raw_response,
         resolved_entities=entities_dicts,
-        existing_claims=existing_claims,
+        existing_facts=existing_facts,
         source_message_id=source_message_id,
         sender=sender,
     )
 
-    # Cập nhật trạng thái superseded cho các claim cũ (Quy tắc 2)
-    superseded_claims: List[Dict[str, Any]] = []
+    # Cập nhật trạng thái superseded cho các fact cũ
+    superseded_facts: List[Dict[str, Any]] = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    superseded_target_ids = {c.supersedes for c in new_claims if c.supersedes}
+    superseded_target_ids = {f.replaces for f in new_facts if f.replaces}
 
-    if existing_claims and superseded_target_ids:
-        for old_c in existing_claims:
-            old_dict = old_c if isinstance(old_c, dict) else old_c.to_dict()
-            cid = old_dict.get("_id") or old_dict.get("id")
-            if cid in superseded_target_ids:
-                old_dict["status"] = ClaimStatus.SUPERSEDED.value
+    if existing_facts and superseded_target_ids:
+        for old_f in existing_facts:
+            old_dict = old_f if isinstance(old_f, dict) else old_f.to_dict()
+            fid = old_dict.get("id") or old_dict.get("_id")
+            if fid in superseded_target_ids:
+                old_dict["status"] = FactStatus.SUPERSEDED.value
                 old_dict["updated_at"] = now_iso
-                superseded_claims.append(old_dict)
+                superseded_facts.append(old_dict)
 
+    fact_dicts = [f.to_dict() for f in new_facts]
     return {
-        "claims": [c.to_dict() for c in new_claims],
-        "superseded_claims": superseded_claims,
+        "facts": fact_dicts,
+        "superseded_facts": superseded_facts,
+        # Backward compatibility
+        "claims": fact_dicts,
+        "superseded_claims": superseded_facts,
     }
 
 
-async def extract_claims_async(
+# Backward compatibility alias
+def extract_claims(query, entities, existing_claims=None, **kwargs):
+    return extract_facts(query, entities, existing_facts=existing_claims, **kwargs)
+
+
+async def extract_facts_async(
     query: str,
-    entities: List[Union[MemoryEntity, Dict[str, Any]]],
-    existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+    entities: List[Union[Entity, Dict[str, Any]]],
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> Dict[str, Any]:
-    """Trích xuất Nhánh 2: Claims (Async)."""
+    """Trích xuất Nhánh 2: Facts (Async)."""
     if not entities:
-        return {"claims": [], "superseded_claims": []}
+        return {
+            "facts": [],
+            "superseded_facts": [],
+            "claims": [],
+            "superseded_claims": [],
+        }
 
     llm_client = client or GeminiClient(api_key=api_key)
 
-    entities_dicts = [e.to_dict() if isinstance(e, MemoryEntity) else e for e in entities]
+    entities_dicts = [e.to_dict() if isinstance(e, Entity) else e for e in entities]
     clean_entities = [
         {
-            "_id": e.get("_id"),
-            "canonical_name": e.get("canonical_name"),
-            "entity_type": e.get("entity_type"),
+            "id": e.get("id") or e.get("_id"),
+            "name": e.get("name") or e.get("canonical_name"),
+            "type": e.get("type") or e.get("entity_type"),
             "aliases": e.get("aliases", []),
             "description": e.get("description", ""),
         }
         for e in entities_dicts
     ]
 
-    relevant_existing_claims = []
-    if existing_claims:
-        target_ids = {e.get("_id") for e in clean_entities}
-        for c in existing_claims:
-            c_dict = c.to_dict() if isinstance(c, Claim) else c
-            if c_dict.get("entity_id") in target_ids and c_dict.get("status") == ClaimStatus.CURRENT.value:
-                relevant_existing_claims.append({
-                    "_id": c_dict.get("_id") or c_dict.get("id"),
-                    "entity_id": c_dict.get("entity_id"),
-                    "predicate": c_dict.get("predicate"),
-                    "value": c_dict.get("value"),
-                    "status": c_dict.get("status"),
+    relevant_existing_facts = []
+    if existing_facts:
+        target_ids = {e.get("id") or e.get("_id") for e in clean_entities}
+        for f in existing_facts:
+            f_dict = f.to_dict() if isinstance(f, Fact) else f
+            if f_dict.get("entity_id") in target_ids and f_dict.get("status") == FactStatus.CURRENT.value:
+                relevant_existing_facts.append({
+                    "id": f_dict.get("id") or f_dict.get("_id"),
+                    "entity_id": f_dict.get("entity_id"),
+                    "property": f_dict.get("property") or f_dict.get("predicate"),
+                    "value": f_dict.get("value"),
+                    "status": f_dict.get("status"),
                 })
 
-    prompt = CLAIM_EXTRACTION_PROMPT.format(
+    prompt = FACT_EXTRACTION_PROMPT.format(
         query=query,
         entities_json=json.dumps(clean_entities, ensure_ascii=False, indent=2),
-        existing_claims_json=json.dumps(relevant_existing_claims, ensure_ascii=False, indent=2),
+        existing_facts_json=json.dumps(relevant_existing_facts, ensure_ascii=False, indent=2),
         source_message_id=source_message_id or "unknown_msg",
         sender=sender or "User",
     )
 
     raw_response = await llm_client.generate_async(prompt)
-    new_claims = parse_claims(
+    new_facts = parse_facts(
         raw_response=raw_response,
         resolved_entities=entities_dicts,
-        existing_claims=existing_claims,
+        existing_facts=existing_facts,
         source_message_id=source_message_id,
         sender=sender,
     )
 
-    superseded_claims: List[Dict[str, Any]] = []
+    superseded_facts: List[Dict[str, Any]] = []
     now_iso = datetime.now(timezone.utc).isoformat()
-    superseded_target_ids = {c.supersedes for c in new_claims if c.supersedes}
+    superseded_target_ids = {f.replaces for f in new_facts if f.replaces}
 
-    if existing_claims and superseded_target_ids:
-        for old_c in existing_claims:
-            old_dict = old_c if isinstance(old_c, dict) else old_c.to_dict()
-            cid = old_dict.get("_id") or old_dict.get("id")
-            if cid in superseded_target_ids:
-                old_dict["status"] = ClaimStatus.SUPERSEDED.value
+    if existing_facts and superseded_target_ids:
+        for old_f in existing_facts:
+            old_dict = old_f if isinstance(old_f, dict) else old_f.to_dict()
+            fid = old_dict.get("id") or old_dict.get("_id")
+            if fid in superseded_target_ids:
+                old_dict["status"] = FactStatus.SUPERSEDED.value
                 old_dict["updated_at"] = now_iso
-                superseded_claims.append(old_dict)
+                superseded_facts.append(old_dict)
 
+    fact_dicts = [f.to_dict() for f in new_facts]
     return {
-        "claims": [c.to_dict() for c in new_claims],
-        "superseded_claims": superseded_claims,
+        "facts": fact_dicts,
+        "superseded_facts": superseded_facts,
+        # Backward compatibility
+        "claims": fact_dicts,
+        "superseded_claims": superseded_facts,
     }
 
 
+# Backward compatibility alias
+async def extract_claims_async(query, entities, existing_claims=None, **kwargs):
+    return await extract_facts_async(query, entities, existing_facts=existing_claims, **kwargs)
+
+
 # ==============================================================================
-# 8. LLM EXTRACTOR CLASS (TỔNG HỢP CẢ 2 NHÁNH)
+# 8. LLM EXTRACTOR CLASS
 # ==============================================================================
 
 class LLMExtractor:
     """
-    Bộ bóc tách tổng hợp hoàn chỉnh 2 nhánh:
-      - Nhánh 1: Memory (Thực thể chuẩn, aliases, mô tả)
-      - Nhánh 2: Claims (Mệnh đề thông tin, audit trail, supersedes, trạng thái)
+    Bộ bóc tách tổng hợp hoàn chỉnh:
+      - Nhánh 1: Entities (Thực thể chuẩn, aliases, mô tả)
+      - Nhánh 2: Facts (Mệnh đề thông tin, audit trail, replaces, trạng thái)
     """
 
     def __init__(self, api_key: Optional[str] = None):
         self.client = GeminiClient(api_key=api_key)
 
-    def extract_memory(
+    def extract_entities(
         self,
         query: str,
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
-        existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
+        existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Bóc tách riêng Nhánh 1: Memory."""
-        return extract_memory(
+        """Bóc tách riêng Nhánh 1: Entities."""
+        return extract_entities(
             query=query,
             workspace_id=workspace_id,
             source_message_id=source_message_id,
@@ -894,15 +929,18 @@ class LLMExtractor:
             client=self.client,
         )
 
-    async def extract_memory_async(
+    # Alias
+    extract_memory = extract_entities
+
+    async def extract_entities_async(
         self,
         query: str,
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
-        existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
+        existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Bóc tách riêng Nhánh 1: Memory (Async)."""
-        return await extract_memory_async(
+        """Bóc tách riêng Nhánh 1: Entities (Async)."""
+        return await extract_entities_async(
             query=query,
             workspace_id=workspace_id,
             source_message_id=source_message_id,
@@ -910,41 +948,50 @@ class LLMExtractor:
             client=self.client,
         )
 
-    def extract_claims(
+    # Alias
+    extract_memory_async = extract_entities_async
+
+    def extract_facts(
         self,
         query: str,
-        entities: List[Union[MemoryEntity, Dict[str, Any]]],
-        existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+        entities: List[Union[Entity, Dict[str, Any]]],
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Bóc tách riêng Nhánh 2: Claims."""
-        return extract_claims(
+        """Bóc tách riêng Nhánh 2: Facts."""
+        return extract_facts(
             query=query,
             entities=entities,
-            existing_claims=existing_claims,
+            existing_facts=existing_facts,
             source_message_id=source_message_id,
             sender=sender,
             client=self.client,
         )
 
-    async def extract_claims_async(
+    # Alias
+    extract_claims = extract_facts
+
+    async def extract_facts_async(
         self,
         query: str,
-        entities: List[Union[MemoryEntity, Dict[str, Any]]],
-        existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+        entities: List[Union[Entity, Dict[str, Any]]],
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Bóc tách riêng Nhánh 2: Claims (Async)."""
-        return await extract_claims_async(
+        """Bóc tách riêng Nhánh 2: Facts (Async)."""
+        return await extract_facts_async(
             query=query,
             entities=entities,
-            existing_claims=existing_claims,
+            existing_facts=existing_facts,
             source_message_id=source_message_id,
             sender=sender,
             client=self.client,
         )
+
+    # Alias
+    extract_claims_async = extract_facts_async
 
     def extract(
         self,
@@ -952,45 +999,48 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
-        existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
-        existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+        existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        # Legacy keyword compatibility
+        existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
         """
         Bóc tách toàn diện một câu truy vấn/tin nhắn thành cả 2 nhánh (Sync):
-          - Nhánh 1 (Memory): Trích xuất & chuẩn hoá entities
-          - Nhánh 2 (Claims): Trích xuất claims gắn với entity_id chuẩn, xử lý quan hệ supersedes
-          
-        Returns:
-            {
-                "memory": [...],             # Danh sách entities (MemoryEntity dicts)
-                "claims": [...],             # Danh sách claims mới (Claim dicts)
-                "superseded_claims": [...],  # Danh sách claims cũ vừa bị đánh dấu superseded
-            }
+          - Nhánh 1 (Entities): Trích xuất & chuẩn hoá entities
+          - Nhánh 2 (Facts): Trích xuất facts gắn với entity_id chuẩn, xử lý quan hệ replaces
         """
-        # Bước 1: Trích xuất Nhánh 1 (Memory)
-        memory_result = self.extract_memory(
+        current_existing_facts = existing_facts if existing_facts is not None else existing_claims
+
+        # Bước 1: Trích xuất Nhánh 1 (Entities)
+        entities_result = self.extract_entities(
             query=query,
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
         )
 
-        # Hợp nhất danh sách entities phục vụ liên kết claim
-        all_entities = list(existing_entities or []) + memory_result
+        all_entities = list(existing_entities or []) + entities_result
 
-        # Bước 2: Trích xuất Nhánh 2 (Claims) liên kết với entities
-        claims_result = self.extract_claims(
+        # Bước 2: Trích xuất Nhánh 2 (Facts)
+        facts_result = self.extract_facts(
             query=query,
             entities=all_entities,
-            existing_claims=existing_claims,
+            existing_facts=current_existing_facts,
             source_message_id=source_message_id,
             sender=sender,
         )
 
+        new_facts = facts_result.get("facts", [])
+        superseded_facts = facts_result.get("superseded_facts", [])
+
         return {
-            "memory": memory_result,
-            "claims": claims_result.get("claims", []),
-            "superseded_claims": claims_result.get("superseded_claims", []),
+            "entities": entities_result,
+            "facts": new_facts,
+            "superseded_facts": superseded_facts,
+            # Backward compatibility
+            "memory": entities_result,
+            "claims": new_facts,
+            "superseded_claims": superseded_facts,
         }
 
     async def extract_async(
@@ -999,31 +1049,42 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
-        existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
-        existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+        existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        # Legacy keyword compatibility
+        existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     ) -> Dict[str, Any]:
         """Bóc tách toàn diện cả 2 nhánh (Async)."""
-        memory_result = await self.extract_memory_async(
+        current_existing_facts = existing_facts if existing_facts is not None else existing_claims
+
+        entities_result = await self.extract_entities_async(
             query=query,
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
         )
 
-        all_entities = list(existing_entities or []) + memory_result
+        all_entities = list(existing_entities or []) + entities_result
 
-        claims_result = await self.extract_claims_async(
+        facts_result = await self.extract_facts_async(
             query=query,
             entities=all_entities,
-            existing_claims=existing_claims,
+            existing_facts=current_existing_facts,
             source_message_id=source_message_id,
             sender=sender,
         )
 
+        new_facts = facts_result.get("facts", [])
+        superseded_facts = facts_result.get("superseded_facts", [])
+
         return {
-            "memory": memory_result,
-            "claims": claims_result.get("claims", []),
-            "superseded_claims": claims_result.get("superseded_claims", []),
+            "entities": entities_result,
+            "facts": new_facts,
+            "superseded_facts": superseded_facts,
+            # Backward compatibility
+            "memory": entities_result,
+            "claims": new_facts,
+            "superseded_claims": superseded_facts,
         }
 
 
@@ -1036,8 +1097,9 @@ def extract(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
-    existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
-    existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+    existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+    existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Hàm tiện ích cấp module: bóc tách toàn diện 2 nhánh (Sync)."""
@@ -1048,6 +1110,7 @@ def extract(
         source_message_id=source_message_id,
         sender=sender,
         existing_entities=existing_entities,
+        existing_facts=existing_facts,
         existing_claims=existing_claims,
     )
 
@@ -1057,8 +1120,9 @@ async def extract_async(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
-    existing_entities: Optional[List[Union[MemoryEntity, Dict[str, Any]]]] = None,
-    existing_claims: Optional[List[Union[Claim, Dict[str, Any]]]] = None,
+    existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+    existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Hàm tiện ích cấp module: bóc tách toàn diện 2 nhánh (Async)."""
@@ -1069,83 +1133,110 @@ async def extract_async(
         source_message_id=source_message_id,
         sender=sender,
         existing_entities=existing_entities,
+        existing_facts=existing_facts,
         existing_claims=existing_claims,
     )
 
 
 # ==============================================================================
-# 9. STORAGE HELPERS (PERSISTENCE CHO MEMORY & CLAIMS)
+# 9. STORAGE HELPERS (PERSISTENCE)
 # ==============================================================================
 
 DATA_DIR = os.path.join(CURRENT_DIR, "data")
-MEMORY_STORE_PATH = os.path.join(DATA_DIR, "memory_store.json")
-CLAIM_STORE_PATH = os.path.join(DATA_DIR, "claim_store.json")
+ENTITY_STORE_PATH = os.path.join(DATA_DIR, "entity_store.json")
+FACT_STORE_PATH = os.path.join(DATA_DIR, "fact_store.json")
+
+# Compatibility paths
+MEMORY_STORE_PATH = ENTITY_STORE_PATH
+CLAIM_STORE_PATH = FACT_STORE_PATH
 
 
 def load_stored_entities() -> List[Dict[str, Any]]:
-    """Tải toàn bộ danh sách entities từ memory_store.json."""
-    if not os.path.exists(MEMORY_STORE_PATH):
+    """Tải danh sách entities từ entity_store.json (hoặc fallback memory_store.json)."""
+    target_path = ENTITY_STORE_PATH if os.path.exists(ENTITY_STORE_PATH) else os.path.join(DATA_DIR, "memory_store.json")
+    if not os.path.exists(target_path):
         return []
     try:
-        with open(MEMORY_STORE_PATH, "r", encoding="utf-8") as f:
+        with open(target_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
-def load_stored_claims() -> List[Dict[str, Any]]:
-    """Tải toàn bộ danh sách claims từ claim_store.json."""
-    if not os.path.exists(CLAIM_STORE_PATH):
+def load_stored_facts() -> List[Dict[str, Any]]:
+    """Tải danh sách facts từ fact_store.json (hoặc fallback claim_store.json)."""
+    target_path = FACT_STORE_PATH if os.path.exists(FACT_STORE_PATH) else os.path.join(DATA_DIR, "claim_store.json")
+    if not os.path.exists(target_path):
         return []
     try:
-        with open(CLAIM_STORE_PATH, "r", encoding="utf-8") as f:
+        with open(target_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
+# Backward compatibility
+load_stored_claims = load_stored_facts
 
 
 def save_stored_entities(entities: List[Dict[str, Any]]) -> None:
-    """Lưu danh sách entities vào memory_store.json."""
+    """Lưu danh sách entities vào entity_store.json."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(MEMORY_STORE_PATH, "w", encoding="utf-8") as f:
+    with open(ENTITY_STORE_PATH, "w", encoding="utf-8") as f:
         json.dump(entities, f, ensure_ascii=False, indent=2)
 
 
-def save_stored_claims(claims: List[Dict[str, Any]]) -> None:
-    """Lưu danh sách claims vào claim_store.json."""
+def save_stored_facts(facts: List[Dict[str, Any]]) -> None:
+    """Lưu danh sách facts vào fact_store.json."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CLAIM_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(claims, f, ensure_ascii=False, indent=2)
+    with open(FACT_STORE_PATH, "w", encoding="utf-8") as f:
+        json.dump(facts, f, ensure_ascii=False, indent=2)
+
+
+# Backward compatibility
+save_stored_claims = save_stored_facts
 
 
 def clear_stores() -> None:
-    """Xóa sạch bộ nhớ lưu trữ entities và claims."""
+    """Xóa sạch bộ nhớ lưu trữ entities và facts."""
     save_stored_entities([])
-    save_stored_claims([])
+    save_stored_facts([])
+    # Cũng xóa các file cũ nếu có
+    old_mem = os.path.join(DATA_DIR, "memory_store.json")
+    old_claim = os.path.join(DATA_DIR, "claim_store.json")
+    if os.path.exists(old_mem):
+        try:
+            os.remove(old_mem)
+        except Exception:
+            pass
+    if os.path.exists(old_claim):
+        try:
+            os.remove(old_claim)
+        except Exception:
+            pass
 
 
 def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Cập nhật kết quả trích xuất mới vào kho dữ liệu lưu trữ (NoSQL JSON Store):
-      - Upsert entities mới vào memory_store.json (nếu trùng _id thì merge/cập nhật)
-      - Đánh dấu superseded cho claims cũ trong claim_store.json
-      - Thêm claims mới vào claim_store.json
+    Cập nhật kết quả trích xuất mới vào kho dữ liệu lưu trữ:
+      - Upsert entities mới vào entity_store.json
+      - Đánh dấu superseded cho facts cũ trong fact_store.json
+      - Thêm facts mới vào fact_store.json
     """
     stored_entities = load_stored_entities()
-    stored_claims = load_stored_claims()
+    stored_facts = load_stored_facts()
 
-    new_entities = extraction_result.get("memory", [])
-    new_claims = extraction_result.get("claims", [])
-    superseded_claims = extraction_result.get("superseded_claims", [])
+    new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
+    new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
+    superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
 
     # 1. Upsert entities
     for ent in new_entities:
-        e_id = ent.get("_id") or ent.get("id")
-        idx = next((i for i, e in enumerate(stored_entities) if (e.get("_id") or e.get("id")) == e_id), None)
+        e_id = ent.get("id") or ent.get("_id")
+        idx = next((i for i, e in enumerate(stored_entities) if (e.get("id") or e.get("_id")) == e_id), None)
         if idx is not None:
-            # Gộp aliases và attributes nếu đã có
             existing_ent = stored_entities[idx]
             existing_aliases = existing_ent.get("aliases", [])
             new_aliases = ent.get("aliases", [])
@@ -1154,25 +1245,30 @@ def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, An
         else:
             stored_entities.append(ent)
 
-    # 2. Cập nhật superseded claims
-    superseded_ids = {c.get("_id") or c.get("id") for c in superseded_claims if (c.get("_id") or c.get("id"))}
+    # 2. Cập nhật superseded facts
+    superseded_ids = {f.get("id") or f.get("_id") for f in superseded_facts if (f.get("id") or f.get("_id"))}
     now_iso = datetime.now(timezone.utc).isoformat()
-    for c in stored_claims:
-        cid = c.get("_id") or c.get("id")
-        if cid in superseded_ids:
-            c["status"] = ClaimStatus.SUPERSEDED.value
-            c["updated_at"] = now_iso
+    for f in stored_facts:
+        fid = f.get("id") or f.get("_id")
+        if fid in superseded_ids:
+            f["status"] = FactStatus.SUPERSEDED.value
+            f["updated_at"] = now_iso
 
-    # 3. Thêm claims mới vào store
-    stored_claims.extend(new_claims)
+    # 3. Thêm facts mới vào store
+    stored_facts.extend(new_facts)
 
     save_stored_entities(stored_entities)
-    save_stored_claims(stored_claims)
+    save_stored_facts(stored_facts)
 
     return {
-        "memory": new_entities,
-        "claims": new_claims,
-        "superseded_claims": superseded_claims,
+        "entities": new_entities,
+        "facts": new_facts,
+        "superseded_facts": superseded_facts,
         "total_stored_entities": len(stored_entities),
-        "total_stored_claims": len(stored_claims),
+        "total_stored_facts": len(stored_facts),
+        # Backward compatibility
+        "memory": new_entities,
+        "claims": new_facts,
+        "superseded_claims": superseded_facts,
+        "total_stored_claims": len(stored_facts),
     }

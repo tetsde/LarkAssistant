@@ -26,6 +26,7 @@ if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
 from utils.llm_extractor import extract
+from models.memory import build_hierarchical_memory
 
 # ANSI Color codes cho terminal
 C_RESET = "\033[0m"
@@ -44,7 +45,7 @@ OUTPUT_JSON_PATH = os.path.join(SERVER_ROOT, "tests", "interactive_session_outpu
 def print_banner():
     print(f"\n{C_CYAN}{C_BOLD}" + "=" * 76)
     print("      🚀 HILARk LLM EXTRACTOR - INTERACTIVE MULTI-MESSAGE TEST")
-    print("   Nhận tin nhắn tuần tự -> Bóc tách Thực thể (Memory) & Mệnh đề (Claim)")
+    print("   Nhận tin nhắn tuần tự -> Bóc tách Thực thể (Entities) & Facts (Parent-Child)")
     print("=" * 76 + C_RESET)
     print(f"{C_DIM}Lệnh hỗ trợ: Gõ 'clear' để làm mới bộ nhớ | Gõ 'exit' hoặc 'quit' để thoát.{C_RESET}\n")
 
@@ -53,25 +54,25 @@ def display_turn_result(turn_num: int, query: str, memory_list: list, new_claims
     print(f"\n{C_BOLD}{C_BLUE}--- [KẾT QUẢ TIN NHẮN #{turn_num}] ---{C_RESET}")
     print(f"{C_DIM}Nội dung: \"{query}\"{C_RESET}\n")
 
-    # 1. Hiển thị Memory (Entities)
-    print(f"{C_PURPLE}{C_BOLD}📦 NHÁNH 1: THỰC THỂ (MEMORY ENTITIES) - {len(memory_list)} thực thể:{C_RESET}")
+    # 1. Hiển thị Entities
+    print(f"{C_PURPLE}{C_BOLD}📦 THỰC THỂ (ENTITIES) - {len(memory_list)} thực thể:{C_RESET}")
     if not memory_list:
         print(f"   {C_DIM}(Không có thực thể mới){C_RESET}")
     else:
         for idx, m in enumerate(memory_list, 1):
+            name = m.get("canonical_name") or m.get("name", "Unknown")
+            etype = m.get("entity_type") or m.get("type", "UNKNOWN")
             aliases_str = ", ".join(m.get("aliases", [])) if m.get("aliases") else "(Không có)"
-            print(f"   {C_CYAN}{idx}. [{m.get('entity_type', 'UNKNOWN').upper()}]{C_RESET} {C_BOLD}{m.get('canonical_name')}{C_RESET}")
-            print(f"      • ID:      {C_DIM}{m.get('_id')}{C_RESET}")
+            print(f"   {C_CYAN}{idx}. [{etype.upper()}]{C_RESET} {C_BOLD}{name}{C_RESET}")
+            print(f"      • ID:      {C_DIM}{m.get('_id') or m.get('id')}{C_RESET}")
             print(f"      • Aliases: {C_YELLOW}{aliases_str}{C_RESET}")
             if m.get("description"):
                 print(f"      • Mô tả:   {m.get('description')}")
-            if m.get("attributes"):
-                print(f"      • Thuộc tính: {m.get('attributes')}")
 
-    # 2. Hiển thị Claims mới
-    print(f"\n{C_CYAN}{C_BOLD}📋 NHÁNH 2: MỆNH ĐỀ MỚI TRÍCH XUẤT (CLAIMS) - {len(new_claims)} claim(s):{C_RESET}")
+    # 2. Hiển thị Facts (Claims)
+    print(f"\n{C_CYAN}{C_BOLD}📋 FACTS (THÔNG TIN MỚI) - {len(new_claims)} fact(s):{C_RESET}")
     if not new_claims:
-        print(f"   {C_DIM}(Không có claim nào được trích xuất){C_RESET}")
+        print(f"   {C_DIM}(Không có fact nào được trích xuất){C_RESET}")
     else:
         for idx, c in enumerate(new_claims, 1):
             status = c.get("status", "current")
@@ -84,47 +85,95 @@ def display_turn_result(turn_num: int, query: str, memory_list: list, new_claims
             else:
                 st_color = C_DIM
 
-            conf = c.get("confidence")
-            conf_str = f" (độ tin cậy: {conf:.2f})" if conf is not None else ""
-            print(f"   {idx}. {st_color}[{status.upper()}]{C_RESET} {C_BOLD}{c.get('predicate')}{C_RESET} = {C_GREEN}\"{c.get('value')}\"{C_RESET}{conf_str}")
-            print(f"      • Claim ID:  {C_DIM}{c.get('_id')}{C_RESET}  |  Entity ID: {C_PURPLE}{c.get('entity_id')}{C_RESET}")
+            prop = c.get("predicate") or c.get("property", "info")
+            val = c.get("value")
+            replaces_id = c.get("supersedes") or c.get("replaces")
+            print(f"   {idx}. {st_color}[{status.upper()}]{C_RESET} {C_BOLD}{prop}{C_RESET} = {C_GREEN}\"{val}\"{C_RESET}")
+            print(f"      • Fact ID:   {C_DIM}{c.get('_id') or c.get('id')}{C_RESET}  |  Entity ID: {C_PURPLE}{c.get('entity_id')}{C_RESET}")
             
-            # Highlight nếu thay thế claim cũ
-            if c.get("supersedes"):
-                print(f"      • {C_YELLOW}🔄 THAY THẾ CHO CLAIM CŨ: {c.get('supersedes')}{C_RESET}")
+            # Highlight nếu thay thế fact cũ
+            if replaces_id:
+                print(f"      • {C_YELLOW}🔄 REPLACES (Thay thế cho fact cũ): {replaces_id}{C_RESET}")
 
-    # 3. Hiển thị Claim cũ bị Superseded (nếu có)
+    # 3. Hiển thị Fact cũ bị Replaced / Superseded
     if superseded_claims:
-        print(f"\n{C_RED}{C_BOLD}⚠️ CÁC CLAIM CŨ VỪA BỊ CHUYỂN THÀNH [SUPERSEDED] ({len(superseded_claims)} claim):{C_RESET}")
+        print(f"\n{C_RED}{C_BOLD}⚠️ CÁC FACTS CŨ VỪA BỊ THAY THẾ [SUPERSEDED] ({len(superseded_claims)} fact):{C_RESET}")
         for old in superseded_claims:
-            print(f"   • {C_RED}[SUPERSEDED]{C_RESET} ID: {C_DIM}{old.get('_id')}{C_RESET} | {old.get('predicate')} = \"{old.get('value')}\"")
+            prop = old.get("predicate") or old.get("property", "info")
+            print(f"   • {C_RED}[SUPERSEDED]{C_RESET} ID: {C_DIM}{old.get('_id') or old.get('id')}{C_RESET} | {prop} = \"{old.get('value')}\"")
 
     print(f"\n{C_DIM}" + "-" * 76 + C_RESET)
 
 
 def display_session_summary(session_entities: list, session_claims: list):
+    hierarchical = build_hierarchical_memory(session_entities, session_claims)
     current_claims = [c for c in session_claims if c.get("status") == "current"]
     superseded_claims = [c for c in session_claims if c.get("status") == "superseded"]
-    uncertain_claims = [c for c in session_claims if c.get("status") == "uncertain"]
-    conflicted_claims = [c for c in session_claims if c.get("status") == "conflicted"]
 
-    print(f"{C_BOLD}📊 TỔNG THỂ BỘ NHỚ HIỆN TẠI TRONG PHIÊN:{C_RESET}")
-    print(f"   • Tổng số thực thể (Memory): {C_BOLD}{len(session_entities)}{C_RESET}")
-    print(f"   • Tổng số claims: {C_BOLD}{len(session_claims)}{C_RESET} "
-          f"({C_GREEN}Current: {len(current_claims)}{C_RESET} | "
-          f"{C_RED}Superseded: {len(superseded_claims)}{C_RESET} | "
-          f"{C_YELLOW}Uncertain: {len(uncertain_claims)}{C_RESET} | "
-          f"{C_RED}Conflicted: {len(conflicted_claims)}{C_RESET})")
-    print(f"{C_DIM}Đã lưu bản sao trạng thái vào: {OUTPUT_JSON_PATH}{C_RESET}\n")
+    print(f"{C_BOLD}📊 BỘ NHỚ PHÂN CẤP HIỆN TẠI (PARENT - CHILD):{C_RESET}")
+    print(f"   • Tổng số Entities: {C_BOLD}{len(hierarchical)}{C_RESET}")
+    for ent in hierarchical:
+        n_active = len(ent.get("active_facts", []))
+        n_hist = len(ent.get("history_facts", []))
+        print(f"     🔹 {C_CYAN}[{ent.get('type').upper()}]{C_RESET} {C_BOLD}{ent.get('name')}{C_RESET} "
+              f"({C_GREEN}{n_active} active facts{C_RESET}" + 
+              (f", {C_RED}{n_hist} history facts{C_RESET}" if n_hist else "") + ")")
+        for f in ent.get("active_facts", []):
+            print(f"        • {C_BOLD}{f.get('property')}{C_RESET}: {C_GREEN}\"{f.get('value')}\"{C_RESET}")
+    print(f"{C_DIM}Đã lưu bộ nhớ phân cấp Parent-Child vào: {OUTPUT_JSON_PATH}{C_RESET}\n")
 
 
 def save_session_to_json(history: list, session_entities: list, session_claims: list):
+    """Lưu toàn bộ phiên theo cấu trúc phân cấp Parent-Child trực quan."""
+    hierarchical_entities = build_hierarchical_memory(session_entities, session_claims)
+
+    clean_history = []
+    for step_item in history:
+        clean_step = {
+            "step": step_item.get("step"),
+            "message": step_item.get("message"),
+            "timestamp": step_item.get("timestamp"),
+            "new_entities": [
+                {
+                    "id": e.get("_id") or e.get("id"),
+                    "name": e.get("canonical_name") or e.get("name"),
+                    "type": e.get("entity_type") or e.get("type"),
+                    "aliases": e.get("aliases", []),
+                    "description": e.get("description", ""),
+                }
+                for e in step_item.get("extracted_memory", [])
+            ],
+            "new_facts": [
+                {
+                    "id": c.get("_id") or c.get("id"),
+                    "entity_id": c.get("entity_id"),
+                    "property": c.get("predicate") or c.get("property"),
+                    "value": c.get("value"),
+                    "status": c.get("status"),
+                    "replaces": c.get("supersedes") or c.get("replaces"),
+                    "source": c.get("source", {}).get("snippet") if isinstance(c.get("source"), dict) else c.get("source"),
+                }
+                for c in step_item.get("extracted_claims", [])
+            ],
+            "replaced_facts": [
+                {
+                    "id": s.get("_id") or s.get("id"),
+                    "entity_id": s.get("entity_id"),
+                    "property": s.get("predicate") or s.get("property"),
+                    "value": s.get("value"),
+                    "status": "superseded",
+                }
+                for s in step_item.get("superseded_claims", [])
+            ]
+        }
+        clean_history.append(clean_step)
+
     payload = {
         "updated_at": datetime.now().isoformat(),
         "total_messages": len(history),
-        "history": history,
-        "current_memory_entities": session_entities,
-        "current_claims": session_claims,
+        "total_entities": len(hierarchical_entities),
+        "entities": hierarchical_entities,
+        "history": clean_history,
     }
     with open(OUTPUT_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
