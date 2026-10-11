@@ -63,18 +63,20 @@ async def chat(request: ChatRequest):
             "total_stored_claims": saved.get("total_stored_claims", 0),
         }
 
-    # TH2: MEMORY_ONLY - Chỉ ghi nhớ tri thức vào Memory & Claims (không trả lời)
-    if jev_action == "MEMORY_ONLY":
+    # Bước 3: Nếu JEV yêu cầu lưu bộ nhớ (MEMORY_ONLY hoặc MEMORY_AND_REPLY) -> Chạy Utils Extractor ĐẦU TIÊN
+    extraction_data = None
+    if jev_action in ("MEMORY_ONLY", "MEMORY_AND_REPLY"):
         extraction_data = await process_memory_extraction(
             query_text=request.query,
             sender=request.channel or "User",
         )
-
         try:
             await weknora_service.save_to_kb(request.query)
         except Exception as e:
             print(f"Lỗi khi lưu vào WeKnora KB: {e}")
 
+    # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
+    if jev_action == "MEMORY_ONLY":
         return {
             "status": "memorized",
             "jev_action": jev_action,
@@ -85,17 +87,6 @@ async def chat(request: ChatRequest):
 
     # TH3: REPLY_ONLY hoặc MEMORY_AND_REPLY - Cần gọi WeKnora tạo câu trả lời
     response_data = await weknora_service.get_chat_response(request)
-
-    extraction_data = None
-    if jev_action == "MEMORY_AND_REPLY":
-        extraction_data = await process_memory_extraction(
-            query_text=request.query,
-            sender=request.channel or "User",
-        )
-        try:
-            await weknora_service.save_to_kb(request.query)
-        except Exception as e:
-            print(f"Lỗi khi lưu vào WeKnora KB: {e}")
 
     return {
         "status": "auto_replied" if jev_action == "REPLY_ONLY" else "escalated_and_memorized",

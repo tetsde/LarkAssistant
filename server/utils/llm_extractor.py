@@ -141,40 +141,40 @@ def normalize_predicate(predicate: str) -> str:
 # ==============================================================================
 
 MEMORY_EXTRACTION_PROMPT = """\
-Bạn là chuyên gia phân tích thực thể (Named Entity Recognition & Entity Resolution).
-Nhiệm vụ của bạn là đọc đoạn văn bản/truy vấn đầu vào và trích xuất CÁC THỰC THỂ CỐT LÕI (core entities) có giá trị nghiệp vụ dài hạn.
+You are an expert in Named Entity Recognition & Entity Resolution.
+Your task is to analyze the input text and extract CORE BUSINESS ENTITIES that hold long-term operational value.
 
-VĂN BẢN ĐẦU VÀO:
+INPUT TEXT:
 \"\"\"{query}\"\"\"
 
 {context_existing_entities}
 
-QUY TẮC BẮT BUỘC (TUÂN THỦ NGHIÊM NGẶT ĐỂ TRÁNH DỮ LIỆU RÁC):
-1. "canonical_name": Tên chuẩn xác, ngắn gọn của thực thể.
-2. "entity_type": Chỉ chọn 1 trong các nhóm nghiệp vụ chính:
-   - "project": Dự án, sản phẩm (HiLark, Atlas...)
-   - "feature": Tính năng cụ thể thuộc sản phẩm/dự án (Tính năng xóa giỏ hàng, Thanh toán QR...)
-   - "team": Phòng ban, nhóm làm việc cụ thể (Tech Team, Ban Giám đốc...)
-   - "customer": Doanh nghiệp khách hàng, đối tác (LarkTech, Khách hàng A...)
-   - "person": Nhân sự cụ thể có tên hoặc vai trò rõ ràng (Tuấn PM, Anh Long Techlead...)
-   - "document": Hợp đồng, tài liệu, quy trình quan trọng.
-3. "aliases": Các tên gọi khác, viết tắt có bằng chứng rõ ràng trong văn bản.
-4. "description": Tóm tắt 1 câu ngắn gọn về vai trò/vị trí của thực thể.
+MANDATORY RULES:
+1. "canonical_name": The standardized, official name of the entity.
+2. "entity_type": Must be one of the core domain categories:
+   - "project": A specific project or product (e.g., HiLark, Atlas).
+   - "feature": A specific capability or module of a product/project (e.g., QR Payment, Cart Checkout).
+   - "team": A department, group, or work unit (e.g., Tech Team, Executive Board).
+   - "customer": A client company or business partner (e.g., LarkTech, Client A).
+   - "person": A specific individual with a clear name or distinct role (e.g., Tuan PM, Lead Engineer Long).
+   - "document": Contracts, specifications, or key operating procedures.
+3. "aliases": Alternative names, acronyms, or nicknames with clear evidence in the text.
+4. "description": A concise one-sentence summary of the entity's role or purpose.
 
-⛔ BLACKLIST - TUYỆT ĐỐI KHÔNG TẠO ENTITY CHO CÁC TRƯỜNG HỢP SAU:
-- CẤM TẠO ENTITY TỪ ĐẠI TỪ NHÂN XƯNG: "anh", "em", "các bạn", "bên mình", "tôi", "người ta", "khách" (nếu chỉ là đại từ chung). Chúng không mang danh tính tri thức!
-- CẤM TẠO ENTITY TỪ MỐC THỜI GIAN: "ngày 18", "ngày 30", "năm sau", "hôm nay". Mốc thời gian là Giá trị (Value) của Deadline, KHÔNG PHẢI là Entity!
+⛔ RESTRICTIONS - DO NOT CREATE ENTITIES FOR:
+- Pronouns or generic references: "I", "you", "we", "they", "our side", "someone", "customer" (when used as a generic common noun).
+- Timestamps and dates: "today", "tomorrow", "next year", "Oct 18", "the 30th". Dates are values of Claims (e.g., deadlines), NOT entities!
 
-⚠️ QUY TẮC ĐỐI TƯỢNG MỚI (NEW INSTANCE):
-- Khi văn bản nói: "một khách mới", "khách khác", "dự án mới", "hợp đồng mới" -> BẮT BUỘC tạo thực thể mới với tên rõ ràng (ví dụ: "Khách hàng mới (Ký hợp đồng năm sau)"), TUYỆT ĐỐI KHÔNG merge vào các thực thể danh từ chung cũ như "Khách hàng".
+⚠️ NEW INSTANCE RULE:
+- When the text refers to "a new customer", "another project", "new contract", create a distinctly named entity (e.g., "New Customer (Q4 Contract)"), NEVER merge it into older generic entities.
 
-Chỉ trả về JSON Array hợp lệ (tối đa 1-3 thực thể cốt lõi nhất):
+Return ONLY a valid JSON Array (max 1-3 core entities):
 [
   {{
     "canonical_name": "Atlas",
     "entity_type": "project",
-    "aliases": ["Dự án Atlas"],
-    "description": "Dự án phát triển phần mềm.",
+    "aliases": ["Atlas Project"],
+    "description": "Software development project.",
     "attributes": {{}}
   }}
 ]
@@ -182,60 +182,60 @@ Chỉ trả về JSON Array hợp lệ (tối đa 1-3 thực thể cốt lõi nh
 
 
 CLAIM_EXTRACTION_PROMPT = """\
-Bạn là chuyên gia thẩm định và trích xuất mệnh đề thông tin (Fact & Claim Extraction).
-Mục tiêu của bạn là trả lời:
-"Thông tin gì đã được nói, áp dụng cho entity nào, còn hiệu lực không và lấy từ đâu?"
+You are an expert in Fact & Claim Extraction and Temporal Knowledge Graphs.
+Your goal is to answer:
+"What fact was stated, about which entity, is it currently valid, and what is the source?"
 
-VĂN BẢN ĐẦU VÀO:
+INPUT TEXT:
 \"\"\"{query}\"\"\"
 
-DANH SÁCH THỰC THỂ ĐÃ XÁC ĐỊNH (ENTITIES):
+IDENTIFIED ENTITIES:
 {entities_json}
 
-DANH SÁCH CÁC CLAIMS HIỆN CÓ ĐANG CÓ HIỆU LỰC (CURRENT CLAIMS TRONG BỘ NHỚ):
+CURRENT CLAIMS IN MEMORY (ACTIVE FACTS):
 {existing_claims_json}
 
-THÔNG TIN NGUỒN:
+SOURCE METADATA:
 - Message ID: {source_message_id}
 - Sender: {sender}
 
-QUY TẮC TRÍCH XUẤT CLAIMS (BẮT BUỘC TUÂN THỦ NGHIÊM NGẶT):
-1. "entity_id": BẮT BUỘC trỏ chính xác đến trường "_id" của một entity trong DANH SÁCH THỰC THỂ ở trên.
-2. "predicate": CHỈ TRÍCH XUẤT CÁC THUỘC TÍNH NGHIỆP VỤ CỐT LÕI (CORE BUSINESS FACTS):
-   - "deadline": Hạn chót, ngày giao hàng, thời điểm hoàn thành (ví dụ value: "30/10", "năm sau").
-   - "owner" / "assignee": Người/nhóm chịu trách nhiệm (ví dụ value: "Tuấn PM").
-   - "status": Trạng thái công việc/dự án/hợp đồng (ví dụ value: "signed", "in_progress", "resigned").
-   - "scope" / "requirement": Yêu cầu tính năng hoặc phạm vi công việc.
-   - "budget": Ngân sách, chi phí.
+EXTRACTION RULES:
+1. "entity_id": MUST accurately reference the "_id" of an entity from the IDENTIFIED ENTITIES list above.
+2. "predicate": Extract ONLY core business attributes:
+   - "deadline": Target dates, due dates, completion milestones (e.g., value: "30/10", "next year").
+   - "owner" / "assignee": Responsible person or team (e.g., value: "Tuan PM").
+   - "status": Operational status of a task, project, or contract (e.g., value: "signed", "in_progress", "resigned").
+   - "scope" / "requirement": Feature request, deliverable, or functional scope.
+   - "budget": Monetary cost or allocated funds.
 
-⛔ BLACKLIST - TUYỆT ĐỐI KHÔNG BÓC TÁCH CÁC MỆNH ĐỀ GIAO TIẾP VỤN VẶT (CHATTER):
-- CẤM tạo các predicate giao tiếp đời thường như: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "báo lại", "nhắn tin". Hệ thống chỉ lưu tri thức nghiệp vụ, không lưu nhật ký hành vi nhắn tin!
+⛔ RESTRICTIONS - DO NOT EXTRACT CHATTER / CONVERSATIONAL NOISE:
+- FORBIDDEN predicates: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "notify". The system only records persistent business facts, not communication activity logs.
 
-🎯 QUY TẮC CÔ ĐỌNG & XẾP HẠNG OUTPUT (STRICT OUTPUT CONTROL & RANKING):
-- Số lượng: Mỗi tin nhắn CHỈ ĐƯỢC sinh tối đa từ 1 đến 3 claims cô đọng nhất.
-- Thứ tự ưu tiên: Sắp xếp mảng claims theo thứ tự giảm dần theo mức độ quan trọng nghiệp vụ (claim quan trọng nhất đứng đầu tiên).
-- Phân loại giá trị: Ưu tiên bóc tách các sự kiện hoặc thuộc tính then chốt (deadline, status, owner/assignee, scope, budget, milestones).
-- KHÔNG phân mảnh thuộc tính: Cùng 1 sự việc chỉ tạo 1 claim duy nhất, không chia nhỏ thành nhiều predicate gây nhiễu.
+🎯 OUTPUT CONTROL & RANKING RULES:
+- Quantity: Extract a MAXIMUM of 1 to 3 concise claims per message.
+- Priority Ranking: Order the array by descending business importance (most critical fact first).
+- Focus on Milestones: Prioritize deadlines, statuses, owners, scope, and key contractual events.
+- Do NOT fragment facts: A single event (e.g., a deadline change) must generate only ONE claim with predicate="deadline".
 
-3. "value": Giá trị cực kỳ ngắn gọn, cô đọng (TỐI ĐA 10 TỪ / DƯỚI 20 TOKENS).
-   - Ví dụ hợp lệ: "30/10", "signed", "resigned", "Tuấn PM", "200M VND".
-   - TUYỆT ĐỐI KHÔNG copy cả câu hoặc đoạn văn dài vào "value" (trích dẫn nguyên văn câu thì để ở trường "source_snippet").
+3. "value": Highly concise value (MAXIMUM 10 WORDS / UNDER 20 TOKENS).
+   - Valid examples: "30/10", "signed", "resigned", "Tuan PM", "200M VND".
+   - DO NOT paste whole sentences into "value" (full sentences belong in "source_snippet").
 4. "status":
-   - "current": Thông tin mới được khẳng định rõ ràng và có hiệu lực.
-   - "superseded": Thông tin cũ đã bị thay thế.
-   - "conflicted": Khi có mâu thuẫn trực tiếp giữa các nguồn.
-   - "uncertain": Khi thông tin mơ hồ, phỏng đoán, chưa chốt ("hình như", "có thể", "khoảng", "nghe nói", "dự kiến").
-5. "source_snippet": Trích dẫn nguyên văn câu văn bản làm chứng cứ.
-6. "supersedes": Nếu thông tin mới này THAY THẾ một claim cũ (cùng entity_id và cùng thuộc tính, ví dụ đổi deadline từ 18/10 thành 30/10), hãy điền chính xác "_id" của claim cũ đó (ví dụ "clm_001"). Nếu không thay thế claim nào, để null.
+   - "current": Confirmed, active fact that is currently valid.
+   - "superseded": Old fact that has been replaced.
+   - "conflicted": Direct contradiction across sources.
+   - "uncertain": Ambiguous, speculative, or unconfirmed ("maybe", "looks like", "around", "tentative").
+5. "source_snippet": Exact verbatim quotation from the input text as evidence.
+6. "supersedes": If this fact REPLACES an existing claim (same entity_id and same predicate, e.g., changing deadline from 18/10 to 30/10), specify the exact "_id" of the replaced claim (e.g., "clm_001"). If it does not replace any claim, set to null.
 
-Chỉ trả về JSON Array các claims hợp lệ theo thứ tự ưu tiên (tối đa 1-3 claims cốt lõi):
+Return ONLY a valid JSON Array ordered by priority (max 1-3 core claims):
 [
   {{
     "entity_id": "ent_...",
     "predicate": "deadline",
     "value": "30/10",
     "status": "current",
-    "source_snippet": "dời từ ngày 18 sang ngày 30 nhé",
+    "source_snippet": "moved from the 18th to the 30th",
     "supersedes": "clm_000"
   }}
 ]
@@ -276,7 +276,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 800,
+                "maxOutputTokens": 2048,
             },
         }
 
@@ -326,7 +326,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 800,
+                "maxOutputTokens": 2048,
             },
         }
 
@@ -509,7 +509,7 @@ def extract_memory(
             }
             for e in existing_entities
         ]
-        context_str = f"DANH SÁCH THỰC THỂ HIỆN CÓ TRONG WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
+        context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
     prompt = MEMORY_EXTRACTION_PROMPT.format(
         query=query,
@@ -546,7 +546,7 @@ async def extract_memory_async(
             }
             for e in existing_entities
         ]
-        context_str = f"DANH SÁCH THỰC THỂ HIỆN CÓ TRONG WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
+        context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
     prompt = MEMORY_EXTRACTION_PROMPT.format(
         query=query,
