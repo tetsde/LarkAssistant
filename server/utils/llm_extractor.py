@@ -169,20 +169,30 @@ MANDATORY RULES:
 3. "aliases": Alternative names, conversational references, or nicknames with clear evidence in the text.
 4. "description": A concise one-sentence summary of the entity's role or purpose.
 
-🌟 CONTEXTUAL ENTITIES (UNNAMED BUT DISTINCT WORK ITEMS):
-- If the text refers to a project, task, or deliverable that does NOT yet have a formal brand name (e.g., "dự án bữa anh giao", "dự án 20/10", "chỗ API", "hợp đồng mới"), DO NOT IGNORE IT!
-- Create a distinct Contextual Entity:
+🔗 COREFERENCE RESOLUTION & ATTRIBUTE MATCHING (CRITICAL):
+- When the input text refers to an entity using indirect descriptors, past attributes, or pronouns:
+  * Patterns: "Dự án bữa anh nói [X]", "dự án có ngân sách [X]", "dự án của [người Y]", "dự án deadline [Z]", "cái dự án đó", "dự án này"
+  * ALWAYS inspect "known_attributes" in EXISTING ENTITIES IN WORKSPACE above!
+  * Example: If the text says "Dự án bữa anh nói 150tr bây h được bên khách hàng tăng lên 500tr", and existing entity "Atlas" has known_attributes {{"budget": "150 triệu"}}, this text is referring to ATLAS!
+    -> YOU MUST RE-USE the existing entity: "name": "Atlas"
+    -> NEVER create a new entity like "Dự án đã trao đổi" or "Dự án 150tr".
+    -> Add the reference phrase (e.g. "Dự án bữa anh nói") into its "aliases".
+
+🌟 CONTEXTUAL ENTITIES (ONLY FOR TRULY NEW / UNNAMED WORK ITEMS):
+- ONLY create a new Contextual Entity if there is NO matching existing entity in workspace (by name, alias, or known_attributes).
+- If a work item is genuinely new and unnamed:
   * "name": A clear descriptive name capturing its context (e.g., "Dự án giao đợt 20/10" or "Dự án API").
-  * "aliases": Include verbatim phrases used in chat (e.g., ["dự án bữa anh giao", "dự án 20/10"]).
-  * "type": Choose the matching type (e.g., "project" or "feature").
+  * "aliases": Verbatim phrases used in chat.
+  * "type": project or feature.
   * "description": Brief context from the message.
 
 🔄 ENTITY RESOLUTION WITH EXISTING ENTITIES:
 - Look at EXISTING ENTITIES IN WORKSPACE above.
-- If the input text refers to an existing entity (by its name, an alias, or matching context), RE-USE that entity's name and update its description/aliases. DO NOT create duplicate entities!
+- If the input text refers to an existing entity (by its name, an alias, or matching attributes), RE-USE that entity's name and update its description/aliases. DO NOT create duplicate entities!
 - When the text refers to "a new customer", "another project", or a distinct separate work item, create a distinctly named entity (e.g., "New Customer (Alpha Project)"), NEVER merge it into older unrelated entities.
 
 ⛔ RESTRICTIONS:
+- DO NOT create entities for generic anonymous roles without proper brand or company names: "khách hàng", "bên khách hàng", "người dùng", "khách", "đối tác", "team", "anh em", "chúng tôi".
 - DO NOT create entities for bare conversational pronouns or particles: "anh", "em", "chúng tôi", "ai đó", "dạ", "alo".
 - Timestamps and dates alone ("today", "tomorrow", "Oct 18") are NOT entities. Dates are values of Facts (e.g. deadlines), linked to the project entity!
 - VIETNAMESE DISAMBIGUATION: The word "Mai" at sentence starts in Vietnamese almost always means "Tomorrow" (temporal marker), NOT a person named Mai, unless preceded by explicit honorifics like "chị Mai" or "bạn Mai".
@@ -498,6 +508,7 @@ def extract_entities(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> List[Dict[str, Any]]:
@@ -506,15 +517,35 @@ def extract_entities(
 
     context_str = ""
     if existing_entities:
-        simple_list = [
-            {
-                "id": e.get("id") or e.get("_id") if isinstance(e, dict) else e.id,
-                "name": e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name,
-                "type": e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type,
-                "aliases": e.get("aliases", []) if isinstance(e, dict) else e.aliases,
+        simple_list = []
+        for e in existing_entities:
+            eid = e.get("id") or e.get("_id") if isinstance(e, dict) else e.id
+            ename = e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name
+            etype = e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type
+            aliases = e.get("aliases", []) if isinstance(e, dict) else e.aliases
+
+            ent_info: Dict[str, Any] = {
+                "id": eid,
+                "name": ename,
+                "type": etype,
+                "aliases": aliases,
             }
-            for e in existing_entities
-        ]
+
+            # Lấy các active facts của entity này để giải quyết Coreference Resolution
+            if existing_facts:
+                attrs = {}
+                for f in existing_facts:
+                    f_dict = f.to_dict() if isinstance(f, Fact) else f
+                    if (f_dict.get("entity_id") == eid) and (f_dict.get("status") == FactStatus.CURRENT.value):
+                        prop = f_dict.get("property") or f_dict.get("predicate")
+                        val = f_dict.get("value")
+                        if prop and val:
+                            attrs[prop] = val
+                if attrs:
+                    ent_info["known_attributes"] = attrs
+
+            simple_list.append(ent_info)
+
         context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
     prompt = ENTITY_EXTRACTION_PROMPT.format(
@@ -540,6 +571,7 @@ async def extract_entities_async(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+    existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> List[Dict[str, Any]]:
@@ -548,15 +580,35 @@ async def extract_entities_async(
 
     context_str = ""
     if existing_entities:
-        simple_list = [
-            {
-                "id": e.get("id") or e.get("_id") if isinstance(e, dict) else e.id,
-                "name": e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name,
-                "type": e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type,
-                "aliases": e.get("aliases", []) if isinstance(e, dict) else e.aliases,
+        simple_list = []
+        for e in existing_entities:
+            eid = e.get("id") or e.get("_id") if isinstance(e, dict) else e.id
+            ename = e.get("name") or e.get("canonical_name") if isinstance(e, dict) else e.name
+            etype = e.get("type") or e.get("entity_type") if isinstance(e, dict) else e.type
+            aliases = e.get("aliases", []) if isinstance(e, dict) else e.aliases
+
+            ent_info: Dict[str, Any] = {
+                "id": eid,
+                "name": ename,
+                "type": etype,
+                "aliases": aliases,
             }
-            for e in existing_entities
-        ]
+
+            # Lấy các active facts của entity này để giải quyết Coreference Resolution
+            if existing_facts:
+                attrs = {}
+                for f in existing_facts:
+                    f_dict = f.to_dict() if isinstance(f, Fact) else f
+                    if (f_dict.get("entity_id") == eid) and (f_dict.get("status") == FactStatus.CURRENT.value):
+                        prop = f_dict.get("property") or f_dict.get("predicate")
+                        val = f_dict.get("value")
+                        if prop and val:
+                            attrs[prop] = val
+                if attrs:
+                    ent_info["known_attributes"] = attrs
+
+            simple_list.append(ent_info)
+
         context_str = f"EXISTING ENTITIES IN WORKSPACE:\n{json.dumps(simple_list, ensure_ascii=False, indent=2)}\n"
 
     prompt = ENTITY_EXTRACTION_PROMPT.format(
@@ -919,6 +971,7 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     ) -> List[Dict[str, Any]]:
         """Bóc tách riêng Nhánh 1: Entities."""
         return extract_entities(
@@ -926,6 +979,7 @@ class LLMExtractor:
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
+            existing_facts=existing_facts,
             client=self.client,
         )
 
@@ -938,6 +992,7 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+        existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     ) -> List[Dict[str, Any]]:
         """Bóc tách riêng Nhánh 1: Entities (Async)."""
         return await extract_entities_async(
@@ -945,6 +1000,7 @@ class LLMExtractor:
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
+            existing_facts=existing_facts,
             client=self.client,
         )
 
@@ -1006,17 +1062,18 @@ class LLMExtractor:
     ) -> Dict[str, Any]:
         """
         Bóc tách toàn diện một câu truy vấn/tin nhắn thành cả 2 nhánh (Sync):
-          - Nhánh 1 (Entities): Trích xuất & chuẩn hoá entities
+          - Nhánh 1 (Entities): Trích xuất & chuẩn hoá entities (sử dụng existing_facts để giải quyết coreference)
           - Nhánh 2 (Facts): Trích xuất facts gắn với entity_id chuẩn, xử lý quan hệ replaces
         """
         current_existing_facts = existing_facts if existing_facts is not None else existing_claims
 
-        # Bước 1: Trích xuất Nhánh 1 (Entities)
+        # Bước 1: Trích xuất Nhánh 1 (Entities) - truyền existing_facts để nhận diện tham chiếu gián tiếp
         entities_result = self.extract_entities(
             query=query,
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
+            existing_facts=current_existing_facts,
         )
 
         all_entities = list(existing_entities or []) + entities_result
@@ -1062,6 +1119,7 @@ class LLMExtractor:
             workspace_id=workspace_id,
             source_message_id=source_message_id,
             existing_entities=existing_entities,
+            existing_facts=current_existing_facts,
         )
 
         all_entities = list(existing_entities or []) + entities_result
