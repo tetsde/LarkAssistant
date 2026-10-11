@@ -311,7 +311,8 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 2048,
+                "maxOutputTokens": 8192,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
 
@@ -348,7 +349,8 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
-                "maxOutputTokens": 2048,
+                "maxOutputTokens": 8192,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
 
