@@ -1,9 +1,22 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
+
+# Múi giờ Việt Nam (UTC+7 / ICT)
+VIETNAM_TZ = timezone(timedelta(hours=7))
+
+
+def get_vietnam_now() -> datetime:
+    """Lấy thời gian hiện tại theo múi giờ Việt Nam (UTC+7)."""
+    return datetime.now(VIETNAM_TZ)
+
+
+def get_vietnam_now_iso() -> str:
+    """Lấy chuỗi ISO timestamp theo chuẩn giờ Việt Nam (UTC+7, ví dụ: 2026-10-11T23:55:00+07:00)."""
+    return datetime.now(VIETNAM_TZ).isoformat()
 
 
 class EntityStatus(str, Enum):
@@ -40,6 +53,8 @@ class Entity(BaseModel):
     attributes: Dict[str, Any] = Field(default_factory=dict)
     status: EntityStatus = Field(default=EntityStatus.ACTIVE)
     source_message_ids: List[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=get_vietnam_now_iso)
+    updated_at: str = Field(default_factory=get_vietnam_now_iso)
 
     model_config = {"use_enum_values": True}
 
@@ -71,12 +86,8 @@ class Fact(BaseModel):
     status: FactStatus = Field(default=FactStatus.CURRENT)
     source: Union[str, Dict[str, Any]] = Field(default="")
     replaces: Optional[str] = Field(default=None, description="ID of old fact this one replaces")
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
-    )
+    created_at: str = Field(default_factory=get_vietnam_now_iso)
+    updated_at: str = Field(default_factory=get_vietnam_now_iso)
 
     model_config = {"use_enum_values": True}
 
