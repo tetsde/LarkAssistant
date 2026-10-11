@@ -15,4 +15,10 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("gemini_api", "")
     gemini_api: str = os.getenv("gemini_api", "")
 
+    # MongoDB Settings
+    MONGO_URL: str = os.getenv("mongo_url", "mongodb://localhost:27017")
+    MONGO_DB: str = os.getenv("mongo_db", "LarkAssistant")
+    MONGO_MEMORY_COLLECTION: str = os.getenv("mongo_memory_collection", "memories")
+    MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
+
 settings = Settings()
