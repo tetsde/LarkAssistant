@@ -8,6 +8,7 @@ from utils.text_filter import text_filter
 from utils.llm_extractor import (
     extract_async,
     load_stored_entities,
+    load_stored_facts,
     load_stored_claims,
     apply_and_save_extraction,
     clear_stores,
@@ -39,11 +40,11 @@ async def chat(request: ChatRequest):
             "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời."
         }
 
-    # Helper xử lý trích xuất Memory & Claims khi JEV yêu cầu ghi nhớ
+    # Helper xử lý trích xuất Entities & Facts khi JEV yêu cầu ghi nhớ
     async def process_memory_extraction(query_text: str, sender: str) -> Dict[str, Any]:
         msg_id = f"msg_{uuid.uuid4().hex[:8]}"
         existing_entities = load_stored_entities()
-        existing_claims = load_stored_claims()
+        existing_facts = load_stored_facts()
 
         extraction_result = await extract_async(
             query=query_text,
@@ -51,15 +52,20 @@ async def chat(request: ChatRequest):
             source_message_id=msg_id,
             sender=sender,
             existing_entities=existing_entities,
-            existing_claims=existing_claims,
+            existing_facts=existing_facts,
         )
         saved = apply_and_save_extraction(extraction_result)
         return {
             "message_id": msg_id,
+            "entities": saved.get("entities", []),
+            "facts": saved.get("facts", []),
+            "superseded_facts": saved.get("superseded_facts", []),
+            "total_stored_entities": saved.get("total_stored_entities", 0),
+            "total_stored_facts": saved.get("total_stored_facts", 0),
+            # Backward compatibility
             "memory": saved.get("memory", []),
             "claims": saved.get("claims", []),
             "superseded_claims": saved.get("superseded_claims", []),
-            "total_stored_entities": saved.get("total_stored_entities", 0),
             "total_stored_claims": saved.get("total_stored_claims", 0),
         }
 
@@ -101,11 +107,11 @@ async def chat(request: ChatRequest):
 @router.post("/memory")
 async def add_memory(request: MemoryRequest):
     """
-    Endpoint chủ động lưu thông tin vào Knowledge Base và trích xuất Memory & Claims.
+    Endpoint chủ động lưu thông tin vào Knowledge Base và trích xuất Entities & Facts.
     """
     try:
         existing_entities = load_stored_entities()
-        existing_claims = load_stored_claims()
+        existing_facts = load_stored_facts()
         msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
         extraction_result = await extract_async(
@@ -114,7 +120,7 @@ async def add_memory(request: MemoryRequest):
             source_message_id=msg_id,
             sender="API",
             existing_entities=existing_entities,
-            existing_claims=existing_claims,
+            existing_facts=existing_facts,
         )
         saved = apply_and_save_extraction(extraction_result)
 
@@ -136,21 +142,25 @@ async def add_memory(request: MemoryRequest):
 
 @router.get("/memory/store")
 async def get_memory_store():
-    """Xem toàn bộ các thực thể (entities) và mệnh đề (claims) đang được lưu trữ."""
+    """Xem toàn bộ các thực thể (entities) và sự thật (facts) đang được lưu trữ."""
     entities = load_stored_entities()
-    claims = load_stored_claims()
+    facts = load_stored_facts()
     return {
         "total_entities": len(entities),
-        "total_claims": len(claims),
+        "total_facts": len(facts),
         "entities": entities,
-        "claims": claims,
+        "facts": facts,
+        # Backward compatibility
+        "total_claims": len(facts),
+        "claims": facts,
     }
 
 
 @router.delete("/memory/store")
 async def reset_memory_store():
-    """Xóa sạch toàn bộ kho thực thể và mệnh đề."""
+    """Xóa sạch toàn bộ kho thực thể và facts."""
     clear_stores()
-    return {"status": "success", "message": "Đã xóa sạch bộ nhớ entities và claims!"}
+    return {"status": "success", "message": "Đã xóa sạch bộ nhớ entities và facts!"}
+
 
 
