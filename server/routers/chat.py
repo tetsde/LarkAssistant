@@ -13,6 +13,13 @@ from utils.llm_extractor import (
     apply_and_save_extraction,
     clear_stores,
 )
+from database import (
+    check_mongo_connection,
+    get_all_entities as get_mongo_entities,
+    get_all_facts as get_mongo_facts,
+    save_extraction_to_mongo,
+    clear_mongo_stores,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 weknora_service = WeKnoraService()
@@ -43,8 +50,18 @@ async def chat(request: ChatRequest):
     # Helper xử lý trích xuất Entities & Facts khi JEV yêu cầu ghi nhớ
     async def process_memory_extraction(query_text: str, sender: str) -> Dict[str, Any]:
         msg_id = f"msg_{uuid.uuid4().hex[:8]}"
-        existing_entities = load_stored_entities()
-        existing_facts = load_stored_facts()
+        
+        # Ưu tiên lấy từ MongoDB nếu có, fallback sang file JSON
+        try:
+            existing_entities = await get_mongo_entities()
+            existing_facts = await get_mongo_facts()
+            if not existing_entities:
+                existing_entities = load_stored_entities()
+            if not existing_facts:
+                existing_facts = load_stored_facts()
+        except Exception:
+            existing_entities = load_stored_entities()
+            existing_facts = load_stored_facts()
 
         extraction_result = await extract_async(
             query=query_text,
@@ -54,19 +71,32 @@ async def chat(request: ChatRequest):
             existing_entities=existing_entities,
             existing_facts=existing_facts,
         )
+
+        # Dual-save: Lưu cả MongoDB và file JSON
+        mongo_saved = None
+        try:
+            mongo_saved = await save_extraction_to_mongo(extraction_result)
+        except Exception as e:
+            print(f"Lỗi khi lưu vào MongoDB: {e}")
+
         saved = apply_and_save_extraction(extraction_result)
+
+        total_entities = mongo_saved.get("total_stored_entities", saved.get("total_stored_entities", 0)) if mongo_saved else saved.get("total_stored_entities", 0)
+        total_facts = mongo_saved.get("total_stored_facts", saved.get("total_stored_facts", 0)) if mongo_saved else saved.get("total_stored_facts", 0)
+
         return {
             "message_id": msg_id,
             "entities": saved.get("entities", []),
             "facts": saved.get("facts", []),
             "superseded_facts": saved.get("superseded_facts", []),
-            "total_stored_entities": saved.get("total_stored_entities", 0),
-            "total_stored_facts": saved.get("total_stored_facts", 0),
+            "total_stored_entities": total_entities,
+            "total_stored_facts": total_facts,
+            "saved_to_mongodb": bool(mongo_saved),
             # Backward compatibility
             "memory": saved.get("memory", []),
             "claims": saved.get("claims", []),
             "superseded_claims": saved.get("superseded_claims", []),
-            "total_stored_claims": saved.get("total_stored_claims", 0),
+            "total_stored_claims": total_facts,
         }
 
     # Bước 3: Nếu JEV yêu cầu lưu bộ nhớ (MEMORY_ONLY hoặc MEMORY_AND_REPLY) -> Chạy Utils Extractor ĐẦU TIÊN
@@ -110,8 +140,17 @@ async def add_memory(request: MemoryRequest):
     Endpoint chủ động lưu thông tin vào Knowledge Base và trích xuất Entities & Facts.
     """
     try:
-        existing_entities = load_stored_entities()
-        existing_facts = load_stored_facts()
+        try:
+            existing_entities = await get_mongo_entities()
+            existing_facts = await get_mongo_facts()
+            if not existing_entities:
+                existing_entities = load_stored_entities()
+            if not existing_facts:
+                existing_facts = load_stored_facts()
+        except Exception:
+            existing_entities = load_stored_entities()
+            existing_facts = load_stored_facts()
+
         msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
         extraction_result = await extract_async(
@@ -122,6 +161,13 @@ async def add_memory(request: MemoryRequest):
             existing_entities=existing_entities,
             existing_facts=existing_facts,
         )
+
+        mongo_saved = None
+        try:
+            mongo_saved = await save_extraction_to_mongo(extraction_result)
+        except Exception as e:
+            print(f"Lỗi khi lưu vào MongoDB: {e}")
+
         saved = apply_and_save_extraction(extraction_result)
 
         weknora_result = None
@@ -132,8 +178,9 @@ async def add_memory(request: MemoryRequest):
 
         return {
             "status": "success",
-            "message": "Đã trích xuất và lưu vào Knowledge Base",
+            "message": "Đã trích xuất và lưu vào Knowledge Base & MongoDB",
             "extraction": saved,
+            "saved_to_mongodb": bool(mongo_saved),
             "weknora_data": weknora_result,
         }
     except Exception as e:
@@ -143,9 +190,19 @@ async def add_memory(request: MemoryRequest):
 @router.get("/memory/store")
 async def get_memory_store():
     """Xem toàn bộ các thực thể (entities) và sự thật (facts) đang được lưu trữ."""
-    entities = load_stored_entities()
-    facts = load_stored_facts()
+    mongo_entities = []
+    mongo_facts = []
+    try:
+        mongo_entities = await get_mongo_entities()
+        mongo_facts = await get_mongo_facts()
+    except Exception as e:
+        print(f"Lỗi khi đọc từ MongoDB: {e}")
+
+    entities = mongo_entities if mongo_entities else load_stored_entities()
+    facts = mongo_facts if mongo_facts else load_stored_facts()
+
     return {
+        "storage_source": "mongodb" if (mongo_entities or mongo_facts) else "json_file",
         "total_entities": len(entities),
         "total_facts": len(facts),
         "entities": entities,
@@ -158,9 +215,19 @@ async def get_memory_store():
 
 @router.delete("/memory/store")
 async def reset_memory_store():
-    """Xóa sạch toàn bộ kho thực thể và facts."""
+    """Xóa sạch toàn bộ kho thực thể và facts (cả MongoDB và file)."""
+    try:
+        await clear_mongo_stores()
+    except Exception as e:
+        print(f"Lỗi khi xóa MongoDB: {e}")
     clear_stores()
-    return {"status": "success", "message": "Đã xóa sạch bộ nhớ entities và facts!"}
+    return {"status": "success", "message": "Đã xóa sạch bộ nhớ entities và facts (MongoDB & JSON File)!"}
+
+
+@router.get("/mongodb/status")
+async def get_mongodb_status():
+    """Kiểm tra trạng thái kết nối tới MongoDB."""
+    return await check_mongo_connection()
 
 
 

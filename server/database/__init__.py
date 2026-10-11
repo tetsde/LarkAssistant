@@ -1,5 +1,33 @@
-"""
-Database package for HiLark.
-"""
+from database.db import (
+    get_async_client,
+    get_async_db,
+    get_memories_collection,
+    get_claims_collection,
+    get_sync_client,
+    get_sync_db,
+    check_mongo_connection,
+    get_all_entities,
+    get_entity_by_id,
+    upsert_entity,
+    get_all_facts,
+    supersede_facts_by_ids,
+    save_extraction_to_mongo,
+    clear_mongo_stores,
+)
 
-__all__ = []
+__all__ = [
+    "get_async_client",
+    "get_async_db",
+    "get_memories_collection",
+    "get_claims_collection",
+    "get_sync_client",
+    "get_sync_db",
+    "check_mongo_connection",
+    "get_all_entities",
+    "get_entity_by_id",
+    "upsert_entity",
+    "get_all_facts",
+    "supersede_facts_by_ids",
+    "save_extraction_to_mongo",
+    "clear_mongo_stores",
+]
