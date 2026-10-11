@@ -12,11 +12,15 @@ Chức năng:
     - Tự động duy trì và tích lũy trạng thái:
         + Nhánh 1 (Entities): Tích lũy và cập nhật thực thể kinh doanh (Parent).
         + Nhánh 2 (Facts): Tự động phát hiện thay thế (replaces/superseded), mơ hồ (uncertain) hay mâu thuẫn (conflicted).
-    - Lưu kết quả phiên test vào file: server/tests/interactive_session_output.json theo cây Parent-Child.
+    - HỖ TRỢ TRUY VẤN NGƯỢC LẠI BỘ NHỚ:
+        + Gõ `? <câu hỏi>` (vd: `? deadline Atlas khi nào?`, `? ai đang làm lead của dự án?`)
+        + Hệ thống sẽ dùng LLM + Cây Parent-Child để truy vấn chính xác trạng thái hiện tại (active) và lịch sử thay đổi (superseded).
+    - Lưu kết quả phiên test vào file: server/tests/interactive_session_output.json
 """
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -25,7 +29,7 @@ SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
-from utils.llm_extractor import extract
+from utils.llm_extractor import extract, GeminiClient
 from models.memory import build_entity_tree
 
 # ANSI Color codes cho terminal
@@ -44,10 +48,12 @@ OUTPUT_JSON_PATH = os.path.join(SERVER_ROOT, "tests", "interactive_session_outpu
 
 def print_banner():
     print(f"\n{C_CYAN}{C_BOLD}" + "=" * 76)
-    print("      🚀 HILARK LLM EXTRACTOR - INTERACTIVE TEST CONSOLE")
-    print("   Nhận tin nhắn tuần tự -> Bóc tách Entities & Facts (Parent - Child)")
+    print("      🚀 HILARK LLM EXTRACTOR - INTERACTIVE TEST & QUERY CONSOLE")
+    print("   1. Nhập tin nhắn chat  -> Bóc tách Entities & Facts (Parent - Child)")
+    print("   2. Gõ '? <câu hỏi>'    -> Truy vấn ngược lại bộ nhớ (Active vs History)")
     print("=" * 76 + C_RESET)
-    print(f"{C_DIM}Lệnh hỗ trợ: Gõ 'clear' để làm mới bộ nhớ | Gõ 'exit' hoặc 'quit' để thoát.{C_RESET}\n")
+    print(f"{C_DIM}Lệnh hỗ trợ: Gõ '? <câu hỏi>' để hỏi bộ nhớ (vd: '? deadline Atlas là ngày mấy?')")
+    print(f"             Gõ 'show' để xem toàn bộ cây | Gõ 'clear' để reset | 'exit' để thoát.{C_RESET}\n")
 
 
 def display_turn_result(turn_num: int, query: str, entity_list: list, new_facts: list, superseded_facts: list):
@@ -123,6 +129,86 @@ def display_session_summary(session_entities: list, session_facts: list):
     print(f"{C_DIM}Đã lưu bộ nhớ phân cấp Parent-Child vào: {OUTPUT_JSON_PATH}{C_RESET}\n")
 
 
+def query_memory_and_facts(question: str, session_entities: list, session_facts: list):
+    """
+    Truy vấn ngược lại bộ nhớ:
+    - Tìm kiếm thông tin chính xác từ cây Entity - Facts
+    - Phân biệt rõ giữa Trạng thái hiện tại (Active) và Lịch sử đã thay đổi (History/Superseded)
+    """
+    if not session_entities and not session_facts:
+        print(f"\n{C_YELLOW}⚠️ Bộ nhớ hiện đang trống! Hãy nhập một vài tin nhắn trích xuất trước khi truy vấn.{C_RESET}\n")
+        return
+
+    tree = build_entity_tree(session_entities, session_facts)
+    print(f"\n{C_BOLD}{C_PURPLE}🔍 [TRUY VẤN BỘ NHỚ THỰC THỂ & SỰ THẬT]{C_RESET}")
+    print(f"{C_CYAN}❓ Câu hỏi:{C_RESET} {C_BOLD}\"{question}\"{C_RESET}")
+    print(f"{C_DIM}⏳ Đang lục lại {len(session_entities)} Entities và {len(session_facts)} Facts...{C_RESET}\n")
+
+    # 1. Khớp từ khóa trong cây
+    q_norm = question.strip().lower()
+    matched_nodes = []
+    for ent in tree:
+        ename = str(ent.get("name", "")).lower()
+        aliases = [str(a).lower() for a in ent.get("aliases", [])]
+        if any(w in q_norm for w in ename.split()) or any(a in q_norm for a in aliases if len(a) > 2):
+            matched_nodes.append(ent)
+
+    # 2. Gọi LLM để tổng hợp câu trả lời tự nhiên
+    qa_prompt = f"""\
+You are an expert Knowledge Graph QA Assistant for an enterprise memory system.
+Answer the user's question accurately and concisely based SOLELY on the hierarchical entities and facts below.
+
+CURRENT KNOWLEDGE GRAPH (PARENT-CHILD):
+{json.dumps(tree, ensure_ascii=False, indent=2)}
+
+USER QUESTION:
+"{question}"
+
+MANDATORY RULES:
+1. Answer in Vietnamese, professional, concise and direct.
+2. Clearly distinguish between CURRENT ACTIVE status (from "active_facts") and HISTORICAL status (from "history_facts"):
+   - If an attribute was updated/changed (e.g., budget changed from 150M to 500M, or deadline changed from 20/10 to 30/11), EXPLICITLY explain both:
+     * Current value: ...
+     * Previous value (superseded): ...
+3. Reference the specific Entity name and Fact ID as evidence where appropriate.
+4. If the question asks about something not present in the knowledge graph, politely state that it has not been recorded.
+"""
+
+    try:
+        client = GeminiClient()
+        answer = client.generate(qa_prompt)
+        if answer.startswith("```"):
+            answer = re.sub(r"^```[a-z]*\s*", "", answer)
+            answer = re.sub(r"\s*```$", "", answer)
+
+        # Unpack nếu LLM trả về dạng JSON {"answer": "..."}
+        try:
+            parsed = json.loads(answer)
+            if isinstance(parsed, dict):
+                answer = parsed.get("answer") or parsed.get("response") or parsed.get("result") or json.dumps(parsed, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        print(f"{C_GREEN}{C_BOLD}🤖 KẾT QUẢ TỪ BỘ NHỚ:{C_RESET}")
+        print(f"{answer.strip()}\n")
+    except Exception as e:
+        print(f"{C_RED}❌ Lỗi gọi LLM QA: {e}{C_RESET}\n")
+
+    # 3. Hiển thị các facts liên quan trực tiếp
+    if matched_nodes:
+        print(f"{C_DIM}--- Dữ liệu thô liên quan từ Knowledge Graph ---{C_RESET}")
+        for ent in matched_nodes:
+            print(f"🔹 {C_BOLD}{ent.get('name')}{C_RESET} [{ent.get('type')}]:")
+            for f in ent.get("active_facts", []):
+                prop = f.get("property") or f.get("predicate", "info")
+                print(f"   • {C_GREEN}[CURRENT]{C_RESET} {prop} = \"{f.get('value')}\" {C_DIM}(ID: {f.get('id')}){C_RESET}")
+            for f in ent.get("history_facts", []):
+                prop = f.get("property") or f.get("predicate", "info")
+                replaces_info = f" -> Thay thế bởi: {f.get('replaces')}" if f.get('replaces') else ""
+                print(f"   • {C_RED}[SUPERSEDED]{C_RESET} {prop} = \"{f.get('value')}\" {C_DIM}(ID: {f.get('id')}{replaces_info}){C_RESET}")
+        print(f"{C_DIM}" + "-" * 76 + f"{C_RESET}\n")
+
+
 def save_session_to_json(history: list, session_entities: list, session_facts: list):
     """Lưu toàn bộ phiên theo cấu trúc phân cấp Parent-Child trực quan."""
     entity_tree = build_entity_tree(session_entities, session_facts)
@@ -187,9 +273,30 @@ def main():
     history = []
     step = 1
 
+    # Tải lại bộ nhớ từ file JSON nếu đã có
+    if os.path.exists(OUTPUT_JSON_PATH):
+        try:
+            with open(OUTPUT_JSON_PATH, "r", encoding="utf-8") as f:
+                saved_data = json.load(f)
+                if isinstance(saved_data, dict):
+                    saved_ents = saved_data.get("entities", [])
+                    if saved_ents:
+                        print(f"{C_CYAN}ℹ️ Đã nạp lại {len(saved_ents)} Entities từ phiên trước ({OUTPUT_JSON_PATH}).{C_RESET}")
+                        for e in saved_ents:
+                            session_entities.append(e)
+                            for f_item in e.get("active_facts", []):
+                                session_facts.append(f_item)
+                            for f_item in e.get("history_facts", []):
+                                session_facts.append(f_item)
+                        history = saved_data.get("history", [])
+                        step = len(history) + 1
+                        display_session_summary(session_entities, session_facts)
+        except Exception:
+            pass
+
     while True:
         try:
-            prompt_str = f"{C_BOLD}{C_GREEN}👉 Nhập tin nhắn #{step}:{C_RESET} "
+            prompt_str = f"{C_BOLD}{C_GREEN}👉 Nhập tin nhắn #{step} (hoặc gõ '? <câu hỏi>'):{C_RESET} "
             user_input = input(prompt_str).strip()
 
             if not user_input:
@@ -214,9 +321,25 @@ def main():
                 print(f"\n{C_YELLOW}🧹 Đã xóa sạch bộ nhớ phiên test (Reset)!{C_RESET}\n")
                 continue
 
+            # Xử lý lệnh xem toàn bộ cây
+            if user_input.lower() in ("show", "tree", "status"):
+                display_session_summary(session_entities, session_facts)
+                continue
+
+            # XỬ LÝ TRUY VẤN NGƯỢC LẠI BỘ NHỚ (Hỏi đáp)
+            if user_input.startswith("?") or user_input.lower().startswith(("query ", "ask ", "find ", "hỏi ")):
+                q_text = user_input.lstrip("?").strip()
+                if user_input.lower().startswith(("query ", "ask ", "find ", "hỏi ")):
+                    q_text = user_input.split(" ", 1)[1].strip()
+                if not q_text:
+                    print(f"{C_YELLOW}Vui lòng nhập câu hỏi sau dấu '?' (vd: '? deadline Atlas là ngày mấy?'){C_RESET}\n")
+                    continue
+                query_memory_and_facts(q_text, session_entities, session_facts)
+                continue
+
+            # XỬ LÝ NHẬP TIN NHẮN MỚI ĐỂ TRÍCH XUẤT
             print(f"{C_DIM}⏳ Đang gửi tin nhắn qua LLM Extractor...{C_RESET}")
 
-            # Gọi LLM Extractor với đầy đủ context tích lũy từ các tin nhắn trước
             result = extract(
                 query=user_input,
                 workspace_id="default_ws",
