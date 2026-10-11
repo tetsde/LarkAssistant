@@ -1,25 +1,25 @@
 from utils.text_filter import text_filter
 from utils.memory import save_memory
-from utils.claim_extraction import (
-    Claim,
-    ClaimExtractor,
-    ClaimSchemaValidator,
-    claim_extractor,
+from utils.extractor import (
+    extract,
+    extract_memory,
     extract_claims,
-    extract_claim,
-    validate_claim_schema,
-    fix_json,
+    get_all_memories,
+    get_all_claims,
+    clear_stores,
+    MEMORY_STORE_PATH,
+    CLAIM_STORE_PATH,
 )
 
 __all__ = [
     "text_filter",
     "save_memory",
-    "Claim",
-    "ClaimExtractor",
-    "ClaimSchemaValidator",
-    "claim_extractor",
+    "extract",
+    "extract_memory",
     "extract_claims",
-    "extract_claim",
-    "validate_claim_schema",
-    "fix_json",
+    "get_all_memories",
+    "get_all_claims",
+    "clear_stores",
+    "MEMORY_STORE_PATH",
+    "CLAIM_STORE_PATH",
 ]
