@@ -12,5 +12,6 @@ dependencies = [
     "pydantic>=2.14.0",
     "pymongo>=4.18.3",
     "python-dotenv>=1.2.4",
+    "reportlab>=5.0.1",
     "uvicorn>=0.54.0",
 ]
