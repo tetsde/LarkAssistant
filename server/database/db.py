@@ -17,7 +17,7 @@ from pymongo import MongoClient
 from pymongo.database import Database
 
 from core.config import settings
-from models.memory import FactStatus
+from models.memory import FactStatus, get_vietnam_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Entity thiếu trường 'id'")
 
     existing = await col.find_one({"id": entity_id})
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
 
     if existing:
         # Hợp nhất alias
@@ -212,7 +212,7 @@ async def supersede_facts_by_ids(fact_ids: List[str]) -> int:
     if not fact_ids:
         return 0
     col = get_claims_collection()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     result = await col.update_many(
         {"id": {"$in": fact_ids}},
         {
@@ -332,7 +332,7 @@ def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("Entity thiếu trường 'id'")
 
     existing = col.find_one({"id": entity_id})
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
 
     if existing:
         existing_aliases = existing.get("aliases", [])
@@ -358,7 +358,7 @@ def supersede_facts_by_ids_sync(fact_ids: List[str]) -> int:
     if not fact_ids:
         return 0
     col = get_sync_claims_collection()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     result = col.update_many(
         {"id": {"$in": fact_ids}},
         {

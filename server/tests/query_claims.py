@@ -520,9 +520,11 @@ class ClaimQuerier:
                     context_lines.append(f"    - Fact ID {fid} [SUPERSEDED]: {prop} từng là \"{val}\"")
 
         grounding_context = "\n".join(context_lines)
+        now_vn_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
         prompt = f"""Bạn là Trợ lý Truy vấn Bộ nhớ HiLark AI.
 Dưới đây là BỘ NHỚ THỰC TẾ (GROUND TRUTH) gồm các Thực thể và Mệnh đề (Facts/Claims) đã được bóc tách từ các cuộc hội thoại trước đó.
+Thời điểm hiện tại (Giờ Việt Nam): {now_vn_str} (UTC+7)
 
 {grounding_context}
 
@@ -530,7 +532,7 @@ NGƯỜI DÙNG HỎI:
 "{question}"
 
 YÊU CẦU TRẢ LỜI:
-1. Trả lời trực tiếp, chính xác, ngắn gọn dựa HOÀN TOÀN trên các facts ở trên.
+1. Trả lời trực tiếp, chính xác, ngắn gọn dựa HOÀN TOÀN trên các facts ở trên. Đối với mốc thời gian, diễn giải theo chuẩn lịch và ngày giờ Việt Nam.
 2. Nêu rõ giá trị HIỆN TẠI (current) và nếu có thay đổi trong quá khứ thì giải thích rõ (ví dụ: trước đó là X, nay đã đổi thành Y).
 3. KHÔNG bịa đặt thông tin không có trong Ground Truth.
 4. Trả về kết quả dưới định dạng JSON có cấu trúc sau:

@@ -42,6 +42,10 @@ from models.memory import (
     Entity,
     Fact,
     build_entity_tree,
+    # Vietnam timezone utilities
+    VIETNAM_TZ,
+    get_vietnam_now,
+    get_vietnam_now_iso,
     # Backward compatibility aliases
     ClaimStatus,
     MemoryEntity,
@@ -144,6 +148,51 @@ def normalize_property(property_name: str) -> str:
 normalize_predicate = normalize_property
 
 
+def normalize_time_value(prop: str, val: Any, reference_dt: Optional[datetime] = None) -> Any:
+    """
+    Chuẩn hoá giá trị thuộc tính thời gian (deadline, due_date, milestone, etc.)
+    theo chuẩn lịch và giờ Việt Nam (UTC+7).
+    """
+    if not isinstance(val, str) or not val.strip():
+        return val
+
+    time_props = {"deadline", "due_date", "milestone", "schedule", "start_date", "end_date", "completion_date", "target_date"}
+    if prop.lower() not in time_props:
+        return val
+
+    ref = reference_dt or get_vietnam_now()
+    val_clean = val.strip()
+
+    # 1. Xử lý các dạng lỗi do gõ hoặc chat như 'ngày/10' -> 'ngày 10'
+    val_clean = re.sub(r"^ngày\s*/\s*(\d{1,2})$", r"ngày \1", val_clean, flags=re.IGNORECASE)
+
+    # 2. 'DD/MM' -> 'DD/MM/YYYY' (vd: 30/10 -> 30/10/2026)
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})$", val_clean)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        return f"{day:02d}/{month:02d}/{ref.year}"
+
+    # 3. 'ngày DD/MM' -> 'DD/MM/YYYY' (vd: ngày 15/11 -> 15/11/2026)
+    m = re.match(r"^ngày\s+(\d{1,2})[/-](\d{1,2})$", val_clean, flags=re.IGNORECASE)
+    if m:
+        day, month = int(m.group(1)), int(m.group(2))
+        return f"{day:02d}/{month:02d}/{ref.year}"
+
+    # 4. 'ngày DD' -> 'DD/MM/YYYY' (vd: ngày 10 -> 10/10/2026)
+    m = re.match(r"^ngày\s+(\d{1,2})$", val_clean, flags=re.IGNORECASE)
+    if m:
+        day = int(m.group(1))
+        return f"{day:02d}/{ref.month:02d}/{ref.year}"
+
+    # 5. 'tháng MM' -> 'MM/YYYY' (vd: tháng 12 -> 12/2026)
+    m = re.match(r"^tháng\s+(\d{1,2})$", val_clean, flags=re.IGNORECASE)
+    if m:
+        month = int(m.group(1))
+        return f"{month:02d}/{ref.year}"
+
+    return val_clean
+
+
 # ==============================================================================
 # 3. PROMPT TEMPLATES (ENTITIES & FACTS)
 # ==============================================================================
@@ -231,27 +280,39 @@ CURRENT FACTS IN MEMORY (ACTIVE FACTS):
 SOURCE METADATA:
 - Message ID: {source_message_id}
 - Sender: {sender}
+- Reference Time: {reference_time_vn} (Vietnam Timezone - UTC+7)
 
 EXTRACTION RULES:
 1. "entity_id": MUST accurately reference the "id" of an entity from the IDENTIFIED ENTITIES list above.
 2. "property": Extract ONLY core business attributes:
-   - "deadline": Target dates, due dates, completion milestones (e.g., value: "30/10", "next year").
+   - "deadline": Target dates, due dates, completion milestones.
    - "assignee" / "owner": Responsible person or team (e.g., value: "Tuan PM").
    - "status": Operational status of a task, project, or contract (e.g., value: "signed", "in_progress", "resigned").
    - "scope" / "requirement": Feature request, deliverable, or functional scope.
    - "budget": Monetary cost or allocated funds.
 
+🕒 TIME & DEADLINE NORMALIZATION (VIETNAM TIMEZONE - UTC+7):
+- The current reference time is: {reference_time_vn} (Vietnam Timezone, GMT+7).
+- For all time-related properties (especially "deadline", "milestone", "schedule"):
+  * Always normalize relative time phrases into standard Vietnamese calendar format based on the reference time:
+    - Relative day ("hôm nay", "ngày mai", "chiều mai", "hôm qua", "tuần sau", "thứ 2 tới", "cuối tuần") -> Calculate exact date as "DD/MM/YYYY" (e.g., "12/10/2026").
+    - If a specific hour is stated (e.g., "15h chiều mai", "9h sáng thứ 2", "14h30") -> Format as "HH:mm DD/MM/YYYY" (24-hour Vietnam time, e.g., "15:00 12/10/2026").
+  * If the input provides only day and month (e.g., "ngày 10", "10/10", "15/11", "30/10") -> Resolve with the current reference year: "10/10/2026", "15/11/2026", "30/10/2026".
+  * If only month is provided (e.g., "tháng 12") -> Format as "12/2026".
+  * If approximate or period (e.g., "cuối tháng 10", "quý 4") -> Format as "cuối tháng 10/2026" or "Q4/2026".
+  * DO NOT output raw fragmented strings like "ngày/10" or relative words if they can be resolved to exact Vietnam calendar time.
+
 ⛔ RESTRICTIONS - DO NOT EXTRACT CHATTER / CONVERSATIONAL NOISE:
 - FORBIDDEN properties: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "notify". The system only records persistent business facts, not communication activity logs.
 
 🎯 OUTPUT CONTROL & RANKING RULES:
-- Quantity: Extract a MAXIMUM of 1 to 3 concise facts per message.
+- Quantity: Extract a MAXIMUM of 1 to 5 concise facts per message.
 - Priority Ranking: Order the array by descending business importance (most critical fact first).
 - Focus on Milestones: Prioritize deadlines, statuses, owners, scope, and key contractual events.
 - Do NOT fragment facts: A single event (e.g., a deadline change) must generate only ONE fact with property="deadline".
 
 3. "value": Highly concise value (MAXIMUM 10 WORDS / UNDER 20 TOKENS).
-   - Valid examples: "30/10", "signed", "resigned", "Tuan PM", "200M VND".
+   - Valid examples: "30/10/2026", "signed", "resigned", "Tuan PM", "200M VND".
    - DO NOT paste whole sentences into "value" (full sentences belong in "source_snippet").
 4. "status":
    - "current": Confirmed, active fact that is currently valid.
@@ -259,14 +320,14 @@ EXTRACTION RULES:
    - "conflicted": Direct contradiction across sources.
    - "uncertain": Ambiguous, speculative, or unconfirmed ("maybe", "looks like", "around", "tentative").
 5. "source_snippet": Exact verbatim quotation from the input text as evidence.
-6. "replaces": If this fact REPLACES an existing fact (same entity_id and same property, e.g., changing deadline from 18/10 to 30/10), specify the exact "id" of the replaced fact (e.g., "fact_001"). If it does not replace any fact, set to null.
+6. "replaces": If this fact REPLACES an existing fact (same entity_id and same property, e.g., changing deadline from 18/10/2026 to 30/10/2026), specify the exact "id" of the replaced fact (e.g., "fact_001"). If it does not replace any fact, set to null.
 
-Return ONLY a valid JSON Array ordered by priority (max 1-3 core facts):
+Return ONLY a valid JSON Array ordered by priority (max 1-5 core facts):
 [
   {{
     "entity_id": "ent_...",
     "property": "deadline",
-    "value": "30/10",
+    "value": "30/10/2026",
     "status": "current",
     "source_snippet": "moved from the 18th to the 30th",
     "replaces": "fact_000"
@@ -659,7 +720,7 @@ def parse_facts(
             for a in e.get("aliases", []):
                 name_to_id[str(a).strip().lower()] = eid
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     facts: List[Fact] = []
 
     for item in data:
@@ -684,6 +745,8 @@ def parse_facts(
             continue
         if isinstance(value, str):
             value = value.strip()
+            # Chuẩn hoá giá trị thời gian theo chuẩn giờ và lịch Việt Nam (UTC+7)
+            value = normalize_time_value(prop, value)
             words = value.split()
             if len(words) > 15:
                 value = " ".join(words[:15]) + "..."
@@ -750,9 +813,9 @@ def parse_facts(
             seen_keys[key] = f
     deduped_facts = list(seen_keys.values())
 
-    # Giới hạn an toàn (tối đa 3 facts quan trọng nhất)
-    if len(deduped_facts) > 3:
-        deduped_facts = deduped_facts[:3]
+    # Giới hạn an toàn (tối đa 5 facts quan trọng nhất)
+    if len(deduped_facts) > 5:
+        deduped_facts = deduped_facts[:5]
 
     return deduped_facts
 
@@ -816,12 +879,14 @@ def extract_facts(
                     "status": f_dict.get("status"),
                 })
 
+    now_vn_str = get_vietnam_now().strftime("%d/%m/%Y %H:%M:%S (UTC+7)")
     prompt = FACT_EXTRACTION_PROMPT.format(
         query=query,
         entities_json=json.dumps(clean_entities, ensure_ascii=False, indent=2),
         existing_facts_json=json.dumps(relevant_existing_facts, ensure_ascii=False, indent=2),
         source_message_id=source_message_id or "unknown_msg",
         sender=sender or "User",
+        reference_time_vn=now_vn_str,
     )
 
     raw_response = llm_client.generate(prompt)
@@ -835,7 +900,7 @@ def extract_facts(
 
     # Cập nhật trạng thái superseded cho các fact cũ
     superseded_facts: List[Dict[str, Any]] = []
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     superseded_target_ids = {f.replaces for f in new_facts if f.replaces}
 
     if existing_facts and superseded_target_ids:
@@ -908,12 +973,14 @@ async def extract_facts_async(
                     "status": f_dict.get("status"),
                 })
 
+    now_vn_str = get_vietnam_now().strftime("%d/%m/%Y %H:%M:%S (UTC+7)")
     prompt = FACT_EXTRACTION_PROMPT.format(
         query=query,
         entities_json=json.dumps(clean_entities, ensure_ascii=False, indent=2),
         existing_facts_json=json.dumps(relevant_existing_facts, ensure_ascii=False, indent=2),
         source_message_id=source_message_id or "unknown_msg",
         sender=sender or "User",
+        reference_time_vn=now_vn_str,
     )
 
     raw_response = await llm_client.generate_async(prompt)
@@ -926,7 +993,7 @@ async def extract_facts_async(
     )
 
     superseded_facts: List[Dict[str, Any]] = []
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     superseded_target_ids = {f.replaces for f in new_facts if f.replaces}
 
     if existing_facts and superseded_target_ids:
@@ -1307,7 +1374,7 @@ def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, An
 
     # 2. Cập nhật superseded facts
     superseded_ids = {f.get("id") or f.get("_id") for f in superseded_facts if (f.get("id") or f.get("_id"))}
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = get_vietnam_now_iso()
     for f in stored_facts:
         fid = f.get("id") or f.get("_id")
         if fid in superseded_ids:
