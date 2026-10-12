@@ -485,7 +485,7 @@ class GeminiClient:
         prompt: str,
         model_name: Optional[str] = None,
         temperature: float = 0.2,
-        max_output_tokens: int = 2048,
+        max_output_tokens: int = 4096,
     ) -> str:
         """Gọi Gemini API bất đồng bộ để sinh văn bản tự nhiên (không ép JSON)."""
         models_to_try = [model_name] if model_name else self.DEFAULT_MODELS

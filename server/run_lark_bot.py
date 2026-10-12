@@ -266,33 +266,6 @@ def main():
     print("💡 Mọi tin nhắn phản hồi sẽ hiện ra dưới danh tính Tống Phước Hoài Nam!")
     print("=" * 65)
 
-    # Nạp sẵn bản nháp gần nhất từ phiên trước để bạn có thể test ngay lệnh 'Gửi'
-    owner_id = user_info.get("open_id") or lark_service.known_user_open_id
-    draft_store.set_draft(
-        owner_id=owner_id,
-        draft=PendingDraft(
-            message_id="om_x100b63f3b91114a4eeb5fe69410f252",
-            chat_id="",
-            query="Mục tiêu & Cơ cấu đội ngũ dự án",
-            draft_answer=(
-                "**2. Mục tiêu & Phạm vi tính năng cốt lõi:**\n"
-                "HiLark Assistant giải quyết bài toán phân mảnh thông tin trong giao tiếp doanh nghiệp "
-                "bằng cách tự động phân tích hội thoại chat thành Đồ thị Tri thức Phân cấp (Parent – Child Knowledge Graph) "
-                "kết hợp cơ chế lưu vết lịch sử biến động.\n\n"
-                "Các module chính và tiến độ hiện tại:\n"
-                "* **LLM Extractor (Nhánh 1: Entities):** Nhận diện 6 loại thực thể cốt lõi, khử đồng tham chiếu tự động. **Tiến độ: Hoàn tất 100%.**\n"
-                "* **Claims & Audit Engine (Nhánh 2: Facts):** Trích xuất mệnh đề sự thật, tự phát hiện biến động thay thế, lưu vết lịch sử thuộc tính. **Tiến độ: Hoàn tất 100%.**\n"
-                "* **Grounded QA Service (Bộ nhớ phân cấp):** Trả lời câu hỏi tự nhiên dựa 100% trên Facts có căn cứ trích dẫn nguồn, kèm dòng thời gian biến động quá khứ. **Tiến độ: Hoàn tất 95%.**\n"
-                "* **Tích hợp Đa kênh (Lark Suite & Webhook):** Đồng bộ tin nhắn 2 chiều từ Lark Chat, Lark Base và giao diện điều khiển nội bộ. **Tiến độ: Đang thực hiện (70%).**\n\n"
-                "**3. Cơ cấu đội ngũ & Phân công tác nghiệp:**\n"
-                "* **Project Lead:** Theo tài liệu gốc, mình (Nguyễn Hoài Nam) là Project Lead. Tuy nhiên, theo cập nhật mới nhất, Tuấn PM và Nguyên đã tham gia phụ trách."
-            ),
-            user_name="Hoài Phước",
-            responder_name=user_info.get("name", "Tống Phước Hoài Nam"),
-        ),
-    )
-    print(f"📝 Đã nạp sẵn bản nháp chờ duyệt: om_x100b63f3b91114a4eeb5fe69410f252 (Sẵn sàng cho lệnh 'Gửi')")
-
     # Khởi động chế độ Hybrid
     lark_service.start_hybrid_runner(dm_poll_interval=2.5)
 
