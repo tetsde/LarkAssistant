@@ -10,8 +10,28 @@ class ChatRequest(BaseModel):
     message_id: Optional[str] = None
     chat_id: Optional[str] = None
     sender_id: Optional[str] = None
+    user_name: Optional[str] = Field(default=None, description="Tên đích danh người hỏi (VD: Hoài Phước)")
+    responder_name: Optional[str] = Field(default="Tống Phước Hoài Nam", description="Tên người trả lời")
+    role: Optional[str] = Field(default="Project Lead", description="Vai trò của người trả lời")
     reply_to_lark: bool = False
+
+
+class UserChatRequest(BaseModel):
+    """
+    Request chuyên biệt cho endpoint chat trả lời ĐÍCH DANH người dùng.
+    """
+    query: str = Field(..., description="Câu hỏi hoặc tin nhắn của người dùng")
+    user_name: str = Field(default="bạn", description="Tên đích danh người nhận câu trả lời (VD: Hoài Phước)")
+    responder_name: str = Field(default="Tống Phước Hoài Nam", description="Tên người trực tiếp phản hồi")
+    role: str = Field(default="Project Lead HiLark", description="Vai trò của người phản hồi")
+    channel: str = Field(default="lark", description="Kênh liên lạc")
+    message_id: Optional[str] = Field(default=None, description="Lark message ID để reply trực tiếp")
+    chat_id: Optional[str] = Field(default=None, description="Lark chat ID")
+    sender_id: Optional[str] = Field(default=None, description="Lark open_id của người hỏi")
+    reply_to_lark: bool = Field(default=False, description="Tự động gửi reply về Lark")
+    retrieve_count: int = Field(default=5, description="Số lượng chunks truy xuất từ WeKnora")
 
 
 class MemoryRequest(BaseModel):
     text: str
+

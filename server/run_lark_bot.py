@@ -58,11 +58,23 @@ async def handle_incoming_message(msg: LarkMessage):
 
     # Chuẩn bị danh tính User phản hồi (Tống Phước Hoài Nam)
     user_info = lark_service.get_current_user()
-    user_name = user_info.get("name", "Tống Phước Hoài Nam")
-    print(f"👤 Danh tính phản hồi: {user_name} (as_user=True)")
+    responder_name = user_info.get("name", "Tống Phước Hoài Nam")
+    print(f"👤 Danh tính phản hồi: {responder_name}")
+
+    # Nhận diện tên đích danh người hỏi (VD: Hoài Phước)
+    target_user_name = "bạn"
+    if msg.mentions:
+        for m in msg.mentions:
+            m_name = m.get("name", "")
+            if m_name and not ("bot" in m_name.lower() or "hilark" in m_name.lower()):
+                target_user_name = m_name
+                break
+    if target_user_name == "bạn":
+        if "phước" in msg.text.lower() or "phuoc" in msg.text.lower():
+            target_user_name = "Hoài Phước"
 
     # 3. Chuyển vào Unified Chat Pipeline (text_filter -> JEV Routing -> Memory/RAG)
-    print("⚙️ Đang xử lý qua Chat Pipeline (text_filter -> JEV Routing)...")
+    print(f"⚙️ Đang xử lý qua Chat Pipeline (đích danh: '{target_user_name}' -> JEV Routing)...")
     try:
         result = await process_chat_pipeline(
             query=msg.text,
@@ -71,6 +83,9 @@ async def handle_incoming_message(msg: LarkMessage):
             message_id=msg.message_id,
             chat_id=msg.chat_id,
             reply_to_lark=True,  # Tự động gửi reply nhân danh User khi JEV yêu cầu
+            user_name=target_user_name,
+            responder_name=responder_name,
+            role="Project Lead",
         )
     except Exception as e:
         print(f"❌ Lỗi khi thực thi pipeline: {e}")

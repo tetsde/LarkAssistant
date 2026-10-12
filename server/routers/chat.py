@@ -3,7 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from core.config import settings
-from models import ChatRequest, MemoryRequest
+from models import ChatRequest, MemoryRequest, UserChatRequest
 from services.weknora import WeKnoraService, weknora_service
 from services.jev import jev_service
 from services.lark import lark_service
@@ -54,6 +54,33 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - Trả lời bằng tiếng Việt chuyên nghiệp, súc tích, dễ đọc. Sử dụng bullet points hoặc bảng tóm tắt khi trình bày nhiều mục thông tin.
 """
 
+GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}) của dự án HiLark.
+Bạn đang trực tiếp phản hồi ĐÍCH DANH cho thành viên/đồng nghiệp: {user_name}.
+
+Nhiệm vụ của bạn là giải đáp câu hỏi của {user_name} một cách tự nhiên, chân thành, thân thiện nhưng chuẩn xác và chuyên nghiệp, DỰA HOÀN TOÀN TRÊN BỘ BỐI CẢNH TRI THỨC dưới đây.
+
+=== BỘ BỐI CẢNH TRI THỨC (KNOWLEDGE CONTEXT) ===
+{context_text}
+
+=== CÂU HỎI TỪ {user_name} ===
+{query}
+
+=== QUY TẮC BẮT BUỘC KHI TRẢ LỜI ===
+1. XƯNG HÔ VÀ PHONG CÁCH ĐÍCH DANH (BẮT BUỘC):
+   - BẮT BUỘC chào hỏi và xưng hô ĐÍCH DANH với {user_name} ở đầu câu trả lời (Ví dụ: "Chào {user_name}, về câu hỏi của bạn/em...", "Chào {user_name}, dự án HiLark...").
+   - Trả lời bằng giọng văn của con người thật ({responder_name}), tự nhiên, ấm áp, uy tín.
+   - TUYỆT ĐỐI KHÔNG xưng "Tôi là trợ lý ảo/AI/bot". Hãy trả lời tự nhiên như bạn đang nhắn tin trao đổi trực tiếp trong nhóm.
+2. NGUYÊN TẮC ƯU TIÊN SỰ THẬT (Fact Override):
+   - "PHẦN 2: THỰC TẾ CẬP NHẬT & MỆNH ĐỀ ĐỘNG (MONGODB CLAIMS)" chứa các thông tin cập nhật thời gian thực từ hội thoại trao đổi.
+   - Nếu có mâu thuẫn giữa "PHẦN 1: TÀI LIỆU DỰ ÁN & VĂN BẢN (WEKNORA)" và "PHẦN 2: CLAIMS", thông tin có trạng thái [CURRENT] trong Claims LUÔN ĐƯỢC ƯU TIÊN TUYỆT ĐỐI.
+   - Khi phát hiện thông tin đã thay đổi (deadline điều chỉnh, ngân sách, phân công nhân sự), bạn PHẢI giải thích rõ để {user_name} nắm được tình hình.
+3. TRUNG THỰC & GROUNDED:
+   - Tuyệt đối không bịa đặt thông tin không có trong bối cảnh.
+   - Nếu bối cảnh chưa có thông tin, hãy thành thật trả lời {user_name} rằng mình chưa ghi nhận thông tin này và sẽ kiểm tra lại sau.
+4. NGẮN GỌN, DỄ ĐỌC:
+   - Trả lời bằng tiếng Việt gãy gọn, đúng trọng tâm câu hỏi.
+"""
+
 
 async def process_memory_extraction(query_text: str, sender: str = "User") -> Dict[str, Any]:
     """Helper xử lý trích xuất Entities & Facts khi JEV yêu cầu ghi nhớ."""
@@ -79,13 +106,14 @@ async def process_memory_extraction(query_text: str, sender: str = "User") -> Di
         existing_facts=existing_facts,
     )
 
+    # Lưu vào JSON file trước để đảm bảo sạch dữ liệu
+    saved = apply_and_save_extraction(extraction_result)
+
     mongo_saved = None
     try:
         mongo_saved = await save_extraction_to_mongo(extraction_result)
     except Exception as e:
         logger.error(f"Lỗi khi lưu vào MongoDB: {e}")
-
-    saved = apply_and_save_extraction(extraction_result)
 
     total_entities = mongo_saved.get("total_stored_entities", saved.get("total_stored_entities", 0)) if mongo_saved else saved.get("total_stored_entities", 0)
     total_facts = mongo_saved.get("total_stored_facts", saved.get("total_stored_facts", 0)) if mongo_saved else saved.get("total_stored_facts", 0)
@@ -111,17 +139,29 @@ async def generate_grounded_answer(
     context_text: str,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    user_name: Optional[str] = None,
+    responder_name: Optional[str] = "Tống Phước Hoài Nam",
+    role: Optional[str] = "Project Lead",
 ) -> str:
-    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất."""
+    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user)."""
     key = api_key or getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
     if not key:
         logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
         return ""
 
-    prompt = GROUNDED_QA_SYSTEM_PROMPT.format(
-        context_text=context_text,
-        query=query,
-    )
+    if user_name:
+        prompt = GROUNDED_QA_USER_PERSONA_PROMPT.format(
+            context_text=context_text,
+            query=query,
+            user_name=user_name,
+            responder_name=responder_name or "Tống Phước Hoài Nam",
+            role=role or "Project Lead",
+        )
+    else:
+        prompt = GROUNDED_QA_SYSTEM_PROMPT.format(
+            context_text=context_text,
+            query=query,
+        )
 
     client = GeminiClient(api_key=key)
     try:
@@ -140,6 +180,9 @@ async def process_chat_pipeline(
     chat_id: Optional[str] = None,
     reply_to_lark: bool = False,
     retrieve_count: int = 5,
+    user_name: Optional[str] = None,
+    responder_name: Optional[str] = "Tống Phước Hoài Nam",
+    role: Optional[str] = "Project Lead",
 ) -> Dict[str, Any]:
     """
     Quy trình xử lý hội thoại toàn diện (Unified Chat Pipeline):
@@ -252,10 +295,13 @@ async def process_chat_pipeline(
         auto_align=True,
     )
 
-    # 4. Sinh câu trả lời Grounded QA từ Gemini
+    # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh)
     answer = await generate_grounded_answer(
         query=clean_query,
         context_text=composed.get("context_text", ""),
+        user_name=user_name,
+        responder_name=responder_name,
+        role=role,
     )
 
     # Fallback WeKnora chat nếu LLM answer trống
@@ -289,6 +335,8 @@ async def process_chat_pipeline(
         "jev_confidence": jev_confidence,
         "query": clean_query,
         "answer": answer,
+        "user_name": user_name,
+        "responder_name": responder_name,
         "extraction": extraction_data,
         "composed_context": composed,
         "lark_response": lark_reply_result,
@@ -305,6 +353,38 @@ async def chat(request: ChatRequest):
         message_id=request.message_id,
         chat_id=request.chat_id,
         reply_to_lark=request.reply_to_lark,
+        user_name=request.user_name,
+        responder_name=request.responder_name or "Tống Phước Hoài Nam",
+        role=request.role or "Project Lead",
+    )
+
+    if result.get("status") == "invalid_input":
+        raise HTTPException(status_code=400, detail=result.get("message", "Tin nhắn không hợp lệ"))
+
+    return result
+
+
+@router.post("/user", summary="Chat trả lời dựa trên đích danh User")
+async def chat_as_user(request: UserChatRequest):
+    """
+    Endpoint chat trả lời ĐÍCH DANH người dùng:
+      - Xưng hô và chào hỏi đích danh người hỏi (user_name, VD: 'Hoài Phước').
+      - Đóng vai là người trả lời (responder_name, mặc định: 'Tống Phước Hoài Nam').
+      - Đi qua text_filter và JEV routing.
+      - Hợp nhất tài liệu WeKnora và mệnh đề MongoDB Claims.
+      - Tùy chọn gửi tin nhắn phản hồi về Lark qua message_id (reply_to_lark=True).
+    """
+    result = await process_chat_pipeline(
+        query=request.query,
+        sender=request.sender_id or request.user_name,
+        channel=request.channel,
+        message_id=request.message_id,
+        chat_id=request.chat_id,
+        reply_to_lark=request.reply_to_lark,
+        retrieve_count=request.retrieve_count,
+        user_name=request.user_name,
+        responder_name=request.responder_name,
+        role=request.role,
     )
 
     if result.get("status") == "invalid_input":

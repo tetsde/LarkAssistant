@@ -363,6 +363,12 @@ class LarkService:
                 logger.error(
                     f"Lỗi reply tin nhắn {message_id}: code={response.code}, msg={response.msg}"
                 )
+                if as_user and response.code in (20005, 99991663, 99991668, 401):
+                    logger.warning("User token hết hạn/lỗi. Tự động fallback reply bằng Bot App Token...")
+                    fb_resp = await self.client.im.v1.message.areply(request)
+                    if fb_resp.success():
+                        logger.info(f"✔ Đã fallback reply thành công bằng Bot App Token cho {message_id}")
+                        return {"success": True, "data": fb_resp.data, "fallback_bot": True}
                 return {
                     "success": False,
                     "code": response.code,
