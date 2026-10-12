@@ -186,7 +186,8 @@ async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
     else:
         entity["created_at"] = entity.get("created_at") or now_iso
         entity["updated_at"] = now_iso
-        await col.insert_one(entity)
+        insert_data = {k: v for k, v in entity.items() if k != "_id"}
+        await col.insert_one(insert_data)
 
     saved = await col.find_one({"id": entity_id})
     return _clean_mongo_doc(saved)
@@ -347,7 +348,8 @@ def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
     else:
         entity["created_at"] = entity.get("created_at") or now_iso
         entity["updated_at"] = now_iso
-        col.insert_one(entity)
+        insert_data = {k: v for k, v in entity.items() if k != "_id"}
+        col.insert_one(insert_data)
 
     saved = col.find_one({"id": entity_id})
     return _clean_mongo_doc(saved)

@@ -22,10 +22,11 @@ if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
 from services.lark import lark_service, LarkMessage
+from routers.chat import process_chat_pipeline
 
 
 # =============================================================================
-# ĐĂNG KÝ HÀM XỬ LÝ: TRẢ LỜI BẰNG CHÍNH DANH TÍNH CỦA USER
+# ĐĂNG KÝ HÀM XỬ LÝ: CHAT PIPELINE (TEXT_FILTER + JEV ROUTING + AS_USER REPLY)
 # =============================================================================
 
 @lark_service.on_message
@@ -35,40 +36,83 @@ async def handle_incoming_message(msg: LarkMessage):
     print("\n" + "=" * 65)
     print("🔔 [LARK EVENT] BẮT ĐƯỢC TIN NHẮN TỪ LARK:")
     print("-" * 65)
-    print(f"🕒 Thời gian    : {now_str}")
+    print(f"🕒 Thời gian      : {now_str}")
     print(f"💬 Cuộc trò chuyện: {msg.chat_id} (Loại: {msg.chat_type})")
-    print(f"👤 Người gửi    : {msg.sender_id} {'[CHÍNH BẠN]' if msg.is_self else '[USER KHÁC]'}")
-    print(f"🆔 Message ID   : {msg.message_id}")
-    print(f"📄 NỘI DUNG     : \"{msg.text}\"")
+    print(f"👤 Người gửi      : {msg.sender_id} {'[CHÍNH BẠN]' if msg.is_self else '[USER KHÁC]'}")
+    print(f"🆔 Message ID     : {msg.message_id}")
+    print(f"📄 NỘI DUNG       : \"{msg.text}\"")
     print("-" * 65)
 
-    # Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi tin nhắn này
+    # 1. Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi tin nhắn này
     if msg.is_self:
         print("ℹ️ Bỏ qua tin nhắn do chính bạn gửi.")
+        return
+
+    # 2. Bỏ qua tin nhắn từ Bot
+    if msg.is_bot:
+        print("ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng.")
         return
 
     channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
     print(f"📡 Kênh tiếp nhận : {channel_type}")
 
-    # Chuẩn bị nội dung trả lời nhân danh Tống Phước Hoài Nam
+    # Chuẩn bị danh tính User phản hồi (Tống Phước Hoài Nam)
     user_info = lark_service.get_current_user()
     user_name = user_info.get("name", "Tống Phước Hoài Nam")
-    
-    reply_text = f"[Trợ lý {user_name}]: Đã nhận được thông tin: '{msg.text}'. Mình đang xử lý nhé!"
-    print(f"👉 Đang gửi tin nhắn trả lời nhân danh '{user_name}' (as_user=True)...")
+    print(f"👤 Danh tính phản hồi: {user_name} (as_user=True)")
 
-    # GỬI REPLY DƯỚI DANH NGHĨA USER (TỐNG PHƯỚC HOÀI NAM)
-    res = await lark_service.areply_text(
-        message_id=msg.message_id,
-        text=reply_text,
-        as_user=True,  # 👈 QUAN TRỌNG: Gửi bằng danh tính User, KHÔNG PHẢI BOT
-    )
+    # 3. Chuyển vào Unified Chat Pipeline (text_filter -> JEV Routing -> Memory/RAG)
+    print("⚙️ Đang xử lý qua Chat Pipeline (text_filter -> JEV Routing)...")
+    try:
+        result = await process_chat_pipeline(
+            query=msg.text,
+            sender=msg.sender_id,
+            channel=f"lark_{msg.chat_type}",
+            message_id=msg.message_id,
+            chat_id=msg.chat_id,
+            reply_to_lark=True,  # Tự động gửi reply nhân danh User khi JEV yêu cầu
+        )
+    except Exception as e:
+        print(f"❌ Lỗi khi thực thi pipeline: {e}")
+        import traceback
+        traceback.print_exc()
+        return
 
-    if res.get("success"):
-        print(f"✔ ĐÃ TRẢ LỜI THÀNH CÔNG NHÂN DANH {user_name.upper()}!")
-        print(f"   (Tin nhắn trên Lark sẽ hiển thị tên và avatar của bạn, KHÔNG CÓ MÁC BOT)")
-    else:
-        print(f"❌ Lỗi khi gửi tin nhắn as_user: {res}")
+    # 4. Hiển thị kết quả chi tiết theo quyết định định tuyến của JEV
+    jev_action = result.get("jev_action", "IGNORE")
+    confidence = result.get("jev_confidence", 0.0)
+    status = result.get("status", "")
+
+    print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
+    print(f"📊 Trạng thái     : {status}")
+
+    if jev_action == "IGNORE":
+        print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
+
+    elif jev_action == "MEMORY_ONLY":
+        ext = result.get("extraction") or {}
+        num_ent = len(ext.get("entities", []))
+        num_facts = len(ext.get("facts", []))
+        print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào bộ nhớ MongoDB/KB.")
+        print(f"   • Thực thể mới : {num_ent}")
+        print(f"   • Facts mới    : {num_facts}")
+        print(f"   (Không gửi tin nhắn trả lời để tránh làm phiền)")
+
+    elif jev_action in ("REPLY_ONLY", "MEMORY_AND_REPLY"):
+        if jev_action == "MEMORY_AND_REPLY":
+            ext = result.get("extraction") or {}
+            print(f"💾 [MEMORY_AND_REPLY] Đã cập nhật bộ nhớ ({len(ext.get('facts', []))} facts mới).")
+
+        answer = result.get("answer", "")
+        print(f"💬 [TRẢ LỜI] Câu trả lời đã tạo ({len(answer)} ký tự):")
+        print(f"   \"{answer[:150]}{'...' if len(answer) > 150 else ''}\"")
+
+        lark_res = result.get("lark_response") or {}
+        if lark_res.get("success"):
+            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {user_name.upper()}!")
+            print(f"   (Tin nhắn trên Lark hiển thị avatar & tên của bạn, KHÔNG CÓ LOGO BOT)")
+        else:
+            print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")
 
     print("=" * 65 + "\n")
 

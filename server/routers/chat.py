@@ -1,10 +1,14 @@
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
+from core.config import settings
 from models import ChatRequest, MemoryRequest
-from services.weknora import WeKnoraService
+from services.weknora import WeKnoraService, weknora_service
 from services.jev import jev_service
+from services.lark import lark_service
 from utils.text_filter import text_filter
+from utils.context_composer import ContextComposer
 from utils.llm_extractor import (
     extract_async,
     load_stored_entities,
@@ -12,6 +16,7 @@ from utils.llm_extractor import (
     load_stored_claims,
     apply_and_save_extraction,
     clear_stores,
+    GeminiClient,
 )
 from database import (
     check_mongo_connection,
@@ -21,22 +26,154 @@ from database import (
     clear_mongo_stores,
 )
 
+logger = logging.getLogger("hilark.chat")
 router = APIRouter(prefix="/api/chat", tags=["chat"])
-weknora_service = WeKnoraService()
 
 
-@router.post("")
-async def chat(request: ChatRequest):
-    # Bước 1: Dọn dẹp ký tự và validate độ dài (không chặn theo từ khóa)
+GROUNDED_QA_SYSTEM_PROMPT = """Bạn là Trợ lý Doanh nghiệp HiLark (HiLark AI Assistant) chuyên nghiệp, thông minh, chính xác và trung thực.
+
+Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA HOÀN TOÀN TRÊN BỘ BỐI CẢNH TRI THỨC dưới đây.
+
+=== BỘ BỐI CẢNH TRI THỨC (KNOWLEDGE CONTEXT) ===
+{context_text}
+
+=== CÂU HỎI CỦA NGƯỜI DÙNG ===
+{query}
+
+=== QUY TẮC BẮT BUỘC KHI TRẢ LỜI ===
+1. NGUYÊN TẮC ƯU TIÊN SỰ THẬT (Fact Override):
+   - "PHẦN 2: THỰC TẾ CẬP NHẬT & MỆNH ĐỀ ĐỘNG (MONGODB CLAIMS)" chứa các thông tin cập nhật thời gian thực từ hội thoại trao đổi.
+   - Nếu có mâu thuẫn giữa "PHẦN 1: TÀI LIỆU DỰ ÁN & VĂN BẢN (WEKNORA)" và "PHẦN 2: CLAIMS", thông tin có trạng thái [CURRENT] trong Claims LUÔN ĐƯỢC ƯU TIÊN TUYỆT ĐỐI.
+   - Khi phát hiện thông tin đã thay đổi (ví dụ: chuyển giao người phụ trách, ngân sách thay đổi, deadline điều chỉnh), bạn PHẢI nêu rõ sự thay đổi và quá trình biến động để người dùng nắm bắt (Ví dụ: "Theo tài liệu ban đầu là Nam làm Project Lead, tuy nhiên theo cập nhật mới nhất đã chuyển giao cho Nguyên đảm nhiệm").
+2. TRUNG THỰC & GROUNDED:
+   - Tuyệt đối không suy diễn hoặc bịa đặt thông tin không có trong bối cảnh.
+   - Nếu bối cảnh không có dữ liệu để trả lời câu hỏi, hãy lịch sự thông báo rõ rằng hệ thống chưa ghi nhận thông tin này.
+3. TRÍCH DẪN NGUỒN:
+   - Trích dẫn rõ ràng nguồn thông tin nếu có (ví dụ: [Tài liệu: du_an_mau_hilark.pdf] hoặc [Cập nhật hội thoại: ...]).
+4. PHONG CÁCH TRÌNH BÀY:
+   - Trả lời bằng tiếng Việt chuyên nghiệp, súc tích, dễ đọc. Sử dụng bullet points hoặc bảng tóm tắt khi trình bày nhiều mục thông tin.
+"""
+
+
+async def process_memory_extraction(query_text: str, sender: str = "User") -> Dict[str, Any]:
+    """Helper xử lý trích xuất Entities & Facts khi JEV yêu cầu ghi nhớ."""
+    msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+
     try:
-        request.query = text_filter.validate_and_clean(request.query)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        existing_entities = await get_mongo_entities()
+        existing_facts = await get_mongo_facts()
+        if not existing_entities:
+            existing_entities = load_stored_entities()
+        if not existing_facts:
+            existing_facts = load_stored_facts()
+    except Exception:
+        existing_entities = load_stored_entities()
+        existing_facts = load_stored_facts()
 
-    # Bước 2: JEV Routing - Phân loại xem tin nhắn có đáng xử lý hay không
-    jev_result = await jev_service.classify_message(request.query)
-    jev_action = jev_result["action"]
-    jev_confidence = jev_result["confidence"]
+    extraction_result = await extract_async(
+        query=query_text,
+        workspace_id="default",
+        source_message_id=msg_id,
+        sender=sender,
+        existing_entities=existing_entities,
+        existing_facts=existing_facts,
+    )
+
+    mongo_saved = None
+    try:
+        mongo_saved = await save_extraction_to_mongo(extraction_result)
+    except Exception as e:
+        logger.error(f"Lỗi khi lưu vào MongoDB: {e}")
+
+    saved = apply_and_save_extraction(extraction_result)
+
+    total_entities = mongo_saved.get("total_stored_entities", saved.get("total_stored_entities", 0)) if mongo_saved else saved.get("total_stored_entities", 0)
+    total_facts = mongo_saved.get("total_stored_facts", saved.get("total_stored_facts", 0)) if mongo_saved else saved.get("total_stored_facts", 0)
+
+    return {
+        "message_id": msg_id,
+        "entities": saved.get("entities", []),
+        "facts": saved.get("facts", []),
+        "superseded_facts": saved.get("superseded_facts", []),
+        "total_stored_entities": total_entities,
+        "total_stored_facts": total_facts,
+        "saved_to_mongodb": bool(mongo_saved),
+        # Backward compatibility
+        "memory": saved.get("memory", []),
+        "claims": saved.get("claims", []),
+        "superseded_claims": saved.get("superseded_claims", []),
+        "total_stored_claims": total_facts,
+    }
+
+
+async def generate_grounded_answer(
+    query: str,
+    context_text: str,
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> str:
+    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất."""
+    key = api_key or getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
+    if not key:
+        logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
+        return ""
+
+    prompt = GROUNDED_QA_SYSTEM_PROMPT.format(
+        context_text=context_text,
+        query=query,
+    )
+
+    client = GeminiClient(api_key=key)
+    try:
+        ans = await client.generate_text_async(prompt=prompt, model_name=model_name)
+        return ans.strip()
+    except Exception as e:
+        logger.warning(f"Lỗi khi gọi Gemini generate_text_async: {e}")
+        return ""
+
+
+async def process_chat_pipeline(
+    query: str,
+    sender: str = "User",
+    channel: str = "api",
+    message_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    reply_to_lark: bool = False,
+    retrieve_count: int = 5,
+) -> Dict[str, Any]:
+    """
+    Quy trình xử lý hội thoại toàn diện (Unified Chat Pipeline):
+      1. text_filter: Làm sạch ký tự lạ, validate độ dài tin nhắn.
+      2. JEV Service: Phân loại định tuyến hành động (IGNORE, MEMORY_ONLY, REPLY_ONLY, MEMORY_AND_REPLY).
+      3. Thực thi hành động:
+         - IGNORE: Bỏ qua (tin nhắn rác, chào hỏi xã giao).
+         - MEMORY_ONLY: Trích xuất thực thể & mệnh đề -> Lưu MongoDB + WeKnora KB (im lặng ghi nhớ).
+         - REPLY_ONLY: Tra cứu WeKnora Chunks + MongoDB Claims -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
+         - MEMORY_AND_REPLY: Lưu trích xuất trước -> Tra cứu tổng hợp -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
+    """
+    # ── Bước 1: Dọn dẹp ký tự và validate độ dài ──
+    try:
+        clean_query = text_filter.validate_and_clean(query)
+    except ValueError as e:
+        logger.warning(f"text_filter từ chối tin nhắn: {e} (nội dung: '{query}')")
+        return {
+            "status": "invalid_input",
+            "jev_action": "IGNORE",
+            "jev_confidence": 0.0,
+            "query": query,
+            "answer": None,
+            "message": str(e),
+        }
+
+    # ── Bước 2: JEV Routing - Phân loại xem tin nhắn có đáng xử lý hay không ──
+    try:
+        jev_result = await jev_service.classify_message(clean_query)
+        jev_action = jev_result.get("action", "IGNORE")
+        jev_confidence = jev_result.get("confidence", 0.0)
+    except Exception as e:
+        logger.error(f"Lỗi phân loại JEV: {e}")
+        jev_action = "REPLY_ONLY" if ("?" in clean_query or len(clean_query.split()) >= 4) else "IGNORE"
+        jev_confidence = 0.5
 
     # TH1: IGNORE - Tin rác, chào hỏi vô thưởng vô phạt
     if jev_action == "IGNORE":
@@ -44,72 +181,22 @@ async def chat(request: ChatRequest):
             "status": "ignored",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
-            "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời."
+            "query": clean_query,
+            "answer": None,
+            "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời.",
         }
 
-    # Helper xử lý trích xuất Entities & Facts khi JEV yêu cầu ghi nhớ
-    async def process_memory_extraction(query_text: str, sender: str) -> Dict[str, Any]:
-        msg_id = f"msg_{uuid.uuid4().hex[:8]}"
-        
-        # Ưu tiên lấy từ MongoDB nếu có, fallback sang file JSON
-        try:
-            existing_entities = await get_mongo_entities()
-            existing_facts = await get_mongo_facts()
-            if not existing_entities:
-                existing_entities = load_stored_entities()
-            if not existing_facts:
-                existing_facts = load_stored_facts()
-        except Exception:
-            existing_entities = load_stored_entities()
-            existing_facts = load_stored_facts()
-
-        extraction_result = await extract_async(
-            query=query_text,
-            workspace_id="default",
-            source_message_id=msg_id,
-            sender=sender,
-            existing_entities=existing_entities,
-            existing_facts=existing_facts,
-        )
-
-        # Dual-save: Lưu cả MongoDB và file JSON
-        mongo_saved = None
-        try:
-            mongo_saved = await save_extraction_to_mongo(extraction_result)
-        except Exception as e:
-            print(f"Lỗi khi lưu vào MongoDB: {e}")
-
-        saved = apply_and_save_extraction(extraction_result)
-
-        total_entities = mongo_saved.get("total_stored_entities", saved.get("total_stored_entities", 0)) if mongo_saved else saved.get("total_stored_entities", 0)
-        total_facts = mongo_saved.get("total_stored_facts", saved.get("total_stored_facts", 0)) if mongo_saved else saved.get("total_stored_facts", 0)
-
-        return {
-            "message_id": msg_id,
-            "entities": saved.get("entities", []),
-            "facts": saved.get("facts", []),
-            "superseded_facts": saved.get("superseded_facts", []),
-            "total_stored_entities": total_entities,
-            "total_stored_facts": total_facts,
-            "saved_to_mongodb": bool(mongo_saved),
-            # Backward compatibility
-            "memory": saved.get("memory", []),
-            "claims": saved.get("claims", []),
-            "superseded_claims": saved.get("superseded_claims", []),
-            "total_stored_claims": total_facts,
-        }
-
-    # Bước 3: Nếu JEV yêu cầu lưu bộ nhớ (MEMORY_ONLY hoặc MEMORY_AND_REPLY) -> Chạy Utils Extractor ĐẦU TIÊN
+    # Bước 3: Nếu JEV yêu cầu lưu bộ nhớ (MEMORY_ONLY hoặc MEMORY_AND_REPLY)
     extraction_data = None
     if jev_action in ("MEMORY_ONLY", "MEMORY_AND_REPLY"):
         extraction_data = await process_memory_extraction(
-            query_text=request.query,
-            sender=request.channel or "User",
+            query_text=clean_query,
+            sender=sender,
         )
         try:
-            await weknora_service.save_to_kb(request.query)
+            await weknora_service.save_to_kb(clean_query)
         except Exception as e:
-            print(f"Lỗi khi lưu vào WeKnora KB: {e}")
+            logger.warning(f"Lỗi khi lưu vào WeKnora KB: {e}")
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
     if jev_action == "MEMORY_ONLY":
@@ -117,23 +204,114 @@ async def chat(request: ChatRequest):
             "status": "memorized",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
+            "query": clean_query,
             "extraction": extraction_data,
-            "message": "Thông tin quan trọng đã được hệ thống trích xuất Thực thể & Mệnh đề thành công. Không cần phản hồi."
+            "answer": None,
+            "message": "Thông tin quan trọng đã được hệ thống trích xuất Thực thể & Mệnh đề thành công. Không cần phản hồi.",
         }
 
-    # TH3: REPLY_ONLY hoặc MEMORY_AND_REPLY - Cần gọi WeKnora tạo câu trả lời
-    response_data = await weknora_service.get_chat_response(request)
-    if isinstance(response_data, dict) and "answer" in response_data:
-        response_data["answer"] = text_filter.clean_output(response_data["answer"])
+    # TH3 & TH4: REPLY_ONLY hoặc MEMORY_AND_REPLY - Cần tạo câu trả lời Grounded QA
+    # 1. Lấy active claims từ MongoDB
+    all_facts = []
+    try:
+        all_facts = await get_mongo_facts()
+    except Exception as e:
+        logger.warning(f"Lỗi khi đọc facts từ MongoDB: {e}")
+    if not all_facts:
+        all_facts = load_stored_facts()
+    active_claims = [f for f in all_facts if f.get("status", "current") == "current"]
+
+    # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base
+    chunks = []
+    try:
+        chunks = await weknora_service.retrieve(query=clean_query, match_count=retrieve_count)
+    except Exception as e:
+        logger.warning(f"Lỗi WeKnora retrieve: {e}")
+
+    # Chuẩn hóa chunks cho ContextComposer
+    normalized_chunks = []
+    for c in chunks:
+        doc_name = (
+            c.get("knowledge_title")
+            or c.get("document_name")
+            or "Tài liệu hệ thống"
+        )
+        normalized_chunks.append({
+            "content": c.get("content", ""),
+            "document_name": doc_name,
+            "chunk_id": c.get("id") or c.get("chunk_id"),
+            "score": c.get("score"),
+        })
+
+    # 3. Hợp nhất ngữ cảnh với ContextComposer
+    composer = ContextComposer()
+    composed = composer.compose(
+        retriever_data=normalized_chunks if normalized_chunks else None,
+        claims_data=active_claims if active_claims else None,
+        query=clean_query,
+        auto_align=True,
+    )
+
+    # 4. Sinh câu trả lời Grounded QA từ Gemini
+    answer = await generate_grounded_answer(
+        query=clean_query,
+        context_text=composed.get("context_text", ""),
+    )
+
+    # Fallback WeKnora chat nếu LLM answer trống
+    if not answer:
+        try:
+            fallback = await weknora_service.get_chat_response(ChatRequest(query=clean_query))
+            if isinstance(fallback, dict) and "answer" in fallback:
+                answer = fallback["answer"]
+        except Exception as e:
+            logger.warning(f"Fallback WeKnora chat thất bại: {e}")
+
+    # Làm sạch đầu ra
+    answer = text_filter.clean_output(answer) if answer else "Hệ thống chưa tìm thấy thông tin phù hợp trong cơ sở tri thức để trả lời câu hỏi của bạn."
+
+    # 5. Gửi reply về Lark nếu có yêu cầu (nhân danh User)
+    lark_reply_result = None
+    if reply_to_lark and message_id:
+        try:
+            lark_reply_result = await lark_service.areply_text(
+                message_id=message_id,
+                text=answer,
+                as_user=True,  # Trả lời nhân danh User (không có logo bot)
+            )
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi reply tới Lark: {e}")
+            lark_reply_result = {"error": str(e), "success": False}
 
     return {
         "status": "auto_replied" if jev_action == "REPLY_ONLY" else "escalated_and_memorized",
         "jev_action": jev_action,
         "jev_confidence": jev_confidence,
+        "query": clean_query,
+        "answer": answer,
         "extraction": extraction_data,
-        "weknora_response": response_data,
-        "message": "Đã tạo câu trả lời tự động." if jev_action == "REPLY_ONLY" else "Đã trích xuất Thực thể & Mệnh đề vào bộ nhớ và tạo câu trả lời khẩn!"
+        "composed_context": composed,
+        "lark_response": lark_reply_result,
+        "message": "Đã tạo câu trả lời tự động." if jev_action == "REPLY_ONLY" else "Đã trích xuất Thực thể & Mệnh đề vào bộ nhớ và tạo câu trả lời khẩn!",
     }
+
+
+@router.post("")
+async def chat(request: ChatRequest):
+    result = await process_chat_pipeline(
+        query=request.query,
+        sender=request.sender_id or request.channel or "User",
+        channel=request.channel,
+        message_id=request.message_id,
+        chat_id=request.chat_id,
+        reply_to_lark=request.reply_to_lark,
+    )
+
+    if result.get("status") == "invalid_input":
+        raise HTTPException(status_code=400, detail=result.get("message", "Tin nhắn không hợp lệ"))
+
+    return result
+
 
 
 @router.post("/memory")
