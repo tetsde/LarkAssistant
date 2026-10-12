@@ -42,10 +42,13 @@ async def handle_incoming_message(msg: LarkMessage):
     print(f"📄 NỘI DUNG     : \"{msg.text}\"")
     print("-" * 65)
 
-    # Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi câu trả lời này
-    if msg.is_self and msg.text.startswith("[Trợ lý Nam]"):
-        print("ℹ️ Bỏ qua tin nhắn do chính tiến trình tự động phát ra.")
+    # Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi tin nhắn này
+    if msg.is_self:
+        print("ℹ️ Bỏ qua tin nhắn do chính bạn gửi.")
         return
+
+    channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
+    print(f"📡 Kênh tiếp nhận : {channel_type}")
 
     # Chuẩn bị nội dung trả lời nhân danh Tống Phước Hoài Nam
     user_info = lark_service.get_current_user()
@@ -72,7 +75,7 @@ async def handle_incoming_message(msg: LarkMessage):
 
 def main():
     print("\n" + "=" * 65)
-    print("🚀 KHỞI ĐỘNG HILARK - TRẢ LỜI BẰNG CHÍNH DANH TÍNH CỦA USER")
+    print("🚀 KHỞI ĐỘNG HILARK - MÔ HÌNH HYBRID (GROUP = EVENT, DM = POLLING)")
     print("=" * 65)
     print(f"App ID : {lark_service.app_id}")
     print(f"Domain : {lark_service.domain}")
@@ -82,16 +85,18 @@ def main():
     if "name" in user_info:
         print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}")
         print(f"   - Open ID           : {user_info['open_id']}")
+        print(f"   - Group Chats       : ⚡ WebSocket Event (Real-time 0ms)")
+        print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ 2.5s)")
         print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
     else:
         print(f"⚠️ User Token         : {user_info.get('error')}")
 
     print("-" * 65)
-    print("Đang mở kết nối WebSocket tới Lark...")
     print("💡 Mọi tin nhắn phản hồi sẽ hiện ra dưới danh tính Tống Phước Hoài Nam!")
     print("=" * 65)
 
-    lark_service.start_ws_client(background=False)
+    # Khởi động chế độ Hybrid
+    lark_service.start_hybrid_runner(dm_poll_interval=2.5)
 
 
 if __name__ == "__main__":

@@ -677,6 +677,231 @@ class LarkService:
             logger.info("🚀 Lark WebSocket Client đang lắng nghe sự kiện trực tiếp từ Lark...")
             ws_client.start()
 
+    # -------------------------------------------------------------------------
+    # 9. HYBRID RUNNER: WEBSOCKET CHO GROUP + POLLING CHO DM 1-1
+    # -------------------------------------------------------------------------
+
+    def parse_list_message_item(self, item: Any, chat_type: str = "p2p") -> Optional[LarkMessage]:
+        """
+        Chuyển đổi một đối tượng tin nhắn trả về từ API list_messages thành LarkMessage.
+        """
+        if not item:
+            return None
+
+        sender = getattr(item, "sender", None)
+        sender_id = getattr(sender, "id", "") if sender else ""
+        sender_type = getattr(sender, "sender_type", "user") if sender else "user"
+        is_bot = sender_type in ("app", "bot")
+
+        my_open_id = ""
+        if self._current_user_profile:
+            my_open_id = self._current_user_profile.get("open_id", "")
+        is_self = bool(my_open_id and sender_id == my_open_id)
+
+        body = getattr(item, "body", None)
+        raw_content = getattr(body, "content", "{}") if body else "{}"
+        clean_text = ""
+        try:
+            content_dict = json.loads(raw_content)
+            if isinstance(content_dict, dict):
+                clean_text = content_dict.get("text", "")
+            elif isinstance(content_dict, str):
+                clean_text = content_dict
+        except Exception:
+            clean_text = str(raw_content)
+
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+        msg_type = getattr(item, "msg_type", "text")
+        create_time = int(getattr(item, "create_time", 0) or time.time() * 1000)
+
+        return LarkMessage(
+            message_id=getattr(item, "message_id", ""),
+            chat_id=getattr(item, "chat_id", ""),
+            chat_type=chat_type,
+            sender_id=sender_id,
+            sender_type=sender_type,
+            message_type=msg_type,
+            text=clean_text,
+            raw_content=raw_content,
+            create_time=create_time,
+            is_bot=is_bot,
+            is_self=is_self,
+            root_id=getattr(item, "root_id", None),
+            parent_id=getattr(item, "parent_id", None),
+        )
+
+    def is_dm_chat(self, chat_id: str, chat_obj: Optional[Any] = None) -> bool:
+        """
+        Kiểm tra xem cuộc trò chuyện có phải là DM 1-1 (Direct Message) giữa 2 người hay không.
+        """
+        if chat_obj:
+            mode = getattr(chat_obj, "chat_mode", "")
+            if mode == "p2p" or getattr(chat_obj, "p2p_target_id", None):
+                return True
+
+        opt = self._get_request_option(as_user=True)
+        try:
+            req = lark.api.im.v1.GetChatRequest.builder().chat_id(chat_id).build()
+            resp = self.client.im.v1.chat.get(req, option=opt)
+            if resp.success():
+                c = resp.data
+                mode = getattr(c, "chat_mode", "")
+                count = getattr(c, "user_count", None)
+                name = getattr(c, "name", "")
+                if mode == "p2p":
+                    return True
+                # Nhóm 2 người tạo tự động giữa 2 người (tên dạng: Tống Phước Hoài Nam, Tống Phước A)
+                if count is not None and int(count) == 2 and "," in name:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def poll_dm_messages_once(
+        self,
+        chat_cache: Dict[str, bool],
+        last_seen: Dict[str, str],
+    ) -> List[LarkMessage]:
+        """
+        Thực hiện một chu kỳ quét các cuộc trò chuyện DM 1-1 để tìm tin nhắn mới.
+        """
+        new_messages: List[LarkMessage] = []
+        if not self.user_access_token:
+            return new_messages
+
+        opt = self._get_request_option(as_user=True)
+        try:
+            req = (
+                lark.api.im.v1.ListChatRequest.builder()
+                .sort_type("ByActiveTimeDesc")
+                .page_size(10)
+                .build()
+            )
+            resp = self.client.im.v1.chat.list(req, option=opt)
+            if not resp.success() or not resp.data.items:
+                return new_messages
+
+            my_open_id = self._current_user_profile.get("open_id", "") if self._current_user_profile else ""
+
+            for chat in resp.data.items:
+                cid = chat.chat_id
+                if cid not in chat_cache:
+                    chat_cache[cid] = self.is_dm_chat(cid, chat)
+
+                if not chat_cache[cid]:
+                    # Là group nhiều người -> Giao cho WebSocket xử lý
+                    continue
+
+                # Là DM 1-1 -> Lấy tin nhắn mới nhất
+                msg_req = (
+                    lark.api.im.v1.ListMessageRequest.builder()
+                    .container_id_type("chat")
+                    .container_id(cid)
+                    .sort_type("ByCreateTimeDesc")
+                    .page_size(1)
+                    .build()
+                )
+                msg_resp = self.client.im.v1.message.list(msg_req, option=opt)
+                if not msg_resp.success() or not msg_resp.data.items:
+                    continue
+
+                latest_item = msg_resp.data.items[0]
+                mid = getattr(latest_item, "message_id", "")
+                if not mid:
+                    continue
+
+                # Đã ghi nhận ở vòng trước của chat này -> Bỏ qua
+                if last_seen.get(cid) == mid:
+                    continue
+
+                last_seen[cid] = mid
+
+                # Đã được WebSocket hoặc vòng trước xử lý -> Bỏ qua
+                if self._is_duplicate_message(mid):
+                    continue
+
+                # Bỏ qua tin nhắn do chính bạn gửi hoặc tin nhắn system
+                sender = getattr(latest_item, "sender", None)
+                sender_id = getattr(sender, "id", "") if sender else ""
+                msg_type = getattr(latest_item, "msg_type", "")
+                if (my_open_id and sender_id == my_open_id) or msg_type != "text":
+                    continue
+
+                parsed = self.parse_list_message_item(latest_item, chat_type="p2p")
+                if parsed:
+                    new_messages.append(parsed)
+
+        except Exception as e:
+            logger.error(f"Lỗi khi poll DM messages: {e}", exc_info=True)
+
+        return new_messages
+
+    def start_hybrid_runner(self, dm_poll_interval: float = 2.5):
+        """
+        Khởi động chế độ HYBRID:
+          - Làn 1: WebSocket Client (Event thời gian thực) cho Group chats.
+          - Làn 2: Polling Worker (Quét ngầm mỗi dm_poll_interval giây) cho DM 1-1.
+          - Shared Message Deduplication Cache: Đảm bảo không bao giờ bị trùng tin.
+          - Mọi tin nhắn phản hồi đều mang danh nghĩa User (as_user=True).
+        """
+        import threading
+
+        self.get_current_user()
+
+        # Khởi động WebSocket ở background thread cho Group chats
+        self.start_ws_client(background=True)
+
+        logger.info(f"🔄 Đang kích hoạt Poller cho DM 1-1 (chu kỳ quét: {dm_poll_interval}s)...")
+        chat_cache: Dict[str, bool] = {}
+        last_seen: Dict[str, str] = {}
+
+        # Warm-up: Ghi nhận các tin nhắn hiện tại để không rep nhầm tin lịch sử
+        try:
+            logger.info("⏳ Đang nạp trạng thái ban đầu cho các cuộc trò chuyện DM...")
+            opt = self._get_request_option(as_user=True)
+            req = (
+                lark.api.im.v1.ListChatRequest.builder()
+                .sort_type("ByActiveTimeDesc")
+                .page_size(10)
+                .build()
+            )
+            init_resp = self.client.im.v1.chat.list(req, option=opt)
+            if init_resp.success() and init_resp.data.items:
+                for c in init_resp.data.items:
+                    cid = c.chat_id
+                    chat_cache[cid] = self.is_dm_chat(cid, c)
+                    if chat_cache[cid]:
+                        m_req = (
+                            lark.api.im.v1.ListMessageRequest.builder()
+                            .container_id_type("chat")
+                            .container_id(cid)
+                            .sort_type("ByCreateTimeDesc")
+                            .page_size(1)
+                            .build()
+                        )
+                        m_resp = self.client.im.v1.message.list(m_req, option=opt)
+                        if m_resp.success() and m_resp.data.items:
+                            top_m = m_resp.data.items[0]
+                            last_seen[cid] = top_m.message_id
+                            self._is_duplicate_message(top_m.message_id)
+            logger.info("✔ Khởi tạo xong! Hệ thống Hybrid (Group = WebSocket, DM = Polling) sẵn sàng nhận tin!")
+        except Exception as e:
+            logger.warning(f"Lỗi khi warm-up DM poller: {e}")
+
+        # Vòng lặp Polling DM trên main thread
+        try:
+            while True:
+                time.sleep(dm_poll_interval)
+                new_dms = self.poll_dm_messages_once(chat_cache, last_seen)
+                for dm_msg in new_dms:
+                    logger.info(
+                        f"📨 [DM POLLING] Bắt được tin nhắn 1-1 mới từ {dm_msg.sender_id}: '{dm_msg.text}'"
+                    )
+                    self._dispatch_to_handlers(dm_msg)
+        except KeyboardInterrupt:
+            logger.info("Dừng hệ thống Hybrid Runner.")
+
+
 
 # =============================================================================
 # SINGLETON INSTANCE
