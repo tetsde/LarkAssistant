@@ -20,6 +20,8 @@ class Settings:
     MONGO_DB: str = os.getenv("mongo_db", "LarkAssistant")
     MONGO_MEMORY_COLLECTION: str = os.getenv("mongo_memory_collection", "memories")
     MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
+    MONGO_STAGING_COLLECTION: str = os.getenv("mongo_staging_collection", "conversation_staging")
+    MONGO_DIGEST_COLLECTION: str = os.getenv("mongo_digest_collection", "daily_digests")
 
     # Lark Settings
     LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")

@@ -14,6 +14,15 @@ from models.memory import (
     get_vietnam_now,
     get_vietnam_now_iso,
 )
+from models.digest import (
+    StatusCategory,
+    SourceReference,
+    DecisionItem,
+    CommitmentItem,
+    StatusChangeItem,
+    StagingMessage,
+    DailyDigestRecord,
+)
 
 __all__ = [
     "ChatRequest",
@@ -36,5 +45,12 @@ __all__ = [
     "VIETNAM_TZ",
     "get_vietnam_now",
     "get_vietnam_now_iso",
+    "StatusCategory",
+    "SourceReference",
+    "DecisionItem",
+    "CommitmentItem",
+    "StatusChangeItem",
+    "StagingMessage",
+    "DailyDigestRecord",
 ]
 

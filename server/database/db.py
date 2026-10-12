@@ -69,6 +69,18 @@ def get_claims_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_CLAIMS_COLLECTION]
 
 
+def get_staging_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Vùng đệm tin nhắn trong ngày (Conversation Staging)."""
+    db = get_async_db()
+    return db[settings.MONGO_STAGING_COLLECTION]
+
+
+def get_daily_digests_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Bản tổng hợp ngày (Daily Digests)."""
+    db = get_async_db()
+    return db[settings.MONGO_DIGEST_COLLECTION]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client
