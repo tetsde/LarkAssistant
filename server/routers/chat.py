@@ -10,7 +10,8 @@ from services.lark import lark_service
 from services.draft_store import PendingDraft, draft_store
 from utils.text_filter import text_filter
 from utils.context_composer import ContextComposer
-from utils.llm_extractor import extract_async, GeminiClient
+from utils.llm_extractor import extract_async
+from services.llm_client import llm_client, LLMClient
 from database import (
     check_mongo_connection,
     get_all_entities as get_mongo_entities,
@@ -153,7 +154,7 @@ async def generate_grounded_answer(
             query=query,
         )
 
-    client = GeminiClient(api_key=key)
+    client = LLMClient(api_key=api_key) if api_key else llm_client
     try:
         ans = await client.generate_text_async(
             prompt=prompt,
@@ -162,7 +163,7 @@ async def generate_grounded_answer(
         )
         return ans.strip()
     except Exception as e:
-        logger.warning(f"Lỗi khi gọi Gemini generate_text_async: {e}")
+        logger.warning(f"Lỗi khi gọi LLM generate_text_async: {e}")
         return ""
 
 

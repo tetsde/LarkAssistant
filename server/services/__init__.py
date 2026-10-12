@@ -3,6 +3,7 @@ from .weknora import weknora_service, WeKnoraService
 from .lark import lark_service, LarkService, LarkMessage, LarkConfig
 from .digest_service import digest_service, DigestService
 from .scope_service import scope_service, ScopeService
+from .llm_client import llm_client, LLMClient, GeminiClient
 
 __all__ = [
     "jev_service",
@@ -17,5 +18,8 @@ __all__ = [
     "DigestService",
     "scope_service",
     "ScopeService",
+    "llm_client",
+    "LLMClient",
+    "GeminiClient",
 ]
 

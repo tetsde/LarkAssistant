@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from core.config import settings
+from services.llm_client import LLMClient, llm_client
 from database.db import get_staging_collection, get_daily_digests_collection
 from models.digest import (
     CommitmentItem,
@@ -121,11 +122,8 @@ class DigestService:
 
     def __init__(self, gemini_api_key: Optional[str] = None):
         self.api_key = gemini_api_key or settings.GEMINI_API_KEY or settings.gemini_api
-        self.fallback_models = [
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-        ]
+        self.llm_client = LLMClient(api_key=self.api_key)
+        self.fallback_models = self.llm_client.default_models
 
     # -------------------------------------------------------------------------
     # 1. QUẢN LÝ VÙNG ĐỆM STAGING (MONGODB)
@@ -199,42 +197,14 @@ class DigestService:
     # -------------------------------------------------------------------------
 
     async def _call_gemini(self, prompt: str) -> str:
-        """Gọi Gemini API qua danh sách model fallback với thinkingBudget: 0."""
-        if not self.api_key:
-            raise RuntimeError("GEMINI_API_KEY chưa được cấu hình trong settings.")
+        """Gọi Gemini API thông qua unified llm_client với thinkingBudget: 0."""
+        return await self.llm_client.generate_text_async(
+            prompt=prompt,
+            temperature=0.1,
+            max_output_tokens=4096,
+            thinking_budget=0,
+        )
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 4096,
-                "thinkingConfig": {"thinkingBudget": 0},
-            },
-        }
-
-        last_error = None
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for model in self.fallback_models:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-                try:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                return parts[0].get("text", "")
-                    elif resp.status_code in (400, 404):
-                        last_error = f"Model {model} không khả dụng (status {resp.status_code})"
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    last_error = e
-                    continue
-
-        raise RuntimeError(f"Không thể gọi Gemini API: {last_error}")
 
     async def extract_digest_from_messages(
         self,
