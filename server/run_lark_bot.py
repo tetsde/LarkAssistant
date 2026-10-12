@@ -44,13 +44,13 @@ async def handle_incoming_message(msg: LarkMessage):
     print("-" * 65)
 
     # 1. Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi tin nhắn này
-    if msg.is_self:
-        print("ℹ️ Bỏ qua tin nhắn do chính bạn gửi.")
+    if msg.is_self or msg.sender_id == lark_service.known_user_open_id:
+        print(f"ℹ️ Bỏ qua tin nhắn do chính bạn gửi ({msg.sender_id}) - Đã chặn vòng lặp.")
         return
 
     # 2. Bỏ qua tin nhắn từ Bot
     if msg.is_bot:
-        print("ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng.")
+        print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
         return
 
     channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
@@ -124,7 +124,7 @@ async def handle_incoming_message(msg: LarkMessage):
 
         lark_res = result.get("lark_response") or {}
         if lark_res.get("success"):
-            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {user_name.upper()}!")
+            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {responder_name.upper()}!")
             print(f"   (Tin nhắn trên Lark hiển thị avatar & tên của bạn, KHÔNG CÓ LOGO BOT)")
         else:
             print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")

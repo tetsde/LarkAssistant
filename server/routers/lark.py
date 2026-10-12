@@ -53,22 +53,3 @@ async def get_lark_status():
     }
 
 
-@router.post("/send-test", summary="Test gửi tin nhắn trực tiếp")
-async def send_test_message(req: TestSendMessageRequest):
-    """Gửi thử 1 tin nhắn tới chat_id hoặc open_id."""
-    res = await lark_service.asend_text(
-        receive_id=req.receive_id,
-        text=req.text,
-        receive_id_type=req.receive_id_type or "chat_id",
-    )
-    return res
-
-
-@router.post("/reply-test", summary="Test reply tin nhắn")
-async def reply_test_message(req: TestReplyMessageRequest):
-    """Reply thử 1 tin nhắn qua message_id."""
-    res = await lark_service.areply_text(
-        message_id=req.message_id,
-        text=req.text,
-    )
-    return res
