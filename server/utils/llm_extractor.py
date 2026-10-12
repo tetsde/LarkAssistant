@@ -13,6 +13,7 @@ Mô hình dữ liệu trực quan:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -31,6 +32,8 @@ if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # 1. ENUMS & SCHEMAS (IMPORTED FROM MODELS)
@@ -1355,13 +1358,6 @@ async def extract_async(
 # 9. STORAGE HELPERS (PERSISTENCE) - MONGODB SINGLE SOURCE OF TRUTH
 # ==============================================================================
 
-# Deprecated file paths retained for backward compatibility only
-DATA_DIR = os.path.join(CURRENT_DIR, "data")
-ENTITY_STORE_PATH = os.path.join(DATA_DIR, "entity_store.json")
-FACT_STORE_PATH = os.path.join(DATA_DIR, "fact_store.json")
-MEMORY_STORE_PATH = ENTITY_STORE_PATH
-CLAIM_STORE_PATH = FACT_STORE_PATH
-
 
 def load_stored_entities() -> List[Dict[str, Any]]:
     """Tải danh sách entities từ MongoDB (Single Source of Truth)."""
@@ -1425,13 +1421,6 @@ def clear_stores() -> None:
     except Exception as e:
         logger.warning(f"Không thể xóa stores trên MongoDB: {e}")
 
-    # Dọn dẹp tệp JSON thừa nếu còn sót lại
-    for p in [ENTITY_STORE_PATH, FACT_STORE_PATH, os.path.join(DATA_DIR, "memory_store.json"), os.path.join(DATA_DIR, "claim_store.json")]:
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
 
 
 def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, Any]:

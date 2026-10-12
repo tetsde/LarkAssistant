@@ -21,8 +21,6 @@ from utils.llm_extractor import (
     save_stored_facts,
     apply_and_save_extraction,
     clear_stores,
-    ENTITY_STORE_PATH,
-    FACT_STORE_PATH,
     # Backward compatibility
     MemoryEntity,
     Claim,
@@ -34,8 +32,6 @@ from utils.llm_extractor import (
     generate_claim_id,
     load_stored_claims,
     save_stored_claims,
-    MEMORY_STORE_PATH,
-    CLAIM_STORE_PATH,
 )
 from utils.context_composer import (
     ContextComposer,
@@ -73,8 +69,6 @@ __all__ = [
     "save_stored_facts",
     "apply_and_save_extraction",
     "clear_stores",
-    "ENTITY_STORE_PATH",
-    "FACT_STORE_PATH",
     # Backward compatibility
     "MemoryEntity",
     "Claim",
@@ -86,7 +80,5 @@ __all__ = [
     "generate_claim_id",
     "load_stored_claims",
     "save_stored_claims",
-    "MEMORY_STORE_PATH",
-    "CLAIM_STORE_PATH",
 ]
 
