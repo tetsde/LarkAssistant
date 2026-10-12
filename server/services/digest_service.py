@@ -415,7 +415,10 @@ Hãy trích xuất:
         Đẩy bản Markdown của DailyDigestRecord lên WeKnora làm tri thức tìm kiếm RAG.
         Cập nhật trạng thái sync_status = 'synced' và weknora_doc_id.
         """
-        target_kb = dataset_id or digest.weknora_kb_id or settings.WEKNORA_DATASET_ID
+        from services.scope_service import scope_service
+
+        scoped_kb = await scope_service.get_kb_for_chat(digest.chat_id)
+        target_kb = dataset_id or digest.weknora_kb_id or scoped_kb or settings.WEKNORA_DATASET_ID
         if target_kb and "," in target_kb:
             target_kb = target_kb.split(",")[0].strip()
 
@@ -742,6 +745,11 @@ Hãy trích xuất:
             date=target_date,
             project_tag=project_tag,
         )
+
+        from services.scope_service import scope_service
+
+        scoped_kb = await scope_service.get_kb_for_chat(chat_id)
+        digest.weknora_kb_id = weknora_kb_id or scoped_kb
 
         if needs_approval:
             digest.sync_status = "pending_approval"

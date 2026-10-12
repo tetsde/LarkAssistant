@@ -278,10 +278,17 @@ async def process_chat_pipeline(
         all_facts = load_stored_facts()
     active_claims = [f for f in all_facts if f.get("status", "current") == "current"]
 
-    # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base
+    # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat
     chunks = []
     try:
-        chunks = await weknora_service.retrieve(query=clean_query, match_count=retrieve_count)
+        from services.scope_service import scope_service
+        target_kb = await scope_service.get_kb_for_chat(chat_id) if chat_id else None
+        target_kbs = [target_kb] if target_kb else None
+        chunks = await weknora_service.retrieve(
+            query=clean_query,
+            knowledge_base_ids=target_kbs,
+            match_count=retrieve_count,
+        )
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 

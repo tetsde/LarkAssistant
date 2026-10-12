@@ -22,6 +22,7 @@ class Settings:
     MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
     MONGO_STAGING_COLLECTION: str = os.getenv("mongo_staging_collection", "conversation_staging")
     MONGO_DIGEST_COLLECTION: str = os.getenv("mongo_digest_collection", "daily_digests")
+    MONGO_CHAT_SCOPE_COLLECTION: str = os.getenv("mongo_chat_scope_collection", "chat_scopes")
 
     # Lark Settings
     LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")

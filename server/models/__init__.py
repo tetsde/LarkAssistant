@@ -23,6 +23,7 @@ from models.digest import (
     StagingMessage,
     DailyDigestRecord,
 )
+from models.chat_scope import ChatScopeRecord
 
 __all__ = [
     "ChatRequest",
@@ -52,5 +53,6 @@ __all__ = [
     "StatusChangeItem",
     "StagingMessage",
     "DailyDigestRecord",
+    "ChatScopeRecord",
 ]
 

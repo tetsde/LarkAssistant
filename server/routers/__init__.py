@@ -1,3 +1,3 @@
-from . import health, chat, lark, digest
+from . import health, chat, lark, digest, scope
 
-__all__ = ["health", "chat", "lark", "digest"]
+__all__ = ["health", "chat", "lark", "digest", "scope"]

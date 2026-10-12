@@ -81,6 +81,12 @@ def get_daily_digests_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_DIGEST_COLLECTION]
 
 
+def get_chat_scopes_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Ánh xạ phân quyền dữ liệu nhóm chat (Chat Scopes / KB Mappings)."""
+    db = get_async_db()
+    return db[settings.MONGO_CHAT_SCOPE_COLLECTION]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client

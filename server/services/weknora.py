@@ -85,6 +85,31 @@ class WeKnoraService:
 
                     return result_payload
 
+    async def get_kb_info(self, kb_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Lấy thông tin chi tiết của Knowledge Base từ WeKnora (ID, Tên, Mô tả).
+        Endpoint WeKnora: GET /knowledge-bases/{kb_id}
+        Trả về dict: {"id": str, "name": str, "description": str} hoặc None nếu không tồn tại / lỗi.
+        """
+        if not self.api_key or not self.base_url or not kb_id:
+            return None
+
+        clean_id = kb_id.strip()
+        url = f"{self.base_url}/knowledge-bases/{clean_id}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=self.headers)
+                if resp.status_code == 200:
+                    data = resp.json().get("data", {})
+                    return {
+                        "id": data.get("id", clean_id),
+                        "name": data.get("name", ""),
+                        "description": data.get("description", ""),
+                    }
+                return None
+        except Exception:
+            return None
+
     def get_configured_kb_ids(self) -> List[str]:
         """
         Lấy danh sách Knowledge Base IDs đã cấu hình từ .env (settings.WEKNORA_DATASET_ID).

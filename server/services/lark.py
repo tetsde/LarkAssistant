@@ -352,12 +352,22 @@ class LarkService:
             return
 
         # 2. Xử lý tin nhắn do chính tài khoản của bạn gửi:
-        # - Trong GROUP chat: Bỏ qua để chống loop tự trả lời chính mình.
+        # - Trong GROUP chat: Bỏ qua để chống loop tự trả lời chính mình (TRỪ KHI ĐÂY LÀ LỆNH ĐIỀU KHIỂN BOT).
         # - Trong DM 1-1 (chat_type == "p2p"): Đây là bạn đang chat/ra lệnh trực tiếp cho Bot (ví dụ: Gửi / Sửa / Bỏ).
         if lark_msg.is_self:
             if lark_msg.chat_type == "group":
-                print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do chính bạn gửi trong Group ({lark_msg.sender_id}): {lark_msg.message_id}")
-                return
+                import re
+                raw_txt = re.sub(r"@\S+", "", lark_msg.text or "").strip().lower()
+                command_prefixes = (
+                    "set-kb", "set_kb", "cài kb", "cai kb", "gán kb", "gan kb",
+                    "get-kb", "get_kb", "xem kb", "kb info", "check kb",
+                    "reset-kb", "reset_kb", "hủy kb", "huy kb", "xóa kb", "xoa kb",
+                )
+                if any(raw_txt.startswith(p) for p in command_prefixes):
+                    print(f"👑 [LARK DISPATCHER] Nhận LỆNH ĐIỀU KHIỂN từ chủ nhân trong Group: '{lark_msg.text}' -> Cho phép xử lý!")
+                else:
+                    print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do chính bạn gửi trong Group ({lark_msg.sender_id}): {lark_msg.message_id}")
+                    return
             else:
                 print(f"📩 [LARK DISPATCHER] Nhận tin nhắn trực tiếp từ chủ nhân trong DM 1-1: '{lark_msg.text}'")
 
