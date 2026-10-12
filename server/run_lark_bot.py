@@ -501,7 +501,7 @@ def main():
         print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}")
         print(f"   - Open ID           : {user_info['open_id']}")
         print(f"   - Group Chats       : ⚡ WebSocket Event (Real-time 0ms)")
-        print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ 2.5s)")
+        print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ 4.0s)")
         print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
     else:
         print(f"⚠️ User Token         : {user_info.get('error')}")
@@ -511,7 +511,7 @@ def main():
     print("=" * 65)
 
     # Khởi động chế độ Hybrid
-    lark_service.start_hybrid_runner(dm_poll_interval=2.5)
+    lark_service.start_hybrid_runner(dm_poll_interval=4.0)
 
 
 if __name__ == "__main__":

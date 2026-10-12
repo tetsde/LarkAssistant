@@ -844,7 +844,14 @@ class LarkService:
                 .build()
             )
             resp = self.client.im.v1.chat.list(req, option=opt)
-            if not resp.success() or not resp.data.items:
+            if not resp.success():
+                raw_status = getattr(getattr(resp, "raw", None), "status_code", 0)
+                err_msg = getattr(resp, "msg", "") or ""
+                if raw_status == 429 or "frequency" in err_msg.lower() or "too many" in err_msg.lower():
+                    logger.warning("⚠️ [LARK RATE LIMIT] Đang chạm ngưỡng tần suất gọi API của Lark (HTTP 429). Tạm nghỉ 10s...")
+                    time.sleep(10.0)
+                return new_messages
+            if not resp.data or not resp.data.items:
                 return new_messages
 
             my_open_id = self._current_user_profile.get("open_id", "") if self._current_user_profile else ""
@@ -907,7 +914,7 @@ class LarkService:
 
         return new_messages
 
-    def start_hybrid_runner(self, dm_poll_interval: float = 2.5):
+    def start_hybrid_runner(self, dm_poll_interval: float = 4.0):
         """
         Khởi động chế độ HYBRID:
           - Làn 1: WebSocket Client (Event thời gian thực) cho Group chats.
