@@ -79,18 +79,13 @@ class JevService:
                         return {"action": "IGNORE", "confidence": prob_choice}
 
                 elif choice == "REPLY_ONLY":
-                    # [SAFETY] Chốt chặn kép:
-                    # 1. Phải đủ tự tin >= 0.80 mới cho tự trả lời
-                    # 2. Xác suất rủi ro cạnh tranh (DRAFT_PENDING_APPROVAL) phải < 0.20
-                    #    Nếu JEV đang phân vân 20%+ về rủi ro -> bắt buộc soạn nháp chờ duyệt
-                    if prob_draft_risk >= 0.20:
-                        # Có dấu hiệu rủi ro đáng kể -> không được tự ý phát ngôn vào nhóm
+                    # [SAFETY] Cân bằng an toàn và độ nhạy:
+                    # Nếu JEV chọn REPLY_ONLY và rủi ro không áp đảo (prob_draft_risk < 0.40, prob_choice >= 0.50) -> Cho phép tự trả lời
+                    if prob_draft_risk >= 0.40 and prob_draft_risk > prob_choice:
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_draft_risk}
-                    elif prob_choice >= 0.80:
+                    elif prob_choice >= 0.50:
                         return {"action": "REPLY_ONLY", "confidence": prob_choice}
                     else:
-                        # Câu hỏi không đủ tự tin để tự trả lời -> soạn nháp để sếp xem xét
-                        # (không nên bỏ qua im lặng vì đây là câu hỏi thực sự cần xử lý)
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
 
                 elif choice == "DRAFT_PENDING_APPROVAL":
@@ -102,4 +97,91 @@ class JevService:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"JEV Classification Failed: {str(e)}")
 
+    async def filter_chunks_relevance(
+        self,
+        query: str,
+        chunks: list,
+        max_snippet_chars: int = 300,
+        timeout: float = 10.0,
+    ) -> list:
+        """
+        [RAG Gate Tier 2] Lọc mức độ liên quan ngữ nghĩa của các Chunks bằng JEV:
+          - Gửi 1 API batch duy nhất gồm nhiều câu hỏi (mỗi chunk là 1 question trong payload).
+          - Tránh quá tải token bằng cách chỉ gửi tiêu đề tài liệu + snippet ngắn (~300 ký tự).
+          - Giữ lại các chunks có nhãn RELEVANT (loại bỏ hoàn toàn tài liệu rác, lạc đề).
+          - Graceful Fallback: Nếu JEV lỗi, timeout hoặc lọc rỗng, giữ lại chunks ban đầu để không crash RAG.
+        """
+        if not chunks or len(chunks) <= 1:
+            return chunks
+
+        if not self.api_key:
+            return chunks
+
+        # Chuẩn bị questions cho tối đa 5 chunks hàng đầu
+        candidate_chunks = chunks[:5]
+        questions = {}
+
+        for idx, c in enumerate(candidate_chunks, 1):
+            doc_title = (
+                c.get("knowledge_title")
+                or c.get("document_name")
+                or c.get("title")
+                or f"Tài liệu {idx}"
+            )
+            raw_content = c.get("matched_content") or c.get("content") or ""
+            snippet = raw_content[:max_snippet_chars].strip().replace("\n", " ")
+            questions[f"chunk_{idx}"] = {
+                "type": "choice",
+                "instructions": (
+                    f"Đoạn trích {idx} từ tài liệu '{doc_title}': \"{snippet}...\". "
+                    f"Đoạn trích này có thuộc bối cảnh dự án phù hợp để tham khảo cho câu hỏi của người dùng không?"
+                ),
+                "criteria": {
+                    "RELEVANT": "Tài liệu hoặc bối cảnh liên quan đến dự án đang hỗ trợ (HiLark Assistant)",
+                    "IRRELEVANT": "Tài liệu thuộc dự án khác (như Kiaca...) hoặc tài liệu mẫu không liên quan"
+                }
+            }
+
+        payload = {
+            "state": (
+                f"Bối cảnh: Trợ lý AI đang hỗ trợ giải đáp cho dự án HiLark Assistant.\n"
+                f"Câu hỏi của người dùng: \"{query.strip()}\""
+            ),
+            "model": "jev-latest",
+            "questions": questions,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(self.url, headers=self.headers, json=payload)
+                if resp.status_code != 200:
+                    return chunks
+
+                data = resp.json()
+                answers = data.get("answers", {})
+
+                relevant_chunks = []
+                for idx, c in enumerate(candidate_chunks, 1):
+                    ans = answers.get(f"chunk_{idx}")
+                    if isinstance(ans, dict):
+                        choice = ans.get("choice", "")
+                        probs = ans.get("probabilities", {})
+                        rel_score = float(probs.get("RELEVANT", 0.0))
+                        c["jev_score"] = rel_score
+                        is_relevant = (choice == "RELEVANT") or (rel_score >= 0.5)
+                        if is_relevant:
+                            relevant_chunks.append(c)
+
+                # [RERANK] Tái sắp xếp các chunk giữ lại theo điểm JEV giảm dần (chunk sát nhất lên đầu)
+                if relevant_chunks:
+                    relevant_chunks.sort(key=lambda x: x.get("jev_score", 0.0), reverse=True)
+                    return relevant_chunks
+
+                # An toàn: nếu JEV lọc quá tay làm mất hết chunks, fallback giữ lại chunks ban đầu
+                return chunks
+        except Exception:
+            return chunks
+
+
 jev_service = JevService()
+

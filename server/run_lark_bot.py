@@ -168,12 +168,26 @@ async def handle_incoming_message(msg: LarkMessage):
 
     # Nhận diện tên đích danh người hỏi (VD: Hoài Phước)
     target_user_name = "bạn"
+    # 1. Nếu có mention ai đó mà KHÔNG PHẢI là bot và KHÔNG PHẢI là responder (chủ nhân)
     if msg.mentions:
         for m in msg.mentions:
             m_name = m.get("name", "")
-            if m_name and not ("bot" in m_name.lower() or "hilark" in m_name.lower()):
+            if m_name and not (
+                "bot" in m_name.lower()
+                or "hilark" in m_name.lower()
+                or m_name.lower() in responder_name.lower()
+                or responder_name.lower() in m_name.lower()
+            ):
                 target_user_name = m_name
                 break
+
+    # 2. Nếu người hỏi mention chính responder, lấy tên của người gửi tin nhắn (sender_id)
+    if target_user_name == "bạn" and msg.sender_id:
+        sender_real_name = lark_service.get_user_name(msg.sender_id)
+        if sender_real_name:
+            target_user_name = sender_real_name
+
+    # 3. Fallback theo từ khóa xưng hô trong tin nhắn
     if target_user_name == "bạn":
         if "phước" in msg.text.lower() or "phuoc" in msg.text.lower():
             target_user_name = "Hoài Phước"

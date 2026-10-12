@@ -285,6 +285,25 @@ async def process_chat_pipeline(
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
+    # [RAG GATE 2-TIER FILTERING] Kết hợp cả 2 tầng lọc thông minh:
+    # --- TẦNG 1: Lọc thô nhanh theo Project / Entity Heuristics (0ms) ---
+    if chunks and len(chunks) > 1:
+        q_lower = clean_query.lower()
+        if "hilark" in q_lower or "hi lark" in q_lower:
+            filtered_coarse = [
+                c for c in chunks
+                if "kiaca" not in (c.get("knowledge_title") or c.get("document_name") or "").lower()
+            ]
+            if filtered_coarse:
+                chunks = filtered_coarse
+
+    # --- TẦNG 2: JEV Batch Relevance Gate (Lọc ngữ nghĩa thông minh ~300ms, 1 Call duy nhất) ---
+    if chunks and len(chunks) > 1:
+        try:
+            chunks = await jev_service.filter_chunks_relevance(clean_query, chunks)
+        except Exception as e:
+            logger.warning(f"Lỗi khi lọc chunks qua JEV: {e}")
+
     # Chuẩn hóa chunks cho ContextComposer
     normalized_chunks = []
     for c in chunks:
