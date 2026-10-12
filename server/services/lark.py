@@ -309,10 +309,15 @@ class LarkService:
             print(f"ℹ️ [LARK DISPATCHER] Bỏ qua vì tin nhắn phát từ Bot/App: {lark_msg.message_id}")
             return
 
-        # 2. Bỏ qua tin nhắn do chính bạn gửi hoặc hệ thống phát ra
+        # 2. Xử lý tin nhắn do chính tài khoản của bạn gửi:
+        # - Trong GROUP chat: Bỏ qua để chống loop tự trả lời chính mình.
+        # - Trong DM 1-1 (chat_type == "p2p"): Đây là bạn đang chat/ra lệnh trực tiếp cho Bot (ví dụ: Gửi / Sửa / Bỏ).
         if lark_msg.is_self:
-            print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do chính bạn gửi ({lark_msg.sender_id}): {lark_msg.message_id}")
-            return
+            if lark_msg.chat_type == "group":
+                print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do chính bạn gửi trong Group ({lark_msg.sender_id}): {lark_msg.message_id}")
+                return
+            else:
+                print(f"📩 [LARK DISPATCHER] Nhận tin nhắn trực tiếp từ chủ nhân trong DM 1-1: '{lark_msg.text}'")
 
         # 3. Bỏ qua tin nhắn nằm trong danh sách vừa gửi của hệ thống
         if lark_msg.message_id in self._sent_message_ids:
@@ -320,8 +325,6 @@ class LarkService:
             return
 
         if self._is_duplicate_message(lark_msg.message_id):
-            logger.info(f"Bỏ qua tin nhắn trùng lặp: {lark_msg.message_id}")
-            return
             logger.info(f"Bỏ qua tin nhắn trùng lặp: {lark_msg.message_id}")
             return
 
