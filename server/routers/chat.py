@@ -220,6 +220,21 @@ async def process_chat_pipeline(
             "message": str(e),
         }
 
+    # ── Tự động lưu Staging nếu có chat_id và message_id (Hỗ trợ Daily Digest) ──
+    if chat_id and message_id:
+        try:
+            from services.digest_service import digest_service
+            await digest_service.add_staging_message(
+                message_id=message_id,
+                chat_id=chat_id,
+                text=clean_query,
+                speaker_name=user_name or "Thành viên",
+                speaker_id=sender or "",
+                chat_name=chat_id,
+            )
+        except Exception as e:
+            logger.warning(f"Lỗi khi lưu Staging từ process_chat_pipeline: {e}")
+
     # ── Bước 2: JEV Routing - Phân loại xem tin nhắn có đáng xử lý hay không ──
     try:
         jev_result = await jev_service.classify_message(clean_query)

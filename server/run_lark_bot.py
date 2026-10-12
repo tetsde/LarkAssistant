@@ -166,8 +166,21 @@ async def handle_incoming_message(msg: LarkMessage):
     # 3. Xử lý tin nhắn do chính bạn gửi:
     is_owner = bool(msg.is_self or msg.sender_id == lark_service.known_user_open_id)
     if is_owner:
-        # Nếu nhắn trong GROUP: Bỏ qua để chống loop tự trả lời chính mình
+        # Nếu nhắn trong GROUP: Lưu vào staging cho Daily Digest, rồi bỏ qua để chống loop tự trả lời chính mình
         if msg.chat_type == "group":
+            try:
+                from services.digest_service import digest_service
+                await digest_service.add_staging_message(
+                    message_id=msg.message_id,
+                    chat_id=msg.chat_id,
+                    text=msg.text,
+                    speaker_name=lark_service.get_current_user().get("name", "Tống Phước Hoài Nam"),
+                    speaker_id=msg.sender_id,
+                    chat_name=msg.chat_id,
+                )
+                print(f"📥 [STAGING] Đã lưu tin nhắn của chủ nhân vào conversation_staging ({msg.message_id})")
+            except Exception as e:
+                print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
             print(f"ℹ️ Bỏ qua tin nhắn do chính bạn gửi trong GROUP ({msg.sender_id}) - Đã chặn vòng lặp.")
             return
 
@@ -371,6 +384,23 @@ async def handle_incoming_message(msg: LarkMessage):
     if target_user_name == "bạn":
         if "phước" in msg.text.lower() or "phuoc" in msg.text.lower():
             target_user_name = "Hoài Phước"
+
+    # Tự động lưu tin nhắn của thành viên nhóm vào conversation_staging cho Daily Digest
+    if msg.chat_type == "group" and msg.text:
+        try:
+            from services.digest_service import digest_service
+            speaker = target_user_name if target_user_name != "bạn" else (lark_service.get_user_name(msg.sender_id) or "Thành viên")
+            await digest_service.add_staging_message(
+                message_id=msg.message_id,
+                chat_id=msg.chat_id,
+                text=msg.text,
+                speaker_name=speaker,
+                speaker_id=msg.sender_id,
+                chat_name=msg.chat_id,
+            )
+            print(f"📥 [STAGING] Đã lưu tin nhắn thành viên vào conversation_staging ({msg.message_id})")
+        except Exception as e:
+            print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
 
     # 3. Chuyển vào Unified Chat Pipeline (text_filter -> JEV Routing -> Memory/RAG)
     print(f"⚙️ Đang xử lý qua Chat Pipeline (đích danh: '{target_user_name}' -> JEV Routing)...")
