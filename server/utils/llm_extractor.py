@@ -438,6 +438,90 @@ class GeminiClient:
 
         raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
 
+    def generate_text(
+        self,
+        prompt: str,
+        model_name: Optional[str] = None,
+        temperature: float = 0.2,
+        max_output_tokens: int = 2048,
+    ) -> str:
+        """Gọi Gemini API đồng bộ để sinh văn bản tự nhiên (không ép JSON)."""
+        models_to_try = [model_name] if model_name else self.DEFAULT_MODELS
+        last_error = None
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens,
+            },
+        }
+
+        with httpx.Client(timeout=45.0) as client:
+            for model in models_to_try:
+                url = self._get_url(model)
+                try:
+                    resp = client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                return parts[0].get("text", "")
+                    elif resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+
+    async def generate_text_async(
+        self,
+        prompt: str,
+        model_name: Optional[str] = None,
+        temperature: float = 0.2,
+        max_output_tokens: int = 2048,
+    ) -> str:
+        """Gọi Gemini API bất đồng bộ để sinh văn bản tự nhiên (không ép JSON)."""
+        models_to_try = [model_name] if model_name else self.DEFAULT_MODELS
+        last_error = None
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_output_tokens,
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            for model in models_to_try:
+                url = self._get_url(model)
+                try:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                return parts[0].get("text", "")
+                    elif resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+
 
 # ==============================================================================
 # 5. ENTITY MATCHING & RESOLUTION (QUY TẮC: KHÔNG MERGE TÙY TIỆN)

@@ -8,7 +8,7 @@ Chạy:
 
 Cơ chế:
     - Nhận tin nhắn qua Lark WebSocket thời gian thực.
-    - Trả lời tin nhắn BẰNG CHÍNH DANH TÍNH CỦA BẠN (Tống Phước Hoài Nam).
+    - Trả lời tin nhắn BẰNG CHÍNH DANH TÍNH CỦA BẠN .
     - Trên Lark sẽ hiện ra như chính bạn đang tự gõ trả lời, KHÔNG CÓ LOGO HAY MÁC BOT!
 """
 
