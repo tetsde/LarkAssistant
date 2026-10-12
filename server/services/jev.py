@@ -60,35 +60,44 @@ class JevService:
                 probabilities = action_data.get("probabilities", {})
                 prob_choice = probabilities.get(choice, 0.0)
 
-                # --- BỘ LỌC ĐỘ TỰ TIN (FLEXIBLE THRESHOLDS VỚI 5 NHÃN) ---
+                # --- BỘ LỌC ĐỘ TỰ TIN (SAFETY-FIRST THRESHOLDS VỚI 5 NHÃN) ---
+                # Tính xác suất rủi ro cạnh tranh (DRAFT_PENDING_APPROVAL từ probabilities)
+                prob_draft_risk = probabilities.get("DRAFT_PENDING_APPROVAL", 0.0)
+
                 if choice == "MEMORY_AND_REPLY":
                     if prob_choice > 0.95:
                         return {"action": "MEMORY_AND_REPLY", "confidence": prob_choice}
                     else:
-                        # Không đủ > 0.95 thì hạ cấp xuống chỉ ghi nhớ thôi, khỏi rep
+                        # Không đủ > 0.95 thì hạ cấp xuống chỉ ghi nhớ, không tự ý phản hồi
                         return {"action": "MEMORY_ONLY", "confidence": prob_choice}
-                        
+
                 elif choice == "MEMORY_ONLY":
                     if prob_choice > 0.7:
                         return {"action": "MEMORY_ONLY", "confidence": prob_choice}
                     else:
-                        # Nhớ mà không chắc thì thôi dẹp luôn
-                        return {"action": "IGNORE", "confidence": prob_choice}
-                        
-                elif choice == "REPLY_ONLY":
-                    if prob_choice > 0.6:
-                        return {"action": "REPLY_ONLY", "confidence": prob_choice}
-                    else:
-                        # Câu hỏi không rõ ràng, vứt
+                        # Không đủ tự tin ghi nhớ -> bỏ qua
                         return {"action": "IGNORE", "confidence": prob_choice}
 
-                elif choice == "DRAFT_PENDING_APPROVAL":
-                    if prob_choice > 0.5:
-                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
+                elif choice == "REPLY_ONLY":
+                    # [SAFETY] Chốt chặn kép:
+                    # 1. Phải đủ tự tin >= 0.80 mới cho tự trả lời
+                    # 2. Xác suất rủi ro cạnh tranh (DRAFT_PENDING_APPROVAL) phải < 0.20
+                    #    Nếu JEV đang phân vân 20%+ về rủi ro -> bắt buộc soạn nháp chờ duyệt
+                    if prob_draft_risk >= 0.20:
+                        # Có dấu hiệu rủi ro đáng kể -> không được tự ý phát ngôn vào nhóm
+                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_draft_risk}
+                    elif prob_choice >= 0.80:
+                        return {"action": "REPLY_ONLY", "confidence": prob_choice}
                     else:
+                        # Câu hỏi không đủ tự tin để tự trả lời -> soạn nháp để sếp xem xét
+                        # (không nên bỏ qua im lặng vì đây là câu hỏi thực sự cần xử lý)
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
-                        
-                else: # choice == "IGNORE"
+
+                elif choice == "DRAFT_PENDING_APPROVAL":
+                    # Luôn giữ nguyên DRAFT cho mọi mức prob (không bao giờ hạ cấp xuống)
+                    return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
+
+                else:  # choice == "IGNORE"
                     return {"action": "IGNORE", "confidence": prob_choice}
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"JEV Classification Failed: {str(e)}")

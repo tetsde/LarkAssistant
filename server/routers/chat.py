@@ -215,8 +215,10 @@ async def process_chat_pipeline(
         jev_confidence = jev_result.get("confidence", 0.0)
     except Exception as e:
         logger.error(f"Lỗi phân loại JEV: {e}")
-        jev_action = "REPLY_ONLY" if ("?" in clean_query or len(clean_query.split()) >= 4) else "IGNORE"
-        jev_confidence = 0.5
+        # [SAFETY] Khi JEV API lỗi/timeout, TUYỆT ĐỐI không tự ý phát ngôn vào nhóm.
+        # Chuyển sang DRAFT_PENDING_APPROVAL để người dùng tự quyết định câu trả lời.
+        jev_action = "DRAFT_PENDING_APPROVAL" if ("?" in clean_query or len(clean_query.split()) >= 4) else "IGNORE"
+        jev_confidence = 0.0
 
     # TH1: IGNORE - Tin rác, chào hỏi vô thưởng vô phạt
     if jev_action == "IGNORE":
@@ -285,6 +287,17 @@ async def process_chat_pipeline(
             "chunk_id": c.get("id") or c.get("chunk_id"),
             "score": c.get("score"),
         })
+
+    # [SAFETY - RAG GATE] Nếu REPLY_ONLY nhưng không có chunks KB nào đủ cơ sở tri thức
+    # -> Downgrade bắt buộc sang DRAFT_PENDING_APPROVAL để người dùng tự kiểm tra & duyệt
+    # Đề bài: "Tự trả lời: Câu hỏi quy trình có SẴN câu trả lời chuẩn"
+    # => Không có KB = không có câu trả lời chuẩn = không được tự ý phát ngôn
+    if jev_action == "REPLY_ONLY" and not normalized_chunks and not active_claims:
+        logger.warning(
+            f"[RAG GATE] REPLY_ONLY nhưng KB rỗng (0 chunks, 0 claims) "
+            f"-> Downgrade sang DRAFT_PENDING_APPROVAL. Query: '{clean_query}'"
+        )
+        jev_action = "DRAFT_PENDING_APPROVAL"
 
     # 3. Hợp nhất ngữ cảnh với ContextComposer
     composer = ContextComposer()
