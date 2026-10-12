@@ -113,6 +113,13 @@ async def handle_incoming_message(msg: LarkMessage):
         print(f"   • Facts mới    : {num_facts}")
         print(f"   (Không gửi tin nhắn trả lời để tránh làm phiền)")
 
+    elif jev_action == "DRAFT_PENDING_APPROVAL":
+        draft_ans = result.get("draft_answer") or result.get("answer", "")
+        print(f"📝 [DRAFT_PENDING_APPROVAL] CÂU HỎI CÓ RỦI RO -> SOẠN NHÁP CHỜ DUYỆT:")
+        print(f"   • Bản nháp: \"{draft_ans[:150]}{'...' if len(draft_ans) > 150 else ''}\"")
+        print(f"   • Tùy chọn: [Gửi] / [Sửa] / [Bỏ]")
+        print(f"   (Đã gửi thông báo riêng tới DM của {responder_name}, KHÔNG phát ngôn vào nhóm)")
+
     elif jev_action in ("REPLY_ONLY", "MEMORY_AND_REPLY"):
         if jev_action == "MEMORY_AND_REPLY":
             ext = result.get("extraction") or {}

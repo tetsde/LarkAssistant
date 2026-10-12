@@ -316,7 +316,48 @@ async def process_chat_pipeline(
     # Làm sạch đầu ra
     answer = text_filter.clean_output(answer) if answer else "Hệ thống chưa tìm thấy thông tin phù hợp trong cơ sở tri thức để trả lời câu hỏi của bạn."
 
-    # 5. Gửi reply về Lark nếu có yêu cầu (nhân danh User)
+    # TH5: DRAFT_PENDING_APPROVAL - Soạn nháp chờ duyệt (Câu hỏi có dữ liệu nhưng có rủi ro)
+    if jev_action == "DRAFT_PENDING_APPROVAL":
+        # Bot KHÔNG gửi trả lời vào nhóm chat!
+        # Bot gửi riêng 1-1 cho sếp (chủ nhân token) để sếp chọn: [Gửi / Sửa / Bỏ]
+        dm_notice = None
+        if reply_to_lark:
+            draft_card_text = (
+                "📝 [SOẠN NHÁP CHỜ DUYỆT - CÂU HỎI CÓ RỦI RO]\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Người hỏi : {user_name}\n"
+                f"💬 Câu hỏi   : \"{clean_query}\"\n\n"
+                f"💡 Bản nháp AI soạn sẵn:\n"
+                f"\"{answer}\"\n\n"
+                f"⚠️ Lý do: Câu hỏi có dữ liệu trong Knowledge Base nhưng thuộc nhóm rủi ro/nhạy cảm.\n"
+                f"👉 Hành động chờ duyệt: [Gửi] / [Sửa] / [Bỏ]\n"
+                f"🆔 Message ID gốc: {message_id or 'N/A'}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            try:
+                dm_notice = await lark_service.send_bot_dm_to_owner(draft_card_text)
+                logger.info(f"✔ Đã gửi bản nháp chờ duyệt vào DM riêng của chủ nhân (Message ID: {message_id})")
+            except Exception as e:
+                logger.error(f"Lỗi gửi bản nháp cho chủ nhân: {e}")
+                dm_notice = {"error": str(e)}
+
+        return {
+            "status": "draft_pending_approval",
+            "jev_action": jev_action,
+            "jev_confidence": jev_confidence,
+            "query": clean_query,
+            "draft_answer": answer,
+            "answer": answer,
+            "actions": ["Gửi", "Sửa", "Bỏ"],
+            "user_name": user_name,
+            "responder_name": responder_name,
+            "extraction": extraction_data,
+            "composed_context": composed,
+            "lark_response": dm_notice,
+            "message": "AI đã soạn câu trả lời nháp thành công. Đang chờ người dùng bấm Gửi / Sửa / Bỏ (Đã gửi vào DM riêng của bạn, chưa phát ngôn vào nhóm).",
+        }
+
+    # TH3 & TH4: REPLY_ONLY hoặc MEMORY_AND_REPLY - Gửi reply trực tiếp vào nhóm nhân danh User
     lark_reply_result = None
     if reply_to_lark and message_id:
         try:
@@ -488,6 +529,48 @@ async def reset_memory_store():
 async def get_mongodb_status():
     """Kiểm tra trạng thái kết nối tới MongoDB."""
     return await check_mongo_connection()
+
+
+@router.post("/approve-draft")
+async def approve_draft(request: ApproveDraftRequest):
+    """
+    Endpoint cho phép người dùng/sếp bấm Gửi / Sửa / Bỏ đối với bản nháp:
+      - 'send': Gửi nguyên bản nháp vào nhóm nhân danh User.
+      - 'edit': Gửi nội dung đã chỉnh sửa vào nhóm nhân danh User.
+      - 'discard': Hủy bỏ bản nháp, không gửi vào nhóm.
+    """
+    if request.action == "discard":
+        logger.info(f"Người dùng đã BỎ bản nháp cho message_id={request.message_id}")
+        return {
+            "status": "discarded",
+            "message_id": request.message_id,
+            "message": "Đã hủy bỏ bản nháp thành công. Không có tin nhắn nào được gửi vào nhóm.",
+        }
+
+    if request.action in ("send", "edit"):
+        if not request.content:
+            raise HTTPException(status_code=400, detail="Cần cung cấp 'content' để gửi vào nhóm")
+
+        clean_text = text_filter.clean_output(request.content)
+        try:
+            resp = await lark_service.areply_text(
+                message_id=request.message_id,
+                text=clean_text,
+                as_user=True,  # 100% danh tính User
+            )
+            return {
+                "status": "sent" if request.action == "send" else "edited_and_sent",
+                "message_id": request.message_id,
+                "sent_content": clean_text,
+                "lark_response": resp,
+                "message": "Đã duyệt và gửi tin nhắn vào nhóm thành công dưới danh tính của bạn!",
+            }
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi duyệt bản nháp: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    raise HTTPException(status_code=400, detail="Hành động không hợp lệ. Chọn 'send', 'edit', hoặc 'discard'.")
+
 
 
 
