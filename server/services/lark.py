@@ -898,7 +898,12 @@ class LarkService:
                     new_messages.append(parsed)
 
         except Exception as e:
-            logger.error(f"Lỗi khi poll DM messages: {e}", exc_info=True)
+            err_str = str(e)
+            is_transient_net = any(k in err_str.lower() for k in ["ssl", "tls", "connection", "retry", "timeout", "reset", "broken pipe"])
+            if is_transient_net:
+                logger.warning(f"⚠️ Mạng tạm thời chập chờn khi poll DM ({type(e).__name__}): {err_str[:120]}. Sẽ tự thử lại ở chu kỳ tiếp...")
+            else:
+                logger.error(f"Lỗi khi poll DM messages: {e}", exc_info=True)
 
         return new_messages
 

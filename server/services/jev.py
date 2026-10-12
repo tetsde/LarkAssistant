@@ -29,10 +29,10 @@ class JevService:
                     ),
                     "criteria": {
                         "IGNORE": "Tin nhắn rác, chào hỏi vô thưởng vô phạt, tán gẫu, không chứa thông tin quan trọng. (Không cần ghi nhớ, Không cần trả lời)",
-                        "MEMORY_ONLY": "Tin nhắn mang tính chất báo cáo, thông báo tiến độ, tài liệu tham khảo. Cần lưu vào bộ nhớ để sau này tra cứu, nhưng không cần trả lời. (Cần ghi nhớ, Không cần trả lời)",
-                        "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin cơ bản, hỏi quy trình thường ngày, an toàn, cần cung cấp câu trả lời ngay nhưng thông tin đó không mang giá trị lưu trữ lâu dài. (Không cần ghi nhớ, Cần trả lời ngay)",
-                        "MEMORY_AND_REPLY": "Tin nhắn cực kỳ quan trọng, sự cố khẩn cấp, xin ý kiến chốt deal, quyết định kinh doanh. Vừa cần lưu lại bằng chứng/quyết định, vừa cần sếp hoặc BOT trả lời ngay. (Cần ghi nhớ, Cần trả lời)",
-                        "DRAFT_PENDING_APPROVAL": "Soạn nháp chờ duyệt: Câu hỏi có dữ liệu trong knowledge base nhưng có rủi ro, nhạy cảm (về tài chính, ngân sách, hợp đồng, chính sách, cam kết tiến độ quan trọng, nhân sự, hoặc quyết định của sếp). Cần AI soạn sẵn câu trả lời nháp gửi riêng cho sếp/người dùng bấm Gửi / Sửa / Bỏ chứ KHÔNG được tự ý phát ngôn vào nhóm ngay."
+                        "MEMORY_ONLY": "Tin nhắn mang tính chất báo cáo, cập nhật tiến độ hoặc tài liệu tham khảo cần lưu vào bộ nhớ để tra cứu, nhưng không ai hỏi. (Cần ghi nhớ, Không cần trả lời)",
+                        "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin thông thường về dự án, tiến độ, thành viên team, phân công công việc, quy trình, kiến trúc kỹ thuật hoặc tài liệu hệ thống đã có sẵn trong Knowledge Base. Cần AI tự động tra cứu tri thức và trả lời ngay vào nhóm.",
+                        "MEMORY_AND_REPLY": "Tin nhắn sự cố khẩn cấp, thay đổi quan trọng kèm câu hỏi cần phản hồi ngay. (Cần ghi nhớ, Cần trả lời)",
+                        "DRAFT_PENDING_APPROVAL": "CHỈ áp dụng cho các câu hỏi ĐẶC BIỆT NHẠY CẢM MẬT (như bảng lương cá nhân nhân viên, bí mật tài chính kế toán riêng tư, thỏa thuận hợp đồng bảo mật, tranh chấp pháp lý nghiêm trọng). Còn các câu hỏi tiến độ, thành viên, thông tin dự án chung thì KHÔNG chọn nhãn này."
                     }
                 }
             }
@@ -60,36 +60,36 @@ class JevService:
                 probabilities = action_data.get("probabilities", {})
                 prob_choice = probabilities.get(choice, 0.0)
 
-                # --- BỘ LỌC ĐỘ TỰ TIN (SAFETY-FIRST THRESHOLDS VỚI 5 NHÃN) ---
-                # Tính xác suất rủi ro cạnh tranh (DRAFT_PENDING_APPROVAL từ probabilities)
+                # --- BỘ LỌC ĐỘ TỰ TIN (ĐÃ TỐI ƯU CÂN BẰNG PHẢN HỒI MƯỢT MÀ & AN TOÀN) ---
                 prob_draft_risk = probabilities.get("DRAFT_PENDING_APPROVAL", 0.0)
+                prob_reply = probabilities.get("REPLY_ONLY", 0.0)
 
                 if choice == "MEMORY_AND_REPLY":
-                    if prob_choice > 0.95:
+                    if prob_choice >= 0.70:
                         return {"action": "MEMORY_AND_REPLY", "confidence": prob_choice}
                     else:
-                        # Không đủ > 0.95 thì hạ cấp xuống chỉ ghi nhớ, không tự ý phản hồi
+                        # Hạ cấp xuống chỉ ghi nhớ nếu độ tự tin trả lời chưa đủ cao
                         return {"action": "MEMORY_ONLY", "confidence": prob_choice}
 
                 elif choice == "MEMORY_ONLY":
-                    if prob_choice > 0.7:
+                    if prob_choice >= 0.50:
                         return {"action": "MEMORY_ONLY", "confidence": prob_choice}
                     else:
-                        # Không đủ tự tin ghi nhớ -> bỏ qua
                         return {"action": "IGNORE", "confidence": prob_choice}
 
                 elif choice == "REPLY_ONLY":
-                    # [SAFETY] Cân bằng an toàn và độ nhạy:
-                    # Nếu JEV chọn REPLY_ONLY và rủi ro không áp đảo (prob_draft_risk < 0.40, prob_choice >= 0.50) -> Cho phép tự trả lời
-                    if prob_draft_risk >= 0.40 and prob_draft_risk > prob_choice:
+                    # Ưu tiên tự trả lời các câu hỏi cơ bản, chỉ chặn sang DRAFT khi rủi ro thực sự áp đảo
+                    if prob_draft_risk >= 0.65 and prob_draft_risk > prob_choice:
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_draft_risk}
-                    elif prob_choice >= 0.50:
+                    elif prob_choice >= 0.35:
                         return {"action": "REPLY_ONLY", "confidence": prob_choice}
                     else:
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
 
                 elif choice == "DRAFT_PENDING_APPROVAL":
-                    # Luôn giữ nguyên DRAFT cho mọi mức prob (không bao giờ hạ cấp xuống)
+                    # Nếu JEV chọn DRAFT nhưng xác suất thấp (< 0.60) và REPLY_ONLY cũng cao -> Ưu tiên tự trả lời
+                    if prob_choice < 0.60 and prob_reply >= 0.30:
+                        return {"action": "REPLY_ONLY", "confidence": prob_reply}
                     return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
 
                 else:  # choice == "IGNORE"
