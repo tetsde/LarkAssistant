@@ -500,18 +500,23 @@ def main():
     if "name" in user_info:
         print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}")
         print(f"   - Open ID           : {user_info['open_id']}")
-        print(f"   - Group Chats       : ⚡ WebSocket Event (Real-time 0ms)")
+    enable_polling = os.getenv("ENABLE_DM_POLLING", "false").lower() in ("true", "1", "yes")
+    if enable_polling:
         print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ 4.0s)")
         print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
     else:
-        print(f"⚠️ User Token         : {user_info.get('error')}")
+        print(f"   - Group & DM        : ⚡ Pure WebSocket Real-time (0 Quota used!)")
+        print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
 
     print("-" * 65)
     print("💡 Mọi tin nhắn phản hồi sẽ hiện ra dưới danh tính Tống Phước Hoài Nam!")
     print("=" * 65)
 
-    # Khởi động chế độ Hybrid
-    lark_service.start_hybrid_runner(dm_poll_interval=4.0)
+    if enable_polling:
+        lark_service.start_hybrid_runner(dm_poll_interval=4.0)
+    else:
+        print("🚀 Đang kết nối Lark WebSocket Client (Pure WebSocket Mode)...")
+        lark_service.start_ws_client(background=False)
 
 
 if __name__ == "__main__":
