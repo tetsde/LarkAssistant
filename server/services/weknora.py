@@ -85,12 +85,24 @@ class WeKnoraService:
 
                     return result_payload
 
+    def get_configured_kb_ids(self) -> List[str]:
+        """
+        Lấy danh sách Knowledge Base IDs đã cấu hình từ .env (settings.WEKNORA_DATASET_ID).
+        Hỗ trợ phân tách bằng dấu phẩy nếu cấu hình nhiều KB cụ thể.
+        Nếu rỗng, trả về list rỗng (KHÔNG tự động quét toàn bộ KB để tránh làm tràn context/nổ token).
+        """
+        if settings.WEKNORA_DATASET_ID:
+            return [kb_id.strip() for kb_id in settings.WEKNORA_DATASET_ID.split(",") if kb_id.strip()]
+        return []
+
     async def save_to_kb(self, text: str, dataset_id: str = None) -> dict:
-        dataset_id = dataset_id or settings.WEKNORA_DATASET_ID
-        if not dataset_id:
+        target_id = dataset_id or settings.WEKNORA_DATASET_ID
+        if target_id and "," in target_id:
+            target_id = target_id.split(",")[0].strip()
+        if not target_id:
             raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
             
-        url = f"{self.base_url}/datasets/{dataset_id}/document/create_by_text"
+        url = f"{self.base_url}/datasets/{target_id}/document/create_by_text"
         payload = {
             "name": f"Memory_{text[:10]}...",
             "text": text,
@@ -141,31 +153,30 @@ class WeKnoraService:
 
         search_url = f"{self.base_url}/knowledge-search"
 
-        payload: Dict[str, Any] = {
-            "query": query.strip(),
-            "match_count": match_count,
-        }
-
-        # Nếu truyền knowledge_base_ids hoặc lấy từ settings.WEKNORA_DATASET_ID
-        target_kbs = knowledge_base_ids
-        if not target_kbs and settings.WEKNORA_DATASET_ID:
-            target_kbs = [settings.WEKNORA_DATASET_ID]
-        if target_kbs:
-            payload["knowledge_base_ids"] = target_kbs
-
-        if vector_threshold is not None:
-            payload["vector_threshold"] = vector_threshold
-        if keyword_threshold is not None:
-            payload["keyword_threshold"] = keyword_threshold
-        if disable_keywords_match:
-            payload["disable_keywords_match"] = True
-        if disable_vector_match:
-            payload["disable_vector_match"] = True
-        if not rerank_enabled:
-            payload["rerank"] = {"enabled": False}
-
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
+                if not target_kbs:
+                    print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
+                    return []
+
+                payload: Dict[str, Any] = {
+                    "query": query.strip(),
+                    "match_count": match_count,
+                    "knowledge_base_ids": target_kbs,
+                }
+
+                if vector_threshold is not None:
+                    payload["vector_threshold"] = vector_threshold
+                if keyword_threshold is not None:
+                    payload["keyword_threshold"] = keyword_threshold
+                if disable_keywords_match:
+                    payload["disable_keywords_match"] = True
+                if disable_vector_match:
+                    payload["disable_vector_match"] = True
+                if not rerank_enabled:
+                    payload["rerank"] = {"enabled": False}
+
                 response = await client.post(
                     search_url,
                     headers=self.headers,
@@ -212,13 +223,16 @@ class WeKnoraService:
             return []
 
         search_url = f"{self.base_url}/knowledge-search"
+        target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
+        if not target_kbs:
+            print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
+            return []
+
         payload: Dict[str, Any] = {
             "query": query.strip(),
             "match_count": match_count,
+            "knowledge_base_ids": target_kbs,
         }
-        target_kbs = knowledge_base_ids or ([settings.WEKNORA_DATASET_ID] if settings.WEKNORA_DATASET_ID else [])
-        if target_kbs:
-            payload["knowledge_base_ids"] = target_kbs
 
         try:
             with httpx.Client(timeout=timeout) as client:
@@ -228,7 +242,9 @@ class WeKnoraService:
                     if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
                         return data["data"]
                     return data if isinstance(data, list) else []
-                return []
+                else:
+                    print(f"WeKnora retrieve_sync error (HTTP {response.status_code}): {response.text}")
+                    return []
         except Exception as e:
             print(f"Lỗi khi gọi WeKnora retrieve_sync: {e}")
             return []
