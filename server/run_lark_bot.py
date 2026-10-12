@@ -62,9 +62,75 @@ async def handle_incoming_message(msg: LarkMessage):
         text_lower = clean_text.lower()
         print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
 
-        # --- A. LỆNH DUYỆT & GỬI BẢN NHÁP: [Gửi] / [Duyệt] / [OK] ---
+        # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST (KNOWLEDGE BASE SYNC) ---
+        # 1. Xem chi tiết Daily Digest
+        if "xem digest" in text_lower or "chi tiết digest" in text_lower:
+            from services.digest_service import digest_service
+            latest_pending = await digest_service.get_latest_pending_approval_digest()
+            if not latest_pending:
+                await lark_service.send_bot_dm_to_owner("ℹ️ Hiện không có bản Daily Digest nào đang chờ duyệt.")
+            else:
+                md_preview = latest_pending.to_weknora_markdown()
+                preview_text = md_preview[:1500] + ("\n...(còn tiếp)" if len(md_preview) > 1500 else "")
+                await lark_service.send_bot_dm_to_owner(
+                    f"📄 [CHI TIẾT DAILY DIGEST: {latest_pending.id}]\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{preview_text}\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "👉 Nhắn 'Duyệt digest' để nạp vào WeKnora hoặc 'Hủy digest' để từ chối."
+                )
+            return
+
+        # 2. Duyệt Daily Digest đẩy lên WeKnora
+        digest_approve_keywords = ("duyệt digest", "duyet digest", "ok digest", "duyệt kb", "duyet kb", "ok kb", "approve digest")
+        if any(kw in text_lower for kw in digest_approve_keywords):
+            from services.digest_service import digest_service
+            parts = clean_text.split()
+            target_id = parts[2] if len(parts) >= 3 and parts[2].startswith("digest_") else None
+
+            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Daily Digest ({target_id or 'bản gần nhất'})...")
+            ok, msg_reply, rec = await digest_service.approve_and_sync_digest(target_id)
+            if ok and rec:
+                reply_confirm = (
+                    "✔ ĐÃ DUYỆT VÀ ĐỒNG BỘ DAILY DIGEST LÊN WEKNORA THÀNH CÔNG!\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📅 Ngày ghi nhận : {rec.date}\n"
+                    f"💬 Nhóm chat     : {rec.chat_name or rec.chat_id}\n"
+                    f"🆔 Mã Digest     : {rec.id}\n"
+                    f"📚 WeKnora Doc ID: {rec.weknora_doc_id}\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Knowledge Base đã được cập nhật tri thức mới sẵn sàng cho RAG!"
+                )
+                await lark_service.send_bot_dm_to_owner(reply_confirm)
+            else:
+                await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
+            return
+
+        # 3. Hủy Daily Digest không nạp vào WeKnora
+        digest_reject_keywords = ("hủy digest", "huy digest", "bỏ digest", "bo digest", "reject digest")
+        if any(kw in text_lower for kw in digest_reject_keywords):
+            from services.digest_service import digest_service
+            parts = clean_text.split()
+            target_id = parts[2] if len(parts) >= 3 and parts[2].startswith("digest_") else None
+
+            print(f"🗑 [DM APPROVAL] Tiến hành HỦY Daily Digest ({target_id or 'bản gần nhất'})...")
+            ok, msg_reply, rec = await digest_service.reject_digest(target_id)
+            if ok and rec:
+                reply_confirm = (
+                    "🗑 ĐÃ TỪ CHỐI BẢN DAILY DIGEST!\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🆔 Mã Digest : {rec.id}\n"
+                    "Trạng thái đã chuyển sang 'rejected'. Dữ liệu KHÔNG được nạp vào WeKnora."
+                )
+                await lark_service.send_bot_dm_to_owner(reply_confirm)
+            else:
+                await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
+            return
+
+        # --- B. LỆNH DUYỆT & GỬI BẢN NHÁP CÂU TRẢ LỜI: [Gửi] / [Duyệt] / [OK] ---
         send_keywords = ("gửi", "gui", "ok", "duyệt", "duyet", "gửi đi", "gui di", "send", "yes", "1")
         if text_lower in send_keywords or text_lower.startswith(("gửi ", "gui ", "duyệt ")):
+
             draft = draft_store.get_latest_draft(msg.sender_id)
             if not draft:
                 print(f"⚠️ [DM APPROVAL] Không tìm thấy bản nháp đang chờ duyệt cho {msg.sender_id}")
@@ -258,12 +324,62 @@ async def handle_incoming_message(msg: LarkMessage):
     print("=" * 65 + "\n")
 
 
+def start_digest_scheduler_daemon():
+    """Chạy background thread theo dõi cấu hình giờ trong .env để kích hoạt tổng hợp Daily Digest."""
+    import threading
+    import time
+    from core.config import settings
+    from models.memory import get_vietnam_now
+    from utils.digest import get_current_digest_date
+
+    def _worker():
+        last_run_date = ""
+        target_hm = (settings.DIGEST_SCHEDULE_TIME or "23:00").strip()
+        print(f"⏰ [DIGEST SCHEDULER] Đã khởi động background thread (Giờ chạy hẹn trước: {target_hm})")
+
+        while True:
+            try:
+                time.sleep(30)
+                now_vn = get_vietnam_now()
+                current_hm = now_vn.strftime("%H:%M")
+                today_str = get_current_digest_date()
+
+                # Kiểm tra đúng giờ hẹn và hôm nay chưa chạy
+                if current_hm == target_hm and last_run_date != today_str:
+                    print(f"\n⏰ [DIGEST SCHEDULER] Đến giờ hẹn ({target_hm})! Bắt đầu tổng hợp tin nhắn trong ngày...")
+                    last_run_date = today_str
+
+                    import asyncio
+                    from services.digest_service import digest_service
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        digests = loop.run_until_complete(
+                            digest_service.run_scheduled_daily_digests(
+                                date=today_str,
+                                require_approval=settings.DIGEST_REQUIRE_APPROVAL,
+                            )
+                        )
+                        print(f"✔ [DIGEST SCHEDULER] Hoàn tất tổng hợp {len(digests)} nhóm. Đã gửi tin nhắn xin duyệt cho approver!")
+                    finally:
+                        loop.close()
+            except Exception as e:
+                print(f"⚠️ [DIGEST SCHEDULER] Lỗi: {e}")
+
+    thread = threading.Thread(target=_worker, daemon=True, name="DigestScheduler")
+    thread.start()
+
+
 def main():
     print("\n" + "=" * 65)
     print("🚀 KHỞI ĐỘNG HILARK - MÔ HÌNH HYBRID (GROUP = EVENT, DM = POLLING)")
     print("=" * 65)
     print(f"App ID : {lark_service.app_id}")
     print(f"Domain : {lark_service.domain}")
+
+    # Khởi động background scheduler kiểm tra giờ chạy Daily Digest
+    start_digest_scheduler_daemon()
 
     # Lấy thông tin User hiện tại từ token trong .env
     user_info = lark_service.get_current_user()
@@ -286,3 +402,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

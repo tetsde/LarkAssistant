@@ -31,5 +31,11 @@ class Settings:
     LARK_DOMAIN: str = os.getenv("lark_domain") or os.getenv("LARK_DOMAIN", "https://open.larksuite.com")
     LARK_USER_ACCESS_TOKEN: str = os.getenv("access_token_user") or os.getenv("LARK_USER_ACCESS_TOKEN", "")
 
+    # Daily Digest & Approval Settings
+    DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")
+    DIGEST_APPROVER_ID: str = os.getenv("digest_approver_id", "")
+    DIGEST_REQUIRE_APPROVAL: bool = os.getenv("digest_require_approval", "true").lower() in ("true", "1")
+
 settings = Settings()
+
 

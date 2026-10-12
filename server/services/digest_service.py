@@ -530,6 +530,180 @@ Hãy trích xuất:
             }
 
 
+    async def send_approval_request(
+        self,
+        digest: DailyDigestRecord,
+        approver_open_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Gửi tin nhắn thông báo kèm tóm tắt nội dung Daily Digest tới người duyệt qua Lark DM.
+        Người duyệt nhận tin nhắn và có thể duyệt bằng lệnh 'Duyệt digest' hoặc 'OK digest'.
+        """
+        from services.lark import lark_service
+
+        target_approver = (
+            approver_open_id
+            or settings.DIGEST_APPROVER_ID
+            or lark_service.known_user_open_id
+        )
+
+        summary_lines = [
+            "📋 [YÊU CẦU DUYỆT DAILY DIGEST]",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"📅 Ngày ghi nhận : {digest.date}",
+            f"💬 Nhóm chat     : {digest.chat_name or digest.chat_id}",
+            f"🆔 Mã Digest     : {digest.id}",
+            f"✉ Số tin nhắn   : {digest.message_count}",
+            "",
+            "🔍 TỔNG QUAN HÔM NAY:",
+            f"{digest.overview_summary or 'Chưa có tóm tắt tổng quan.'}",
+            "",
+            "📊 THỐNG KÊ CHI TIẾT:",
+            f"• Quyết định (Decisions) : {len(digest.decisions)} mục",
+            f"• Cam kết (Commitments)  : {len(digest.commitments)} mục",
+            f"• Trạng thái/Blocker     : {len(digest.status_changes)} mục",
+        ]
+
+        if digest.decisions:
+            summary_lines.append("\n👉 Quyết định nổi bật:")
+            for d in digest.decisions[:3]:
+                summary_lines.append(f"  - {d.title} (bởi {d.source.speaker_name})")
+
+        if digest.commitments:
+            summary_lines.append("\n👉 Cam kết deadline:")
+            for c in digest.commitments[:3]:
+                summary_lines.append(f"  - {c.promiser_name}: {c.task} (hạn {c.deadline})")
+
+        blockers = [s for s in digest.status_changes if s.category == StatusCategory.BLOCKER]
+        if blockers:
+            summary_lines.append("\n🚨 Điểm nghẽn (Blocker):")
+            for b in blockers[:3]:
+                summary_lines.append(f"  - {b.target_object}: {b.summary}")
+
+        summary_lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "👉 HƯỚNG DẪN DUYỆT ĐẨY LÊN WEKNORA:",
+            "• Nhắn 'Duyệt digest' hoặc 'OK digest' để ĐỒNG Ý nạp vào KB.",
+            "• Nhắn 'Hủy digest' hoặc 'Bỏ digest' để TỪ CHỐI.",
+            "• Nhắn 'Xem digest' để đọc toàn bộ văn bản Markdown chi tiết.",
+        ])
+
+        msg_text = "\n".join(summary_lines)
+
+        try:
+            if target_approver:
+                res = await lark_service.send_bot_dm_to_owner(msg_text)
+                return bool(res.get("success"))
+            return False
+        except Exception as e:
+            logger.error(f"Lỗi khi gửi tin nhắn duyệt digest: {e}", exc_info=True)
+            return False
+
+    async def get_latest_pending_approval_digest(self) -> Optional[DailyDigestRecord]:
+        """Lấy bản ghi DailyDigest gần nhất đang ở trạng thái chờ duyệt."""
+        try:
+            coll = get_daily_digests_collection()
+            doc = await coll.find_one(
+                {"sync_status": "pending_approval"},
+                sort=[("created_at", -1)],
+            )
+            if doc:
+                return DailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi tìm digest pending approval: {e}", exc_info=True)
+            return None
+
+    async def approve_and_sync_digest(
+        self,
+        digest_id: Optional[str] = None,
+        dataset_id: Optional[str] = None,
+    ) -> tuple[bool, str, Optional[DailyDigestRecord]]:
+        """
+        Người duyệt đồng ý -> Lấy digest từ MongoDB và đẩy chính thức lên WeKnora KB.
+        """
+        if digest_id:
+            digest = await self.get_digest_by_id(digest_id)
+        else:
+            digest = await self.get_latest_pending_approval_digest()
+
+        if not digest:
+            return False, "Không tìm thấy bản ghi Daily Digest nào đang chờ duyệt.", None
+
+        if digest.sync_status == "synced":
+            return True, f"Digest {digest.id} đã được đồng bộ lên WeKnora trước đó.", digest
+
+        success = await self.sync_digest_to_weknora(digest, dataset_id=dataset_id)
+        if success:
+            return True, f"Đã duyệt và nạp thành công Daily Digest ({digest.id}) vào WeKnora KB!", digest
+        else:
+            return False, f"Duyệt thành công nhưng lỗi khi đẩy lên WeKnora API.", digest
+
+    async def reject_digest(
+        self,
+        digest_id: Optional[str] = None,
+    ) -> tuple[bool, str, Optional[DailyDigestRecord]]:
+        """
+        Người duyệt từ chối -> Đánh dấu rejected, không đẩy lên WeKnora.
+        """
+        if digest_id:
+            digest = await self.get_digest_by_id(digest_id)
+        else:
+            digest = await self.get_latest_pending_approval_digest()
+
+        if not digest:
+            return False, "Không tìm thấy bản ghi Daily Digest nào đang chờ duyệt.", None
+
+        digest.sync_status = "rejected"
+        digest.updated_at = get_vietnam_now_iso()
+
+        coll = get_daily_digests_collection()
+        await coll.update_one(
+            {"id": digest.id},
+            {"$set": {"sync_status": "rejected", "updated_at": digest.updated_at}},
+        )
+        return True, f"Đã từ chối bản Daily Digest ({digest.id}). Dữ liệu không được nạp vào KB.", digest
+
+    async def get_active_chat_ids_today(self, date: Optional[str] = None) -> List[str]:
+        """Lấy danh sách các nhóm chat có tin nhắn staging trong ngày hôm nay."""
+        target_date = date or get_current_digest_date()
+        try:
+            coll = get_staging_collection()
+            cursor = coll.distinct("chat_id", {"timestamp": {"$regex": f"^{target_date}"}})
+            chat_ids = await cursor
+            return [str(c) for c in chat_ids if c]
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy active chat_ids: {e}", exc_info=True)
+            return []
+
+    async def run_scheduled_daily_digests(
+        self,
+        date: Optional[str] = None,
+        require_approval: Optional[bool] = None,
+    ) -> List[DailyDigestRecord]:
+        """
+        Chạy tổng hợp tự động cho tất cả các nhóm chat hoạt động trong ngày.
+        Nếu require_approval = True: sẽ gửi tin nhắn chờ duyệt cho approver trước khi nạp KB.
+        """
+        target_date = date or get_current_digest_date()
+        chat_ids = await self.get_active_chat_ids_today(target_date)
+        logger.info(f"[Scheduled Digest] Phát hiện {len(chat_ids)} nhóm chat hoạt động ngày {target_date}")
+
+        results: List[DailyDigestRecord] = []
+        for cid in chat_ids:
+            try:
+                rec = await self.process_and_sync_daily_digest(
+                    chat_id=cid,
+                    date=target_date,
+                    require_approval=require_approval,
+                )
+                results.append(rec)
+            except Exception as e:
+                logger.error(f"Lỗi khi xử lý scheduled digest cho chat {cid}: {e}", exc_info=True)
+
+        return results
+
     async def process_and_sync_daily_digest(
         self,
         chat_id: str,
@@ -537,14 +711,26 @@ Hãy trích xuất:
         date: Optional[str] = None,
         project_tag: Optional[str] = None,
         weknora_kb_id: Optional[str] = None,
+        require_approval: Optional[bool] = None,
     ) -> DailyDigestRecord:
         """
-        Flow tự động trọn gói cuối ngày:
+        Flow tự động trọn gói:
           1. Lấy tin nhắn staging trong ngày từ MongoDB
           2. Trích xuất LLM (Quyết định, Cam kết, Thay đổi trạng thái + truy vết)
           3. Lưu bản ghi vào MongoDB
-          4. Đẩy bản Markdown lên WeKnora
+          4. Nếu require_approval == True (hoặc cấu hình .env bật require_approval):
+             - Lưu với trạng thái 'pending_approval'
+             - Gửi tin nhắn xin duyệt tới Người duyệt (Lark DM)
+             - CHỜ NGƯỜI DUYỆT OK mới update lên WeKnora
+          5. Nếu require_approval == False:
+             - Tự động đẩy thẳng lên WeKnora ngay
         """
+        needs_approval = (
+            require_approval
+            if require_approval is not None
+            else settings.DIGEST_REQUIRE_APPROVAL
+        )
+
         target_date = date or get_current_digest_date()
         messages = await self.get_staging_messages(chat_id=chat_id, date=target_date)
 
@@ -557,13 +743,17 @@ Hãy trích xuất:
             project_tag=project_tag,
         )
 
-        # Lưu vào MongoDB
-        await self.save_digest_to_mongo(digest)
-
-        # Đồng bộ sang WeKnora
-        await self.sync_digest_to_weknora(digest, dataset_id=weknora_kb_id)
+        if needs_approval:
+            digest.sync_status = "pending_approval"
+            await self.save_digest_to_mongo(digest)
+            await self.send_approval_request(digest)
+            logger.info(f"Đã lưu DailyDigest {digest.id} và gửi tin nhắn chờ duyệt tới approver.")
+        else:
+            await self.save_digest_to_mongo(digest)
+            await self.sync_digest_to_weknora(digest, dataset_id=weknora_kb_id)
 
         return digest
+
 
 
 # Singleton instance
