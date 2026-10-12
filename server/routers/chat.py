@@ -123,6 +123,8 @@ async def chat(request: ChatRequest):
 
     # TH3: REPLY_ONLY hoặc MEMORY_AND_REPLY - Cần gọi WeKnora tạo câu trả lời
     response_data = await weknora_service.get_chat_response(request)
+    if isinstance(response_data, dict) and "answer" in response_data:
+        response_data["answer"] = text_filter.clean_output(response_data["answer"])
 
     return {
         "status": "auto_replied" if jev_action == "REPLY_ONLY" else "escalated_and_memorized",

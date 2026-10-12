@@ -2,6 +2,7 @@ import httpx
 from fastapi import HTTPException
 from core.config import settings
 from models.chat import ChatRequest
+from utils.text_filter import text_filter
 
 class WeKnoraService:
     def __init__(self):
@@ -75,7 +76,13 @@ class WeKnoraService:
                     if not final_answer:
                         raise HTTPException(status_code=500, detail="Could not parse final answer from WeKnora SSE stream.")
                         
-                    return {"session_id": session_id, "answer": final_answer}
+                    clean_answer = text_filter.clean_output(final_answer)
+                    citations = text_filter.extract_kb_citations(final_answer)
+                    result_payload = {"session_id": session_id, "answer": clean_answer}
+                    if citations:
+                        result_payload["citations"] = citations
+
+                    return result_payload
 
     async def save_to_kb(self, text: str, dataset_id: str = None) -> dict:
         dataset_id = dataset_id or settings.WEKNORA_DATASET_ID
