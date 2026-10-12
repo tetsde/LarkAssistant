@@ -21,4 +21,13 @@ class Settings:
     MONGO_MEMORY_COLLECTION: str = os.getenv("mongo_memory_collection", "memories")
     MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
 
+    # Lark Settings
+    LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")
+    LARK_APP_SECRET: str = os.getenv("app_secret") or os.getenv("LARK_APP_SECRET", "")
+    LARK_VERIFICATION_TOKEN: str = os.getenv("verification_token") or os.getenv("LARK_VERIFICATION_TOKEN", "")
+    LARK_ENCRYPT_KEY: str = os.getenv("encrypt_key") or os.getenv("LARK_ENCRYPT_KEY", "")
+    LARK_DOMAIN: str = os.getenv("lark_domain") or os.getenv("LARK_DOMAIN", "https://open.larksuite.com")
+    LARK_USER_ACCESS_TOKEN: str = os.getenv("access_token_user") or os.getenv("LARK_USER_ACCESS_TOKEN", "")
+
 settings = Settings()
+
