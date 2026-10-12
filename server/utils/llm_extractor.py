@@ -454,6 +454,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
 
@@ -496,6 +497,7 @@ class GeminiClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
 

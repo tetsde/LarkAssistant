@@ -335,7 +335,7 @@ class ContextComposer:
     # 2. ĐÓNG GÓI NỘI DUNG (FORMATTING & RENDERING)
     # -------------------------------------------------------------------------
 
-    def format_retriever_section(self, chunks: List[RetrievedChunk]) -> str:
+    def format_retriever_section(self, chunks: List[RetrievedChunk], max_chunk_chars: int = 4000) -> str:
         """Định dạng phân vùng tài liệu từ WeKnora."""
         if not chunks:
             return "(Không có dữ liệu tài liệu trích xuất từ WeKnora)"
@@ -345,7 +345,11 @@ class ContextComposer:
             chunk_tag = f" [Chunk ID: {c.chunk_id}]" if c.chunk_id else ""
             score_tag = f" (Score: {c.score:.2f})" if c.score is not None else ""
             lines.append(f"--- [Tài liệu {idx}]: {c.doc_name}{chunk_tag}{score_tag} ---")
-            lines.append(c.content.strip())
+            raw_content = c.content.strip()
+            if len(raw_content) > max_chunk_chars:
+                lines.append(raw_content[:max_chunk_chars] + f"\n...(đoạn trích lược bớt {len(raw_content) - max_chunk_chars} ký tự để tối ưu bối cảnh)...")
+            else:
+                lines.append(raw_content)
             lines.append("")
 
         return "\n".join(lines).strip()

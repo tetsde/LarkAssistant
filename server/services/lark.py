@@ -192,6 +192,28 @@ class LarkService:
             self._current_user_profile = fallback_profile
             return fallback_profile
 
+    def get_user_name(self, user_id: str) -> Optional[str]:
+        """Lấy họ tên hiển thị của một người dùng theo open_id/user_id."""
+        if not user_id:
+            return None
+        if not hasattr(self, "_user_name_cache"):
+            self._user_name_cache = {}
+        if user_id in self._user_name_cache:
+            return self._user_name_cache[user_id]
+        try:
+            from lark_oapi.api.contact.v3 import GetUserRequest
+            opt = self._get_request_option(as_user=True)
+            req = GetUserRequest.builder().user_id(user_id).user_id_type("open_id").build()
+            resp = self.client.contact.v3.user.get(req, opt)
+            if resp.success() and resp.data and resp.data.user:
+                name = resp.data.user.name
+                if name:
+                    self._user_name_cache[user_id] = name
+                    return name
+        except Exception:
+            pass
+        return None
+
     # -------------------------------------------------------------------------
     # 2. BÓC TÁCH TIN NHẮN (PARSER)
     # -------------------------------------------------------------------------
