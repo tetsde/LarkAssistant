@@ -1,10 +1,23 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from routers import health, chat, lark, digest, scope
+from services.bot_service import start_bot_service, stop_bot_service
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Khởi động Lark Bot Service (WebSocket Client, Event Handlers, Daily Digest Scheduler)
+    start_bot_service()
+    yield
+    # Dọn dẹp an toàn khi tắt server
+    stop_bot_service()
+
 
 app = FastAPI(
     title="WeKnora API Server",
     description="Refactored server with clean architecture (Router, Database, Services, Models)",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Đăng ký các Router
