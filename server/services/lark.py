@@ -34,12 +34,13 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import lark_oapi as lark
+import lark_oapi.ws as lark_ws
 from fastapi import Request, Response
 from lark_oapi.api.authen.v1 import GetUserInfoRequest
 from lark_oapi.api.im.v1 import (
@@ -55,49 +56,10 @@ from lark_oapi.core.const import APPLICATION_JSON, UTF_8
 from lark_oapi.core.model import RawRequest
 
 from core.config import settings
+from models.lark import LarkMention, LarkMessage, LarkUserProfile
 
 logger = logging.getLogger("hilark.lark")
 logger.setLevel(logging.INFO)
-
-
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
-
-@dataclass
-class LarkMessage:
-    """Đại diện cho 1 tin nhắn nhận được từ Lark IM."""
-    message_id: str
-    chat_id: str
-    chat_type: str  # "p2p" (1-1) hoặc "group" (nhóm)
-    sender_id: str  # open_id / user_id
-    sender_type: str  # "user" hoặc "app"
-    message_type: str  # "text", "post", "image", "file", ...
-    text: str  # Nội dung văn bản thuần đã làm sạch
-    raw_content: str  # JSON content gốc từ Lark
-    create_time: int
-    is_bot: bool = False
-    is_self: bool = False  # True nếu tin nhắn được gửi từ chính user hiện tại
-    root_id: Optional[str] = None
-    parent_id: Optional[str] = None
-    mentions: List[Dict[str, Any]] = field(default_factory=list)
-    raw_event: Optional[Any] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "message_id": self.message_id,
-            "chat_id": self.chat_id,
-            "chat_type": self.chat_type,
-            "sender_id": self.sender_id,
-            "sender_type": self.sender_type,
-            "message_type": self.message_type,
-            "text": self.text,
-            "create_time": self.create_time,
-            "is_bot": self.is_bot,
-            "is_self": self.is_self,
-            "root_id": self.root_id,
-            "parent_id": self.parent_id,
-        }
 
 
 # =============================================================================
@@ -352,7 +314,7 @@ class LarkService:
     # -------------------------------------------------------------------------
 
     def on_message(self, func: Callable[[LarkMessage], Any]) -> Callable[[LarkMessage], Any]:
-        """
+        """x
         Decorator để đăng ký hàm xử lý tin nhắn tới.
         Hỗ trợ cả async def và def thông thường.
         """
@@ -649,9 +611,6 @@ class LarkService:
         """
         Khởi động kết nối WebSocket (Persistent Connection) trực tiếp với Lark.
         """
-        import lark_oapi.ws as lark_ws
-        import threading
-
         ws_client = lark_ws.Client(
             app_id=self.app_id,
             app_secret=self.app_secret,
@@ -844,8 +803,6 @@ class LarkService:
           - Shared Message Deduplication Cache: Đảm bảo không bao giờ bị trùng tin.
           - Mọi tin nhắn phản hồi đều mang danh nghĩa User (as_user=True).
         """
-        import threading
-
         self.get_current_user()
 
         # Khởi động WebSocket ở background thread cho Group chats
@@ -908,3 +865,11 @@ class LarkService:
 # =============================================================================
 
 lark_service = LarkService()
+
+__all__ = [
+    "LarkService",
+    "lark_service",
+    "LarkMessage",
+    "LarkMention",
+    "LarkUserProfile",
+]

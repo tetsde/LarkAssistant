@@ -16,3 +16,7 @@ dependencies = [
     "reportlab>=5.0.1",
     "uvicorn>=0.54.0",
 ]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

@@ -1,4 +1,5 @@
 from models.chat import ChatRequest, MemoryRequest
+from models.lark import LarkMention, LarkMessage, LarkUserProfile
 from models.memory import (
     EntityStatus,
     FactStatus,
@@ -17,6 +18,9 @@ from models.memory import (
 __all__ = [
     "ChatRequest",
     "MemoryRequest",
+    "LarkMessage",
+    "LarkMention",
+    "LarkUserProfile",
     "EntityStatus",
     "FactStatus",
     "Entity",
