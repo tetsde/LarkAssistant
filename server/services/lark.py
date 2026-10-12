@@ -81,6 +81,7 @@ class LarkService:
         encrypt_key: Optional[str] = None,
         domain: Optional[str] = None,
         user_access_token: Optional[str] = None,
+        user_open_id: Optional[str] = None,
     ):
         if config is not None:
             self.config = config
@@ -92,6 +93,7 @@ class LarkService:
                 encrypt_key=encrypt_key or settings.LARK_ENCRYPT_KEY or "",
                 domain=domain or settings.LARK_DOMAIN or lark.LARK_DOMAIN,
                 user_access_token=user_access_token or settings.LARK_USER_ACCESS_TOKEN or "",
+                user_open_id=user_open_id or settings.LARK_USER_OPEN_ID or "",
             )
 
         self.app_id = self.config.app_id
@@ -112,9 +114,14 @@ class LarkService:
             .build()
         )
 
-        # Cache thông tin của User hiện tại (Tên, open_id)
-        self.known_user_open_id = "ou_5a83a5e22269cfed0aaabeada2d3e603"
+        # Cache thông tin của User hiện tại (Tên, open_id đọc từ .env hoặc settings)
+        self.known_user_open_id = (
+            getattr(self.config, "user_open_id", "")
+            or settings.LARK_USER_OPEN_ID
+            or os.getenv("user_open_id", "")
+        )
         self._current_user_profile: Optional[Dict[str, Any]] = None
+
 
         # Danh sách các message_id do chính hệ thống tạo ra hoặc gửi đi (chống vòng lặp)
         self._sent_message_ids: OrderedDict[str, float] = OrderedDict()
@@ -165,7 +172,7 @@ class LarkService:
             return self._current_user_profile
 
         fallback_profile = {
-            "name": "Tống Phước Hoài Nam",
+            "name": "User",
             "open_id": self.known_user_open_id,
             "union_id": "",
             "avatar_url": "",
@@ -189,7 +196,7 @@ class LarkService:
 
             data = resp.data
             profile = {
-                "name": getattr(data, "name", "") or "Tống Phước Hoài Nam",
+                "name": getattr(data, "name", "") or "User",
                 "open_id": getattr(data, "open_id", "") or self.known_user_open_id,
                 "union_id": getattr(data, "union_id", ""),
                 "avatar_url": getattr(data, "avatar_url", ""),
@@ -445,57 +452,67 @@ class LarkService:
     # Tương thích ngược tên hàm cũ
     send_to_owner_as_bot = send_bot_dm_to_owner
 
+    # -------------------------------------------------------------------------
+    # 5. GỬI & REPLY TIN NHẮN (100% USER ACCESS TOKEN - GỠ BỎ HOÀN TOÀN BOT CHAT)
+    # -------------------------------------------------------------------------
+
+    def _prepare_user_msg_payload(
+        self,
+        target_id: str,
+        text: str,
+        id_name: str = "id",
+    ) -> tuple[Optional[lark.RequestOption], Optional[str], Optional[Dict[str, Any]]]:
+        """Validate input và chuẩn bị request option cùng JSON text content."""
+        if not target_id or not text:
+            return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
+
+        try:
+            opt = self._get_user_request_option()
+        except ValueError as e:
+            logger.error(f"Từ chối thao tác gửi tin nhắn: {e}")
+            return None, None, {"success": False, "error": str(e), "msg": "Không có User Access Token hợp lệ"}
+
+        content_json = json.dumps({"text": text}, ensure_ascii=False)
+        return opt, content_json, None
+
+    def _handle_im_response(self, response: Any, action_desc: str) -> Dict[str, Any]:
+        """Xử lý response từ Lark IM, ghi nhận cache message_id chống loop và log lỗi."""
+        if not response.success():
+            logger.error(f"Lỗi {action_desc}: code={response.code}, msg={response.msg}")
+            return {
+                "success": False,
+                "code": response.code,
+                "msg": f"Lỗi {action_desc} nhân danh User: {response.msg}",
+            }
+
+        # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình
+        if response.data and getattr(response.data, "message_id", None):
+            sent_mid = getattr(response.data, "message_id")
+            self._sent_message_ids[sent_mid] = time.time()
+
+        logger.info(f"✔ Đã {action_desc} thành công nhân danh User")
+        return {"success": True, "data": response.data}
+
     async def areply_text(
         self,
         message_id: str,
         text: str,
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Reply tin nhắn BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token).
-        ĐÃ GỠ BỎ TOÀN BỘ CƠ CHẾ BOT TRẢ LỜI. Không bao giờ gửi danh nghĩa bot vào nhóm/chat.
-        """
-        if not message_id or not text:
-            return {"success": False, "error": "message_id và text không được rỗng"}
+        """Reply tin nhắn async BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token)."""
+        opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+        if err:
+            return err
 
-        try:
-            opt = self._get_user_request_option()
-        except ValueError as e:
-            logger.error(f"Từ chối reply tin nhắn: {e}")
-            return {"success": False, "error": str(e), "msg": "Không có User Access Token hợp lệ"}
-
-        content_json = json.dumps({"text": text}, ensure_ascii=False)
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
-            .request_body(
-                ReplyMessageRequestBody.builder()
-                .msg_type("text")
-                .content(content_json)
-                .build()
-            )
+            .request_body(ReplyMessageRequestBody.builder().msg_type("text").content(content_json).build())
             .build()
         )
-
         try:
             response = await self.client.im.v1.message.areply(request, option=opt)
-            if not response.success():
-                logger.error(
-                    f"Lỗi reply tin nhắn {message_id}: code={response.code}, msg={response.msg}"
-                )
-                return {
-                    "success": False,
-                    "code": response.code,
-                    "msg": f"Lỗi reply nhân danh User: {response.msg}",
-                }
-
-            # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình
-            if response.data and getattr(response.data, "message_id", None):
-                sent_mid = getattr(response.data, "message_id")
-                self._sent_message_ids[sent_mid] = time.time()
-
-            logger.info(f"✔ Đã reply thành công tin nhắn {message_id} nhân danh User")
-            return {"success": True, "data": response.data}
+            return self._handle_im_response(response, f"reply tin nhắn {message_id}")
         except Exception as e:
             logger.error(f"Exception khi reply tin nhắn {message_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
@@ -506,46 +523,22 @@ class LarkService:
         text: str,
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Reply một tin nhắn văn bản đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG.
-        """
-        if not message_id or not text:
-            return {"success": False, "error": "message_id và text không được rỗng"}
+        """Reply một tin nhắn văn bản đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG."""
+        opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+        if err:
+            return err
 
-        try:
-            opt = self._get_user_request_option()
-        except ValueError as e:
-            logger.error(f"Từ chối reply tin nhắn: {e}")
-            return {"success": False, "error": str(e)}
-
-        content_json = json.dumps({"text": text}, ensure_ascii=False)
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
-            .request_body(
-                ReplyMessageRequestBody.builder()
-                .msg_type("text")
-                .content(content_json)
-                .build()
-            )
+            .request_body(ReplyMessageRequestBody.builder().msg_type("text").content(content_json).build())
             .build()
         )
-
         try:
             response = self.client.im.v1.message.reply(request, option=opt)
-            if not response.success():
-                logger.error(
-                    f"Lỗi reply tin nhắn {message_id}: code={response.code}, msg={response.msg}"
-                )
-                return {"success": False, "code": response.code, "msg": response.msg}
-
-            if response.data and getattr(response.data, "message_id", None):
-                sent_mid = getattr(response.data, "message_id")
-                self._sent_message_ids[sent_mid] = time.time()
-
-            return {"success": True, "data": response.data}
+            return self._handle_im_response(response, f"reply sync tin nhắn {message_id}")
         except Exception as e:
-            logger.error(f"Exception khi reply tin nhắn {message_id}: {e}", exc_info=True)
+            logger.error(f"Exception khi reply sync tin nhắn {message_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def asend_text(
@@ -555,46 +548,20 @@ class LarkService:
         receive_id_type: str = "chat_id",  # "chat_id", "open_id", "user_id"
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Gửi tin nhắn mới BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token).
-        """
-        if not receive_id or not text:
-            return {"success": False, "error": "receive_id và text không được rỗng"}
+        """Gửi tin nhắn mới async BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token)."""
+        opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+        if err:
+            return err
 
-        try:
-            opt = self._get_user_request_option()
-        except ValueError as e:
-            logger.error(f"Từ chối gửi tin nhắn: {e}")
-            return {"success": False, "error": str(e)}
-
-        content_json = json.dumps({"text": text}, ensure_ascii=False)
         request = (
             CreateMessageRequest.builder()
             .receive_id_type(receive_id_type)
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(receive_id)
-                .msg_type("text")
-                .content(content_json)
-                .build()
-            )
+            .request_body(CreateMessageRequestBody.builder().receive_id(receive_id).msg_type("text").content(content_json).build())
             .build()
         )
-
         try:
             response = await self.client.im.v1.message.acreate(request, option=opt)
-            if not response.success():
-                logger.error(
-                    f"Lỗi gửi tin nhắn tới {receive_id}: code={response.code}, msg={response.msg}"
-                )
-                return {"success": False, "code": response.code, "msg": response.msg}
-
-            # Ghi nhận message_id vừa gửi để tránh loop
-            if response.data and getattr(response.data, "message_id", None):
-                sent_mid = getattr(response.data, "message_id")
-                self._sent_message_ids[sent_mid] = time.time()
-
-            return {"success": True, "data": response.data}
+            return self._handle_im_response(response, f"gửi tin nhắn tới {receive_id}")
         except Exception as e:
             logger.error(f"Exception khi gửi tin nhắn tới {receive_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
@@ -606,49 +573,24 @@ class LarkService:
         receive_id_type: str = "chat_id",
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """
-        Gửi tin nhắn mới đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG.
-        """
-        if not receive_id or not text:
-            return {"success": False, "error": "receive_id và text không được rỗng"}
+        """Gửi tin nhắn mới đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG."""
+        opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+        if err:
+            return err
 
-        try:
-            opt = self._get_user_request_option()
-        except ValueError as e:
-            logger.error(f"Từ chối gửi tin nhắn: {e}")
-            return {"success": False, "error": str(e)}
-
-        content_json = json.dumps({"text": text}, ensure_ascii=False)
         request = (
             CreateMessageRequest.builder()
             .receive_id_type(receive_id_type)
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(receive_id)
-                .msg_type("text")
-                .content(content_json)
-                .build()
-            )
+            .request_body(CreateMessageRequestBody.builder().receive_id(receive_id).msg_type("text").content(content_json).build())
             .build()
         )
-
         try:
             response = self.client.im.v1.message.create(request, option=opt)
-            if not response.success():
-                logger.error(
-                    f"Lỗi gửi tin nhắn tới {receive_id}: code={response.code}, msg={response.msg}"
-                )
-                return {"success": False, "code": response.code, "msg": response.msg}
-
-            # Ghi nhận message_id vừa gửi để tránh loop
-            if response.data and getattr(response.data, "message_id", None):
-                sent_mid = getattr(response.data, "message_id")
-                self._sent_message_ids[sent_mid] = time.time()
-
-            return {"success": True, "data": response.data}
+            return self._handle_im_response(response, f"gửi sync tin nhắn tới {receive_id}")
         except Exception as e:
-            logger.error(f"Exception khi gửi tin nhắn tới {receive_id}: {e}", exc_info=True)
+            logger.error(f"Exception khi gửi sync tin nhắn tới {receive_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
 
     # -------------------------------------------------------------------------
     # 6. ĐỌC TIN NHẮN TRÊN DANH NGHĨA USER (READ MESSAGES AS USER)

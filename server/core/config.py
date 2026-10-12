@@ -30,6 +30,8 @@ class Settings:
     LARK_ENCRYPT_KEY: str = os.getenv("encrypt_key") or os.getenv("LARK_ENCRYPT_KEY", "")
     LARK_DOMAIN: str = os.getenv("lark_domain") or os.getenv("LARK_DOMAIN", "https://open.larksuite.com")
     LARK_USER_ACCESS_TOKEN: str = os.getenv("access_token_user") or os.getenv("LARK_USER_ACCESS_TOKEN", "")
+    LARK_USER_OPEN_ID: str = os.getenv("user_open_id") or os.getenv("LARK_USER_OPEN_ID", "")
+
 
     # Daily Digest & Approval Settings
     DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")

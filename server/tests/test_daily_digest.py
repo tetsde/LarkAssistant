@@ -369,7 +369,81 @@ class TestDigestService(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["synced_count"], 2)
             self.assertEqual(len(result["synced_ids"]), 2)
 
+    async def test_process_daily_digest_requires_approval(self):
+        service = DigestService(gemini_api_key="mock_key")
+        mock_mongo_coll = MagicMock()
+        mock_mongo_coll.update_one = AsyncMock(return_value=None)
+        mock_staging_coll = MagicMock()
+        mock_staging_coll.find.return_value.sort.return_value.to_list = AsyncMock(return_value=[])
+        mock_staging_coll.update_many = AsyncMock(return_value=None)
+
+        with patch("services.digest_service.get_staging_collection", return_value=mock_staging_coll), \
+             patch("services.digest_service.get_daily_digests_collection", return_value=mock_mongo_coll), \
+             patch.object(service, "send_approval_request", new_callable=AsyncMock) as mock_send_approval, \
+             patch.object(service, "sync_digest_to_weknora", new_callable=AsyncMock) as mock_sync_kb:
+            mock_send_approval.return_value = True
+
+            digest = await service.process_and_sync_daily_digest(
+                chat_id="oc_test_approval",
+                chat_name="Group Test",
+                date="2026-10-12",
+                require_approval=True,
+            )
+
+            # Phải lưu với sync_status là pending_approval
+            self.assertEqual(digest.sync_status, "pending_approval")
+            # Phải gửi tin nhắn chờ duyệt
+            mock_send_approval.assert_called_once_with(digest)
+            # KHÔNG ĐƯỢC tự tiện đẩy lên WeKnora khi chưa duyệt
+            mock_sync_kb.assert_not_called()
+
+    async def test_approve_and_sync_digest(self):
+        service = DigestService(gemini_api_key="mock_key")
+        mock_doc = {
+            "id": "digest_to_approve",
+            "date": "2026-10-12",
+            "chat_id": "oc_test",
+            "sync_status": "pending_approval",
+            "overview_summary": "Tóm tắt test",
+        }
+
+        mock_mongo_coll = MagicMock()
+        mock_mongo_coll.find_one = AsyncMock(return_value=mock_doc)
+        mock_mongo_coll.update_one = AsyncMock(return_value=None)
+
+        with patch("services.digest_service.get_daily_digests_collection", return_value=mock_mongo_coll), \
+             patch("services.digest_service.weknora_service.save_to_kb", new_callable=AsyncMock) as mock_kb:
+            mock_kb.return_value = {"code": 0, "data": {"id": "doc_approved_123"}}
+
+            ok, msg, rec = await service.approve_and_sync_digest("digest_to_approve")
+            self.assertTrue(ok)
+            self.assertIn("thành công", msg)
+            self.assertEqual(rec.sync_status, "synced")
+            self.assertEqual(rec.weknora_doc_id, "doc_approved_123")
+
+    async def test_reject_digest(self):
+        service = DigestService(gemini_api_key="mock_key")
+        mock_doc = {
+            "id": "digest_to_reject",
+            "date": "2026-10-12",
+            "chat_id": "oc_test",
+            "sync_status": "pending_approval",
+            "overview_summary": "Tóm tắt test",
+        }
+
+        mock_mongo_coll = MagicMock()
+        mock_mongo_coll.find_one = AsyncMock(return_value=mock_doc)
+        mock_mongo_coll.update_one = AsyncMock(return_value=None)
+
+        with patch("services.digest_service.get_daily_digests_collection", return_value=mock_mongo_coll):
+            ok, msg, rec = await service.reject_digest("digest_to_reject")
+            self.assertTrue(ok)
+            self.assertIn("từ chối", msg)
+            self.assertEqual(rec.sync_status, "rejected")
+            mock_mongo_coll.update_one.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

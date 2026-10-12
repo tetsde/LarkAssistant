@@ -27,6 +27,7 @@ class LarkConfig:
     encrypt_key: str = ""
     domain: str = ""
     user_access_token: str = ""
+    user_open_id: str = ""
 
     @classmethod
     def from_settings(cls) -> LarkConfig:
@@ -40,9 +41,11 @@ class LarkConfig:
                 encrypt_key=settings.LARK_ENCRYPT_KEY or "",
                 domain=settings.LARK_DOMAIN or "",
                 user_access_token=settings.LARK_USER_ACCESS_TOKEN or "",
+                user_open_id=settings.LARK_USER_OPEN_ID or "",
             )
         except Exception:
             return cls()
+
 
 
 @dataclass
