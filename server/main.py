@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from routers import health, chat, lark
+from routers import health, chat, lark, digest
 
 app = FastAPI(
     title="WeKnora API Server",
@@ -11,6 +11,8 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(chat.router)
 app.include_router(lark.router)
+app.include_router(digest.router)
+
 
 
 if __name__ == "__main__":

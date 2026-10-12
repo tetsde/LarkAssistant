@@ -95,7 +95,7 @@ class WeKnoraService:
             return [kb_id.strip() for kb_id in settings.WEKNORA_DATASET_ID.split(",") if kb_id.strip()]
         return []
 
-    async def save_to_kb(self, text: str, dataset_id: str = None) -> dict:
+    async def save_to_kb(self, text: str, dataset_id: str = None, name: Optional[str] = None) -> dict:
         target_id = dataset_id or settings.WEKNORA_DATASET_ID
         if target_id and "," in target_id:
             target_id = target_id.split(",")[0].strip()
@@ -103,14 +103,16 @@ class WeKnoraService:
             raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
             
         url = f"{self.base_url}/datasets/{target_id}/document/create_by_text"
+        doc_name = name or f"Memory_{text[:10]}..."
         payload = {
-            "name": f"Memory_{text[:10]}...",
+            "name": doc_name,
             "text": text,
             "indexing_technique": "high_quality",
             "process_rule": {
                 "mode": "automatic"
             }
         }
+
         
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=self.headers, json=payload)

@@ -324,6 +324,52 @@ class TestDigestService(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(digest.weknora_kb_id, "mock_dataset_id")
             mock_mongo_coll.update_one.assert_called_once()
 
+    async def test_sync_digest_by_id_from_mongodb(self):
+        service = DigestService(gemini_api_key="mock_key")
+        mock_doc = {
+            "id": "digest_test_id",
+            "date": "2026-10-12",
+            "chat_id": "oc_test",
+            "chat_name": "Test Chat",
+            "overview_summary": "Tổng hợp test",
+            "sync_status": "pending",
+        }
+
+        mock_mongo_coll = MagicMock()
+        mock_mongo_coll.find_one = AsyncMock(return_value=mock_doc)
+        mock_mongo_coll.update_one = AsyncMock(return_value=None)
+
+        with patch("services.digest_service.get_daily_digests_collection", return_value=mock_mongo_coll), \
+             patch("services.digest_service.weknora_service.save_to_kb", new_callable=AsyncMock) as mock_kb:
+            mock_kb.return_value = {"code": 0, "data": {"id": "doc_from_db"}}
+
+            ok = await service.sync_digest_by_id("digest_test_id", dataset_id="kb_123")
+            self.assertTrue(ok)
+            mock_mongo_coll.find_one.assert_called_once_with({"id": "digest_test_id"})
+
+    async def test_sync_pending_digests(self):
+        service = DigestService(gemini_api_key="mock_key")
+        mock_docs = [
+            {"id": "digest_1", "date": "2026-10-11", "chat_id": "oc_1", "sync_status": "pending"},
+            {"id": "digest_2", "date": "2026-10-12", "chat_id": "oc_2", "sync_status": "failed"},
+        ]
+
+        mock_cursor = MagicMock()
+        mock_cursor.to_list = AsyncMock(return_value=mock_docs)
+        mock_mongo_coll = MagicMock()
+        mock_mongo_coll.find.return_value.limit.return_value = mock_cursor
+        mock_mongo_coll.update_one = AsyncMock(return_value=None)
+
+        with patch("services.digest_service.get_daily_digests_collection", return_value=mock_mongo_coll), \
+             patch("services.digest_service.weknora_service.save_to_kb", new_callable=AsyncMock) as mock_kb:
+            mock_kb.return_value = {"code": 0, "data": {"id": "weknora_doc_batch"}}
+
+            result = await service.sync_pending_digests(limit=10, dataset_id="kb_123")
+            self.assertEqual(result["total_found"], 2)
+            self.assertEqual(result["synced_count"], 2)
+            self.assertEqual(len(result["synced_ids"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

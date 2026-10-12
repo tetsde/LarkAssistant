@@ -425,9 +425,10 @@ Hãy trích xuất:
             return False
 
         md_content = digest.to_weknora_markdown()
+        doc_name = f"Daily_Digest_{digest.date}_{digest.chat_name or digest.chat_id}"
 
         try:
-            resp = await weknora_service.save_to_kb(text=md_content, dataset_id=target_kb)
+            resp = await weknora_service.save_to_kb(text=md_content, dataset_id=target_kb, name=doc_name)
             doc_id = ""
             if isinstance(resp, dict):
                 doc_id = resp.get("data", {}).get("id") or resp.get("id") or ""
@@ -456,6 +457,78 @@ Hãy trích xuất:
             logger.error(f"Lỗi khi đồng bộ DailyDigest lên WeKnora: {e}", exc_info=True)
             digest.sync_status = "failed"
             return False
+
+    async def get_digest_by_id(self, digest_id: str) -> Optional[DailyDigestRecord]:
+        """Truy vấn 1 bản ghi DailyDigestRecord từ MongoDB theo ID."""
+        try:
+            coll = get_daily_digests_collection()
+            doc = await coll.find_one({"id": digest_id})
+            if doc:
+                return DailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi tìm DailyDigest {digest_id}: {e}", exc_info=True)
+            return None
+
+    async def sync_digest_by_id(
+        self,
+        digest_id: str,
+        dataset_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Lôi bản ghi DailyDigest từ MongoDB theo digest_id và đồng bộ đẩy lên WeKnora.
+        """
+        digest = await self.get_digest_by_id(digest_id)
+        if not digest:
+            logger.warning(f"Không tìm thấy digest {digest_id} trong MongoDB để đồng bộ.")
+            return False
+
+        return await self.sync_digest_to_weknora(digest, dataset_id=dataset_id)
+
+    async def sync_pending_digests(
+        self,
+        limit: int = 20,
+        dataset_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Quét các bản ghi DailyDigest trong MongoDB có sync_status != 'synced'
+        (ví dụ: 'pending', 'failed') để tự động đẩy bù / retry sang WeKnora.
+        """
+        try:
+            coll = get_daily_digests_collection()
+            cursor = coll.find(
+                {"sync_status": {"$in": ["pending", "failed", None]}}
+            ).limit(limit)
+            docs = await cursor.to_list(length=limit)
+
+            synced_count = 0
+            failed_count = 0
+            synced_ids = []
+
+            for d in docs:
+                digest = DailyDigestRecord(**d)
+                ok = await self.sync_digest_to_weknora(digest, dataset_id=dataset_id)
+                if ok:
+                    synced_count += 1
+                    synced_ids.append(digest.id)
+                else:
+                    failed_count += 1
+
+            return {
+                "total_found": len(docs),
+                "synced_count": synced_count,
+                "failed_count": failed_count,
+                "synced_ids": synced_ids,
+            }
+        except Exception as e:
+            logger.error(f"Lỗi khi quét sync pending digests: {e}", exc_info=True)
+            return {
+                "total_found": 0,
+                "synced_count": 0,
+                "failed_count": 0,
+                "error": str(e),
+            }
+
 
     async def process_and_sync_daily_digest(
         self,
