@@ -1,6 +1,6 @@
 from .jev import jev_service, JevService
 from .weknora import weknora_service, WeKnoraService
-from .lark import lark_service, LarkService, LarkMessage
+from .lark import lark_service, LarkService, LarkMessage, LarkConfig
 
 __all__ = [
     "jev_service",
@@ -10,4 +10,5 @@ __all__ = [
     "lark_service",
     "LarkService",
     "LarkMessage",
+    "LarkConfig",
 ]

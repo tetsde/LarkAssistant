@@ -13,6 +13,39 @@ from typing import Any, Dict, List, Optional
 
 
 @dataclass
+class LarkConfig:
+    """
+    Cấu hình kết nối và xác thực với Lark Open Platform:
+      - app_id, app_secret: Thông tin ứng dụng Bot
+      - verification_token, encrypt_key: Xác thực Webhook / Event Subscription
+      - domain: Domain endpoint của Lark (mặc định Open Platform)
+      - user_access_token: Token danh nghĩa người dùng (User Access Token)
+    """
+    app_id: str = ""
+    app_secret: str = ""
+    verification_token: str = ""
+    encrypt_key: str = ""
+    domain: str = ""
+    user_access_token: str = ""
+
+    @classmethod
+    def from_settings(cls) -> LarkConfig:
+        """Khởi tạo LarkConfig tự động đọc từ core.config.settings."""
+        try:
+            from core.config import settings
+            return cls(
+                app_id=settings.LARK_APP_ID or "",
+                app_secret=settings.LARK_APP_SECRET or "",
+                verification_token=settings.LARK_VERIFICATION_TOKEN or "",
+                encrypt_key=settings.LARK_ENCRYPT_KEY or "",
+                domain=settings.LARK_DOMAIN or "",
+                user_access_token=settings.LARK_USER_ACCESS_TOKEN or "",
+            )
+        except Exception:
+            return cls()
+
+
+@dataclass
 class LarkMention:
     """Đại diện cho thông tin người/bot được mention trong tin nhắn."""
     key: str

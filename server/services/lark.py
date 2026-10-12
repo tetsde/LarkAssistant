@@ -56,7 +56,7 @@ from lark_oapi.core.const import APPLICATION_JSON, UTF_8
 from lark_oapi.core.model import RawRequest
 
 from core.config import settings
-from models.lark import LarkMention, LarkMessage, LarkUserProfile
+from models.lark import LarkConfig, LarkMention, LarkMessage, LarkUserProfile
 
 logger = logging.getLogger("hilark.lark")
 logger.setLevel(logging.INFO)
@@ -74,6 +74,7 @@ class LarkService:
 
     def __init__(
         self,
+        config: Optional[LarkConfig] = None,
         app_id: Optional[str] = None,
         app_secret: Optional[str] = None,
         verification_token: Optional[str] = None,
@@ -81,12 +82,24 @@ class LarkService:
         domain: Optional[str] = None,
         user_access_token: Optional[str] = None,
     ):
-        self.app_id = app_id or settings.LARK_APP_ID
-        self.app_secret = app_secret or settings.LARK_APP_SECRET
-        self.verification_token = verification_token or settings.LARK_VERIFICATION_TOKEN
-        self.encrypt_key = encrypt_key or settings.LARK_ENCRYPT_KEY
-        self.domain = domain or settings.LARK_DOMAIN or lark.LARK_DOMAIN
-        self.user_access_token = user_access_token or settings.LARK_USER_ACCESS_TOKEN
+        if config is not None:
+            self.config = config
+        else:
+            self.config = LarkConfig(
+                app_id=app_id or settings.LARK_APP_ID or "",
+                app_secret=app_secret or settings.LARK_APP_SECRET or "",
+                verification_token=verification_token or settings.LARK_VERIFICATION_TOKEN or "",
+                encrypt_key=encrypt_key or settings.LARK_ENCRYPT_KEY or "",
+                domain=domain or settings.LARK_DOMAIN or lark.LARK_DOMAIN,
+                user_access_token=user_access_token or settings.LARK_USER_ACCESS_TOKEN or "",
+            )
+
+        self.app_id = self.config.app_id
+        self.app_secret = self.config.app_secret
+        self.verification_token = self.config.verification_token
+        self.encrypt_key = self.config.encrypt_key
+        self.domain = self.config.domain or lark.LARK_DOMAIN
+        self.user_access_token = self.config.user_access_token
 
         # Khởi tạo Lark API Client (bật enable_set_token để cho phép dùng user_access_token)
         self.client: lark.Client = (
@@ -1009,6 +1022,7 @@ class LarkService:
 lark_service = LarkService()
 
 __all__ = [
+    "LarkConfig",
     "LarkService",
     "lark_service",
     "LarkMessage",
