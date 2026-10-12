@@ -146,8 +146,80 @@ def test_functional_compose_context():
     print("✔ TEST 3 PASSED!")
 
 
+def test_cross_matching_filter():
+    print("\n" + "=" * 60)
+    print("TEST 4: KIỂM THỬ SO KHỚP CHÉO (LỌC BỎ DỰ ÁN CRM KHỎI HILARK)")
+    print("=" * 60)
+
+    # 1. Chunk WeKnora chỉ nói về dự án HiLark
+    chunks = [
+        {
+            "content": "Dự án HiLark Assistant PRJ-HILARK-2026. Quản lý bởi Nguyễn Hoài Nam. Module Tích hợp Đa kênh.",
+            "document_name": "du_an_mau_hilark.pdf",
+        }
+    ]
+
+    # 2. Danh sách Claims bị trộn lẫn giữa HiLark và Dự án CRM_V2
+    mixed_claims = [
+        # Claims của HiLark (PHẢI ĐƯỢC GIỮ LẠI)
+        {
+            "id": "fact_hilark_budget",
+            "entity_id": "ent_hilark",
+            "_entity_name": "HiLark",
+            "property": "budget",
+            "value": "800 triệu VNĐ",
+            "status": "current",
+        },
+        {
+            "id": "fact_hilark_deadline",
+            "entity_id": "ent_hilark",
+            "_entity_name": "HiLark",
+            "property": "deadline",
+            "value": "25/11/2026",
+            "status": "current",
+        },
+        # Claims của CRM_V2 (PHẢI BỊ LOẠI BỎ)
+        {
+            "id": "fact_crm_budget",
+            "entity_id": "ent_crm",
+            "_entity_name": "Dự án CRM_V2",
+            "property": "budget",
+            "value": "1.5 tỷ VNĐ",
+            "status": "current",
+        },
+        {
+            "id": "fact_crm_deadline",
+            "entity_id": "ent_crm",
+            "_entity_name": "Dự án CRM_V2",
+            "property": "deadline",
+            "value": "31/12/2026",
+            "status": "current",
+        },
+    ]
+
+    composer = ContextComposer()
+    result = composer.compose(
+        retriever_data=chunks,
+        claims_data=mixed_claims,
+    )
+
+    print("\n[CONTEXT TEXT SAU KHI LỌC SO KHỚP CHÉO]:")
+    print(result["context_text"])
+
+    # Kiểm tra: HiLark phải có mặt, CRM_V2 phải bị loại bỏ hoàn toàn
+    assert "800 triệu VNĐ" in result["context_text"]
+    assert "25/11/2026" in result["context_text"]
+    assert "CRM_V2" not in result["context_text"]
+    assert "1.5 tỷ VNĐ" not in result["context_text"]
+    assert result["metadata"]["num_claims"] == 2
+    assert "HiLark" in result["metadata"]["entities_covered"]
+    assert "Dự án CRM_V2" not in result["metadata"]["entities_covered"]
+    print("✔ TEST 4 PASSED: ĐÃ LỌC BỎ THÀNH CÔNG CLAIMS CỦA CRM RA KHỎI HILARK!")
+
+
 if __name__ == "__main__":
     test_composer_basic()
     test_composer_xml_format()
     test_functional_compose_context()
+    test_cross_matching_filter()
     print("\n🎉 TOÀN BỘ TESTS ĐÃ VƯỢT QUA THÀNH CÔNG!")

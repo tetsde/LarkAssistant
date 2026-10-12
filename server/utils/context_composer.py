@@ -385,6 +385,64 @@ class ContextComposer:
 
         return "\n".join(lines).strip()
 
+    def align_claims_with_retriever(
+        self,
+        chunks: List[RetrievedChunk],
+        claims: List[NormalizedClaim],
+        query: Optional[str] = None,
+        entity_map: Optional[Dict[str, Any]] = None,
+    ) -> List[NormalizedClaim]:
+        """
+        Cơ chế So khớp Chéo Thực thể (Entity-Centric Alignment - Cách 1):
+        Chỉ giữ lại các Claims mà tên thực thể hoặc bí danh (aliases)
+        có xuất hiện trong nội dung Chunks tài liệu WeKnora hoặc Câu hỏi người dùng.
+        Tự động loại bỏ các Claims thuộc các dự án / thực thể hoàn toàn không liên quan.
+        """
+        if not chunks or not claims:
+            return claims
+
+        # Tạo văn bản nền neo đối chiếu: Chunks content + Doc Name + Query
+        anchor_text = " ".join([f"{c.content} {c.doc_name}" for c in chunks]).lower()
+        if query:
+            anchor_text += f" {query.lower()}"
+
+        # Xây dựng danh sách từ khóa nhận diện của từng Entity (name + aliases)
+        entity_keywords_map: Dict[str, Set[str]] = {}
+        for eid, ent in (entity_map or {}).items():
+            kws: Set[str] = set()
+            ename = (ent.get("name") or ent.get("canonical_name") or "").lower().strip()
+            if ename and len(ename) >= 2:
+                kws.add(ename)
+            for a in ent.get("aliases", []):
+                if a and isinstance(a, str) and len(a.strip()) >= 2:
+                    kws.add(a.lower().strip())
+            if kws:
+                entity_keywords_map[str(eid)] = kws
+
+        matched_claims: List[NormalizedClaim] = []
+        for claim in claims:
+            c_name = (claim.entity_name or "").lower().strip()
+            c_eid = str(claim.entity_id or "")
+
+            # 1. So khớp trực tiếp tên thực thể trong văn bản tài liệu/câu hỏi
+            is_matched = bool(c_name and len(c_name) >= 2 and c_name in anchor_text)
+
+            # 2. So khớp qua aliases của thực thể trong entity_map
+            if not is_matched and c_eid in entity_keywords_map:
+                is_matched = any(kw in anchor_text for kw in entity_keywords_map[c_eid])
+
+            # 3. So khớp qua trích đoạn nguồn / giá trị nếu có từ khóa đặc thù
+            if not is_matched and claim.source_snippet:
+                snip_words = [w for w in re.split(r"[\s,;?.!]+", claim.source_snippet.lower()) if len(w) >= 5]
+                if snip_words and any(w in anchor_text for w in snip_words):
+                    is_matched = True
+
+            if is_matched:
+                matched_claims.append(claim)
+
+        # Fallback an toàn: Nếu sau khi lọc không còn claim nào, giữ lại claims ban đầu
+        return matched_claims if matched_claims else claims
+
     # -------------------------------------------------------------------------
     # 3. PHƯƠNG THỨC CHÍNH: COMPOSE
     # -------------------------------------------------------------------------
@@ -396,20 +454,32 @@ class ContextComposer:
         query: Optional[str] = None,
         entity_map: Optional[Dict[str, Any]] = None,
         extra_system_instruction: Optional[str] = None,
+        auto_align: bool = True,
     ) -> Dict[str, Any]:
         """
         Đóng gói toàn diện WeKnora Retriever + Claims Data thành 1 Context hoàn chỉnh.
 
-        Trả về:
-          - context_text: Đoạn văn bản Context hoàn chỉnh có phân vùng rõ ràng.
-          - sections: Dict chứa riêng từng section (documents, claims, rules).
-          - metadata: Thống kê số lượng chunks, số lượng claims, danh sách citations.
+        Tham số:
+          - retriever_data: Dữ liệu chunks từ WeKnora Retriever
+          - claims_data: Dữ liệu facts/claims từ MongoDB
+          - query: Câu hỏi người dùng (dùng để neo ngữ cảnh bổ sung)
+          - entity_map: Bảng tra cứu thực thể và aliases
+          - auto_align: Tự động so khớp chéo thực thể (Cách 1) loại bỏ claims không liên quan
         """
         # 1. Chuẩn hóa dữ liệu
         chunks = self.normalize_retriever_data(retriever_data)
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
 
-        # 2. Xây dựng từng section
+        # 2. Tự động so khớp chéo Thực thể (Cách 1) nếu bật auto_align
+        if auto_align and chunks and claims:
+            claims = self.align_claims_with_retriever(
+                chunks=chunks,
+                claims=claims,
+                query=query,
+                entity_map=entity_map,
+            )
+
+        # 3. Xây dựng từng section
         docs_text = self.format_retriever_section(chunks)
         claims_text = self.format_claims_section(claims)
 
