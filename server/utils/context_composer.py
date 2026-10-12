@@ -173,7 +173,8 @@ class ContextComposer:
                 doc_obj = item.get("document")
                 nested_doc = doc_obj.get("name") if isinstance(doc_obj, dict) else None
                 doc = (
-                    item.get("document_name")
+                    item.get("knowledge_title")
+                    or item.get("document_name")
                     or item.get("doc_name")
                     or item.get("doc")
                     or item.get("title")

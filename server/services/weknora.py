@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional
 import httpx
 from fastapi import HTTPException
 from core.config import settings
@@ -106,4 +107,133 @@ class WeKnoraService:
                 raise HTTPException(status_code=response.status_code, detail=f"Failed to save to KB: {response.text}")
             
             return response.json()
+
+    async def retrieve(
+        self,
+        query: str,
+        knowledge_base_ids: Optional[List[str]] = None,
+        match_count: int = 5,
+        vector_threshold: Optional[float] = None,
+        keyword_threshold: Optional[float] = None,
+        disable_keywords_match: bool = False,
+        disable_vector_match: bool = False,
+        rerank_enabled: bool = True,
+        timeout: float = 30.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Truy xuất các đoạn văn bản (Chunks) từ Knowledge Base của WeKnora qua endpoint POST /knowledge-search.
+        Đây là API thuần RAG Retrieval (không qua LLM, chỉ trả về các đoạn trích dẫn và điểm số).
+
+        Trả về:
+          Danh sách SearchResult dict:
+          - id: Chunk ID
+          - content: Nội dung văn bản của chunk
+          - knowledge_title: Tên tài liệu nguồn (VD: du_an_mau_hilark.pdf)
+          - knowledge_id: ID tài liệu
+          - score: Điểm tương đồng / Rerank score
+          - knowledge_base_id: ID Knowledge Base
+        """
+        if not self.api_key or not self.base_url:
+            raise HTTPException(status_code=500, detail="Missing environment variables (api_weknora or base_url) in .env")
+
+        if not query or not query.strip():
+            return []
+
+        search_url = f"{self.base_url}/knowledge-search"
+
+        payload: Dict[str, Any] = {
+            "query": query.strip(),
+            "match_count": match_count,
+        }
+
+        # Nếu truyền knowledge_base_ids hoặc lấy từ settings.WEKNORA_DATASET_ID
+        target_kbs = knowledge_base_ids
+        if not target_kbs and settings.WEKNORA_DATASET_ID:
+            target_kbs = [settings.WEKNORA_DATASET_ID]
+        if target_kbs:
+            payload["knowledge_base_ids"] = target_kbs
+
+        if vector_threshold is not None:
+            payload["vector_threshold"] = vector_threshold
+        if keyword_threshold is not None:
+            payload["keyword_threshold"] = keyword_threshold
+        if disable_keywords_match:
+            payload["disable_keywords_match"] = True
+        if disable_vector_match:
+            payload["disable_vector_match"] = True
+        if not rerank_enabled:
+            payload["rerank"] = {"enabled": False}
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    search_url,
+                    headers=self.headers,
+                    json=payload,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    # Phản hồi WeKnora chuẩn: {"success": true, "data": [...SearchResult]}
+                    if isinstance(data, dict):
+                        if "data" in data and isinstance(data["data"], list):
+                            return data["data"]
+                        elif "records" in data and isinstance(data["records"], list):
+                            return data["records"]
+                    elif isinstance(data, list):
+                        return data
+                    return []
+                elif response.status_code == 404:
+                    # Endpoint fallback nếu /knowledge-search chưa mount: gọi /knowledge-bases/{id}/hybrid-search
+                    if target_kbs:
+                        fb_url = f"{self.base_url}/knowledge-bases/{target_kbs[0]}/hybrid-search"
+                        fb_res = await client.post(fb_url, headers=self.headers, json=payload)
+                        if fb_res.status_code == 200:
+                            fb_data = fb_res.json()
+                            return fb_data.get("data", []) if isinstance(fb_data, dict) else []
+                    return []
+                else:
+                    print(f"WeKnora retrieve error (HTTP {response.status_code}): {response.text}")
+                    return []
+        except Exception as e:
+            print(f"Lỗi khi gọi WeKnora retrieve: {e}")
+            return []
+
+    def retrieve_sync(
+        self,
+        query: str,
+        knowledge_base_ids: Optional[List[str]] = None,
+        match_count: int = 5,
+        timeout: float = 30.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Phiên bản đồng bộ dùng httpx.Client() trực tiếp cho CLI / Scripts kiểm thử.
+        """
+        if not self.api_key or not self.base_url or not query or not query.strip():
+            return []
+
+        search_url = f"{self.base_url}/knowledge-search"
+        payload: Dict[str, Any] = {
+            "query": query.strip(),
+            "match_count": match_count,
+        }
+        target_kbs = knowledge_base_ids or ([settings.WEKNORA_DATASET_ID] if settings.WEKNORA_DATASET_ID else [])
+        if target_kbs:
+            payload["knowledge_base_ids"] = target_kbs
+
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(search_url, headers=self.headers, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+                        return data["data"]
+                    return data if isinstance(data, list) else []
+                return []
+        except Exception as e:
+            print(f"Lỗi khi gọi WeKnora retrieve_sync: {e}")
+            return []
+
+
+weknora_service = WeKnoraService()
+
 
