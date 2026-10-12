@@ -597,10 +597,18 @@ Hãy trích xuất:
         try:
             if target_approver:
                 res = await lark_service.send_bot_dm_to_owner(msg_text)
-                return bool(res.get("success"))
+                if not res.get("success"):
+                    logger.error(
+                        f"❌ [DIGEST APPROVAL] Thất bại khi gửi tin duyệt tới approver: "
+                        f"code={res.get('code')}, msg={res.get('msg') or res.get('error')}"
+                    )
+                    return False
+                logger.info(f"✔ [DIGEST APPROVAL] Đã gửi tin nhắn xin duyệt thành công tới approver: {target_approver}")
+                return True
+            logger.warning("⚠️ [DIGEST APPROVAL] Không có target_approver (chưa cấu hình open_id)")
             return False
         except Exception as e:
-            logger.error(f"Lỗi khi gửi tin nhắn duyệt digest: {e}", exc_info=True)
+            logger.error(f"❌ [DIGEST APPROVAL] Lỗi ngoại lệ khi gửi tin duyệt: {e}", exc_info=True)
             return False
 
     async def get_latest_pending_approval_digest(self) -> Optional[DailyDigestRecord]:
@@ -754,8 +762,16 @@ Hãy trích xuất:
         if needs_approval:
             digest.sync_status = "pending_approval"
             await self.save_digest_to_mongo(digest)
-            await self.send_approval_request(digest)
-            logger.info(f"Đã lưu DailyDigest {digest.id} và gửi tin nhắn chờ duyệt tới approver.")
+            sent_ok = await self.send_approval_request(digest)
+            if sent_ok:
+                print(f"✔ [DIGEST APPROVAL] Đã gửi tin nhắn xin duyệt Daily Digest ({digest.id}) tới approver thành công!")
+                logger.info(f"✔ Đã lưu DailyDigest {digest.id} và gửi tin nhắn chờ duyệt tới approver thành công.")
+            else:
+                print(f"❌ [DIGEST APPROVAL] Đã lưu DailyDigest {digest.id} vào MongoDB nhưng KHÔNG THỂ gửi tin nhắn duyệt qua Lark (Lỗi API/Quota 429)!")
+                logger.warning(
+                    f"⚠️ [DIGEST APPROVAL] Đã lưu DailyDigest {digest.id} vào MongoDB nhưng KHÔNG THỂ gửi tin nhắn duyệt qua Lark "
+                    f"(Vui lòng kiểm tra API quota hoặc cấu hình Lark Bot)!"
+                )
         else:
             await self.save_digest_to_mongo(digest)
             await self.sync_digest_to_weknora(digest, dataset_id=weknora_kb_id)

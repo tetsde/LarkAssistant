@@ -505,7 +505,10 @@ def start_digest_scheduler_daemon():
                                 require_approval=settings.DIGEST_REQUIRE_APPROVAL,
                             )
                         )
-                        print(f"✔ [DIGEST SCHEDULER] Hoàn tất tổng hợp {len(digests)} nhóm. Đã gửi tin nhắn xin duyệt cho approver!")
+                        if digests:
+                            print(f"✔ [DIGEST SCHEDULER] Hoàn tất trích xuất Daily Digest cho {len(digests)} nhóm vào MongoDB.")
+                        else:
+                            print(f"ℹ️ [DIGEST SCHEDULER] Không có nhóm chat nào có tin nhắn hoạt động ngày {today_str}.")
                     finally:
                         loop.close()
             except Exception as e:

@@ -454,9 +454,12 @@ class LarkService:
             # Gửi bằng Bot App Token tới riêng 1-1 chủ nhân
             response = await self.client.im.v1.message.acreate(request)
             if not response.success():
+                logger.error(f"❌ [LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
                 return {"success": False, "code": response.code, "msg": response.msg}
+            logger.info(f"✔ [LARK BOT DM] Đã gửi tin nhắn tới chủ nhân ({owner_open_id}) thành công")
             return {"success": True, "data": response.data}
         except Exception as e:
+            logger.error(f"❌ [LARK BOT DM] Exception khi gửi tin nhắn tới chủ nhân: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     # Tương thích ngược tên hàm cũ

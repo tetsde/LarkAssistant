@@ -39,6 +39,10 @@ class Settings:
     DIGEST_APPROVER_ID: str = os.getenv("digest_approver_id", "")
     DIGEST_REQUIRE_APPROVAL: bool = os.getenv("digest_require_approval", "true").lower() in ("true", "1")
 
+    # Polling & Real-time Settings
+    ENABLE_DM_POLLING: bool = (os.getenv("ENABLE_DM_POLLING") or os.getenv("enable_dm_polling", "false")).lower() in ("true", "1", "yes")
+    DM_POLL_INTERVAL: float = float(os.getenv("DM_POLL_INTERVAL") or os.getenv("dm_poll_interval", "60.0"))
+
 settings = Settings()
 
 
