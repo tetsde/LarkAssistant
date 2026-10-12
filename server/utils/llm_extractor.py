@@ -1352,41 +1352,34 @@ async def extract_async(
 
 
 # ==============================================================================
-# 9. STORAGE HELPERS (PERSISTENCE)
+# 9. STORAGE HELPERS (PERSISTENCE) - MONGODB SINGLE SOURCE OF TRUTH
 # ==============================================================================
 
+# Deprecated file paths retained for backward compatibility only
 DATA_DIR = os.path.join(CURRENT_DIR, "data")
 ENTITY_STORE_PATH = os.path.join(DATA_DIR, "entity_store.json")
 FACT_STORE_PATH = os.path.join(DATA_DIR, "fact_store.json")
-
-# Compatibility paths
 MEMORY_STORE_PATH = ENTITY_STORE_PATH
 CLAIM_STORE_PATH = FACT_STORE_PATH
 
 
 def load_stored_entities() -> List[Dict[str, Any]]:
-    """Tải danh sách entities từ entity_store.json (hoặc fallback memory_store.json)."""
-    target_path = ENTITY_STORE_PATH if os.path.exists(ENTITY_STORE_PATH) else os.path.join(DATA_DIR, "memory_store.json")
-    if not os.path.exists(target_path):
-        return []
+    """Tải danh sách entities từ MongoDB (Single Source of Truth)."""
     try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception:
+        from database.db import get_all_entities_sync
+        return get_all_entities_sync()
+    except Exception as e:
+        logger.warning(f"Không thể nạp entities từ MongoDB: {e}")
         return []
 
 
 def load_stored_facts() -> List[Dict[str, Any]]:
-    """Tải danh sách facts từ fact_store.json (hoặc fallback claim_store.json)."""
-    target_path = FACT_STORE_PATH if os.path.exists(FACT_STORE_PATH) else os.path.join(DATA_DIR, "claim_store.json")
-    if not os.path.exists(target_path):
-        return []
+    """Tải danh sách facts từ MongoDB (Single Source of Truth)."""
     try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception:
+        from database.db import get_all_facts_sync
+        return get_all_facts_sync()
+    except Exception as e:
+        logger.warning(f"Không thể nạp facts từ MongoDB: {e}")
         return []
 
 
@@ -1395,17 +1388,29 @@ load_stored_claims = load_stored_facts
 
 
 def save_stored_entities(entities: List[Dict[str, Any]]) -> None:
-    """Lưu danh sách entities vào entity_store.json."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ENTITY_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(entities, f, ensure_ascii=False, indent=2)
+    """Lưu danh sách entities vào MongoDB (Single Source of Truth)."""
+    try:
+        from database.db import upsert_entity_sync
+        for ent in entities:
+            upsert_entity_sync(ent)
+    except Exception as e:
+        logger.warning(f"Không thể lưu entities vào MongoDB: {e}")
 
 
 def save_stored_facts(facts: List[Dict[str, Any]]) -> None:
-    """Lưu danh sách facts vào fact_store.json."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(FACT_STORE_PATH, "w", encoding="utf-8") as f:
-        json.dump(facts, f, ensure_ascii=False, indent=2)
+    """Lưu danh sách facts vào MongoDB (Single Source of Truth)."""
+    try:
+        from database.db import get_sync_claims_collection
+        claims_col = get_sync_claims_collection()
+        for fact in facts:
+            fid = fact.get("id")
+            if not fid:
+                continue
+            fact_copy = dict(fact)
+            fact_copy.pop("_id", None)
+            claims_col.update_one({"id": fid}, {"$set": fact_copy}, upsert=True)
+    except Exception as e:
+        logger.warning(f"Không thể lưu facts vào MongoDB: {e}")
 
 
 # Backward compatibility
@@ -1413,75 +1418,27 @@ save_stored_claims = save_stored_facts
 
 
 def clear_stores() -> None:
-    """Xóa sạch bộ nhớ lưu trữ entities và facts."""
-    save_stored_entities([])
-    save_stored_facts([])
-    # Cũng xóa các file cũ nếu có
-    old_mem = os.path.join(DATA_DIR, "memory_store.json")
-    old_claim = os.path.join(DATA_DIR, "claim_store.json")
-    if os.path.exists(old_mem):
-        try:
-            os.remove(old_mem)
-        except Exception:
-            pass
-    if os.path.exists(old_claim):
-        try:
-            os.remove(old_claim)
-        except Exception:
-            pass
+    """Xóa sạch bộ nhớ lưu trữ entities và facts trên MongoDB."""
+    try:
+        from database.db import clear_mongo_stores_sync
+        clear_mongo_stores_sync()
+    except Exception as e:
+        logger.warning(f"Không thể xóa stores trên MongoDB: {e}")
+
+    # Dọn dẹp tệp JSON thừa nếu còn sót lại
+    for p in [ENTITY_STORE_PATH, FACT_STORE_PATH, os.path.join(DATA_DIR, "memory_store.json"), os.path.join(DATA_DIR, "claim_store.json")]:
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
 
 
 def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Cập nhật kết quả trích xuất mới vào kho dữ liệu lưu trữ:
-      - Upsert entities mới vào entity_store.json
-      - Đánh dấu superseded cho facts cũ trong fact_store.json
-      - Thêm facts mới vào fact_store.json
+    Cập nhật kết quả trích xuất trực tiếp vào MongoDB (Single Source of Truth).
+    Ủy quyền cho save_extraction_to_mongo_sync.
     """
-    stored_entities = load_stored_entities()
-    stored_facts = load_stored_facts()
+    from database.db import save_extraction_to_mongo_sync
+    return save_extraction_to_mongo_sync(extraction_result)
 
-    new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
-    new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
-    superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
-
-    # 1. Upsert entities
-    for ent in new_entities:
-        e_id = ent.get("id") or ent.get("_id")
-        idx = next((i for i, e in enumerate(stored_entities) if (e.get("id") or e.get("_id")) == e_id), None)
-        if idx is not None:
-            existing_ent = stored_entities[idx]
-            existing_aliases = existing_ent.get("aliases", [])
-            new_aliases = ent.get("aliases", [])
-            ent["aliases"] = list(dict.fromkeys(existing_aliases + new_aliases))
-            stored_entities[idx] = ent
-        else:
-            stored_entities.append(ent)
-
-    # 2. Cập nhật superseded facts
-    superseded_ids = {f.get("id") or f.get("_id") for f in superseded_facts if (f.get("id") or f.get("_id"))}
-    now_iso = get_vietnam_now_iso()
-    for f in stored_facts:
-        fid = f.get("id") or f.get("_id")
-        if fid in superseded_ids:
-            f["status"] = FactStatus.SUPERSEDED.value
-            f["updated_at"] = now_iso
-
-    # 3. Thêm facts mới vào store
-    stored_facts.extend(new_facts)
-
-    save_stored_entities(stored_entities)
-    save_stored_facts(stored_facts)
-
-    return {
-        "entities": new_entities,
-        "facts": new_facts,
-        "superseded_facts": superseded_facts,
-        "total_stored_entities": len(stored_entities),
-        "total_stored_facts": len(stored_facts),
-        # Backward compatibility
-        "memory": new_entities,
-        "claims": new_facts,
-        "superseded_claims": superseded_facts,
-        "total_stored_claims": len(stored_facts),
-    }

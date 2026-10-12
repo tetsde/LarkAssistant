@@ -61,9 +61,6 @@ C_DIM = "\033[2m"
 
 DEFAULT_DATA_SOURCE = "MONGODB"
 DEFAULT_SESSION_FILE = os.path.join(SERVER_ROOT, "tests", "interactive_session_output.json")
-DATA_DIR = os.path.join(SERVER_ROOT, "utils", "data")
-ENTITY_STORE_PATH = os.path.join(DATA_DIR, "entity_store.json")
-FACT_STORE_PATH = os.path.join(DATA_DIR, "fact_store.json")
 
 
 class ClaimQuerier:
@@ -155,21 +152,8 @@ class ClaimQuerier:
         self.facts = all_facts
 
     def _load_from_stores(self) -> None:
-        """Nạp từ entity_store.json và fact_store.json."""
-        raw_entities = []
-        raw_facts = []
-        if os.path.exists(ENTITY_STORE_PATH):
-            with open(ENTITY_STORE_PATH, "r", encoding="utf-8") as f:
-                raw_entities = json.load(f)
-        if os.path.exists(FACT_STORE_PATH):
-            with open(FACT_STORE_PATH, "r", encoding="utf-8") as f:
-                raw_facts = json.load(f)
-
-        if build_entity_tree:
-            self.entities = build_entity_tree(raw_entities, raw_facts)
-        else:
-            self.entities = raw_entities
-        self.facts = raw_facts
+        """Nạp từ MongoDB (Single Source of Truth)."""
+        self._load_from_mongodb()
 
     def _build_indexes(self) -> None:
         """Xây dựng chỉ mục nhanh."""
