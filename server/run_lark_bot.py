@@ -22,6 +22,7 @@ if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
 from services.lark import lark_service, LarkMessage
+from services.draft_store import draft_store, PendingDraft
 from routers.chat import process_chat_pipeline
 
 
@@ -43,15 +44,119 @@ async def handle_incoming_message(msg: LarkMessage):
     print(f"📄 NỘI DUNG       : \"{msg.text}\"")
     print("-" * 65)
 
-    # 1. Tránh lặp vô hạn nếu chính tài khoản của bạn vừa gửi tin nhắn này
-    if msg.is_self or msg.sender_id == lark_service.known_user_open_id:
-        print(f"ℹ️ Bỏ qua tin nhắn do chính bạn gửi ({msg.sender_id}) - Đã chặn vòng lặp.")
-        return
-
-    # 2. Bỏ qua tin nhắn từ Bot
+    # 1. Bỏ qua tin nhắn từ Bot
     if msg.is_bot:
         print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
         return
+
+    # 2. Xử lý tin nhắn do chính bạn gửi:
+    is_owner = bool(msg.is_self or msg.sender_id == lark_service.known_user_open_id)
+    if is_owner:
+        # Nếu nhắn trong GROUP: Bỏ qua để chống loop tự trả lời chính mình
+        if msg.chat_type == "group":
+            print(f"ℹ️ Bỏ qua tin nhắn do chính bạn gửi trong GROUP ({msg.sender_id}) - Đã chặn vòng lặp.")
+            return
+
+        # Nếu nhắn trong DM 1-1: Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot!
+        clean_text = msg.text.strip()
+        text_lower = clean_text.lower()
+        print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
+
+        # --- A. LỆNH DUYỆT & GỬI BẢN NHÁP: [Gửi] / [Duyệt] / [OK] ---
+        send_keywords = ("gửi", "gui", "ok", "duyệt", "duyet", "gửi đi", "gui di", "send", "yes", "1")
+        if text_lower in send_keywords or text_lower.startswith(("gửi ", "gui ", "duyệt ")):
+            draft = draft_store.get_latest_draft(msg.sender_id)
+            if not draft:
+                print(f"⚠️ [DM APPROVAL] Không tìm thấy bản nháp đang chờ duyệt cho {msg.sender_id}")
+                await lark_service.send_bot_dm_to_owner(
+                    "⚠️ Hiện không tìm thấy bản nháp nào đang chờ duyệt.\n"
+                    "(Có thể bản nháp đã được gửi rồi hoặc vừa khởi động lại bot)."
+                )
+                return
+
+            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT & GỬI bản nháp vào nhóm nhân danh User (msg_id: {draft.message_id})...")
+            try:
+                reply_resp = await lark_service.areply_text(
+                    message_id=draft.message_id,
+                    text=draft.draft_answer,
+                    as_user=True,
+                )
+                draft_store.pop_draft(msg.sender_id)
+                if reply_resp.get("success"):
+                    confirm_text = (
+                        "✔ ĐÃ DUYỆT VÀ GỬI THÀNH CÔNG VÀO NHÓM!\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 Danh tính gửi : {draft.responder_name}\n"
+                        f"💬 Câu hỏi gốc   : \"{draft.query}\"\n\n"
+                        f"📄 Nội dung đã phát ngôn:\n"
+                        f"\"{draft.draft_answer}\"\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    await lark_service.send_bot_dm_to_owner(confirm_text)
+                    print(f"✔ [DM APPROVAL] Đã gửi câu trả lời vào nhóm và xác nhận về DM thành công!")
+                else:
+                    err_msg = reply_resp.get("msg") or reply_resp.get("error") or "Không rõ lỗi"
+                    await lark_service.send_bot_dm_to_owner(f"❌ Có lỗi khi gửi tin nhắn vào nhóm: {err_msg}")
+            except Exception as e:
+                print(f"❌ [DM APPROVAL] Lỗi gửi duyệt: {e}")
+                await lark_service.send_bot_dm_to_owner(f"❌ Exception khi duyệt gửi: {str(e)}")
+            return
+
+        # --- B. LỆNH BỎ BẢN NHÁP: [Bỏ] / [Hủy] ---
+        discard_keywords = ("bỏ", "bo", "hủy", "huy", "bỏ qua", "bo qua", "discard", "cancel", "no", "0")
+        if text_lower in discard_keywords:
+            draft = draft_store.pop_draft(msg.sender_id)
+            if draft:
+                print(f"🗑 [DM APPROVAL] Chủ nhân đã BỎ bản nháp cho message_id={draft.message_id}")
+                await lark_service.send_bot_dm_to_owner(
+                    "🗑 ĐÃ HỦY BỎ BẢN NHÁP THÀNH CÔNG!\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Bản nháp cho câu hỏi \"{draft.query}\" đã bị hủy.\n"
+                    "Không có tin nhắn nào được gửi vào nhóm."
+                )
+            else:
+                await lark_service.send_bot_dm_to_owner("⚠️ Hiện không có bản nháp nào đang chờ duyệt để hủy.")
+            return
+
+        # --- C. LỆNH SỬA BẢN NHÁP: [Sửa: <nội dung>] ---
+        if text_lower.startswith(("sửa:", "sua:", "sửa ", "sua ", "edit:")):
+            separator = ":" if ":" in clean_text else " "
+            parts = clean_text.split(separator, 1)
+            edited_content = parts[1].strip() if len(parts) > 1 else ""
+            if not edited_content:
+                await lark_service.send_bot_dm_to_owner(
+                    "⚠️ Vui lòng nhập nội dung chỉnh sửa sau dấu hai chấm. Ví dụ:\n"
+                    "Sửa: Dự án này do Tuấn PM lead."
+                )
+                return
+
+            draft = draft_store.pop_draft(msg.sender_id)
+            if not draft:
+                await lark_service.send_bot_dm_to_owner("⚠️ Không tìm thấy bản nháp đang chờ để sửa.")
+                return
+
+            print(f"✏️ [DM APPROVAL] Chỉnh sửa và gửi nội dung mới vào nhóm: \"{edited_content[:80]}...\"")
+            try:
+                reply_resp = await lark_service.areply_text(
+                    message_id=draft.message_id,
+                    text=edited_content,
+                    as_user=True,
+                )
+                if reply_resp.get("success"):
+                    confirm_text = (
+                        "✔ ĐÃ GỬI BẢN CHỈNH SỬA VÀO NHÓM THÀNH CÔNG!\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 Danh tính gửi: {draft.responder_name}\n"
+                        f"📄 Nội dung mới đã gửi:\n"
+                        f"\"{edited_content}\"\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    await lark_service.send_bot_dm_to_owner(confirm_text)
+                else:
+                    await lark_service.send_bot_dm_to_owner(f"❌ Lỗi gửi bản chỉnh sửa: {reply_resp.get('msg')}")
+            except Exception as e:
+                await lark_service.send_bot_dm_to_owner(f"❌ Exception khi gửi bản sửa: {str(e)}")
+            return
 
     channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
     print(f"📡 Kênh tiếp nhận : {channel_type}")
@@ -160,6 +265,33 @@ def main():
     print("-" * 65)
     print("💡 Mọi tin nhắn phản hồi sẽ hiện ra dưới danh tính Tống Phước Hoài Nam!")
     print("=" * 65)
+
+    # Nạp sẵn bản nháp gần nhất từ phiên trước để bạn có thể test ngay lệnh 'Gửi'
+    owner_id = user_info.get("open_id") or lark_service.known_user_open_id
+    draft_store.set_draft(
+        owner_id=owner_id,
+        draft=PendingDraft(
+            message_id="om_x100b63f3b91114a4eeb5fe69410f252",
+            chat_id="",
+            query="Mục tiêu & Cơ cấu đội ngũ dự án",
+            draft_answer=(
+                "**2. Mục tiêu & Phạm vi tính năng cốt lõi:**\n"
+                "HiLark Assistant giải quyết bài toán phân mảnh thông tin trong giao tiếp doanh nghiệp "
+                "bằng cách tự động phân tích hội thoại chat thành Đồ thị Tri thức Phân cấp (Parent – Child Knowledge Graph) "
+                "kết hợp cơ chế lưu vết lịch sử biến động.\n\n"
+                "Các module chính và tiến độ hiện tại:\n"
+                "* **LLM Extractor (Nhánh 1: Entities):** Nhận diện 6 loại thực thể cốt lõi, khử đồng tham chiếu tự động. **Tiến độ: Hoàn tất 100%.**\n"
+                "* **Claims & Audit Engine (Nhánh 2: Facts):** Trích xuất mệnh đề sự thật, tự phát hiện biến động thay thế, lưu vết lịch sử thuộc tính. **Tiến độ: Hoàn tất 100%.**\n"
+                "* **Grounded QA Service (Bộ nhớ phân cấp):** Trả lời câu hỏi tự nhiên dựa 100% trên Facts có căn cứ trích dẫn nguồn, kèm dòng thời gian biến động quá khứ. **Tiến độ: Hoàn tất 95%.**\n"
+                "* **Tích hợp Đa kênh (Lark Suite & Webhook):** Đồng bộ tin nhắn 2 chiều từ Lark Chat, Lark Base và giao diện điều khiển nội bộ. **Tiến độ: Đang thực hiện (70%).**\n\n"
+                "**3. Cơ cấu đội ngũ & Phân công tác nghiệp:**\n"
+                "* **Project Lead:** Theo tài liệu gốc, mình (Nguyễn Hoài Nam) là Project Lead. Tuy nhiên, theo cập nhật mới nhất, Tuấn PM và Nguyên đã tham gia phụ trách."
+            ),
+            user_name="Hoài Phước",
+            responder_name=user_info.get("name", "Tống Phước Hoài Nam"),
+        ),
+    )
+    print(f"📝 Đã nạp sẵn bản nháp chờ duyệt: om_x100b63f3b91114a4eeb5fe69410f252 (Sẵn sàng cho lệnh 'Gửi')")
 
     # Khởi động chế độ Hybrid
     lark_service.start_hybrid_runner(dm_poll_interval=2.5)

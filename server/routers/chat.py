@@ -7,6 +7,7 @@ from models import ChatRequest, MemoryRequest, UserChatRequest, ApproveDraftRequ
 from services.weknora import WeKnoraService, weknora_service
 from services.jev import jev_service
 from services.lark import lark_service
+from services.draft_store import PendingDraft, draft_store
 from utils.text_filter import text_filter
 from utils.context_composer import ContextComposer
 from utils.llm_extractor import (
@@ -334,6 +335,24 @@ async def process_chat_pipeline(
         # Bot KHÔNG gửi trả lời vào nhóm chat!
         # Bot gửi riêng 1-1 cho sếp (chủ nhân token) để sếp chọn: [Gửi / Sửa / Bỏ]
         dm_notice = None
+
+        # 1. Lưu bản nháp vào DraftStore để phục vụ lệnh duyệt qua chat [Gửi / Sửa / Bỏ]
+        owner_open_id = lark_service.known_user_open_id
+        if lark_service._current_user_profile and lark_service._current_user_profile.get("open_id"):
+            owner_open_id = lark_service._current_user_profile.get("open_id")
+
+        draft_store.set_draft(
+            owner_id=owner_open_id,
+            draft=PendingDraft(
+                message_id=message_id or "",
+                chat_id=chat_id or "",
+                query=clean_query,
+                draft_answer=answer,
+                user_name=user_name,
+                responder_name=responder_name,
+            ),
+        )
+
         if reply_to_lark:
             draft_card_text = (
                 "📝 [SOẠN NHÁP CHỜ DUYỆT - CÂU HỎI CÓ RỦI RO]\n"
@@ -343,13 +362,13 @@ async def process_chat_pipeline(
                 f"💡 Bản nháp AI soạn sẵn:\n"
                 f"\"{answer}\"\n\n"
                 f"⚠️ Lý do: Câu hỏi có dữ liệu trong Knowledge Base nhưng thuộc nhóm rủi ro/nhạy cảm.\n"
-                f"👉 Hành động chờ duyệt: [Gửi] / [Sửa] / [Bỏ]\n"
+                f"👉 Hành động chờ duyệt: Nhắn lại [Gửi] / [Sửa: <nội dung>] / [Bỏ]\n"
                 f"🆔 Message ID gốc: {message_id or 'N/A'}\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
             try:
                 dm_notice = await lark_service.send_bot_dm_to_owner(draft_card_text)
-                logger.info(f"✔ Đã gửi bản nháp chờ duyệt vào DM riêng của chủ nhân (Message ID: {message_id})")
+                logger.info(f"✔ Đã lưu vào DraftStore & gửi bản nháp chờ duyệt vào DM riêng của chủ nhân (Message ID: {message_id})")
             except Exception as e:
                 logger.error(f"Lỗi gửi bản nháp cho chủ nhân: {e}")
                 dm_notice = {"error": str(e)}
