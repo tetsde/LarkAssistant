@@ -51,8 +51,11 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - Nếu bối cảnh không có dữ liệu để trả lời câu hỏi, hãy lịch sự thông báo rõ rằng hệ thống chưa ghi nhận thông tin này.
 3. TRÍCH DẪN NGUỒN:
    - Trích dẫn rõ ràng nguồn thông tin nếu có (ví dụ: [Tài liệu: du_an_mau_hilark.pdf] hoặc [Cập nhật hội thoại: ...]).
-4. PHONG CÁCH TRÌNH BÀY:
-   - Trả lời bằng tiếng Việt chuyên nghiệp, súc tích, dễ đọc. Sử dụng bullet points hoặc bảng tóm tắt khi trình bày nhiều mục thông tin.
+4. ĐÚNG TRỌNG TÂM, GỌN GÀNG & ĐỦ Ý (GIỚI HẠN MAX 4096 TOKENS):
+   - Hệ thống cấp cho bạn giới hạn phản hồi tối đa là 4096 tokens (max output tokens = 4096).
+   - Bạn PHẢI trả lời cô đọng, dứt khoát, đi thẳng vào đúng trọng tâm câu hỏi dựa trên dữ liệu tri thức truy vấn được.
+   - TUYỆT ĐỐI KHÔNG viết dông dài lan man, không lặp lại câu hỏi khiến câu trả lời bị đứt đoạn hay cụt câu giữa chừng.
+   - BẮT BUỘC hoàn thành trọn vẹn toàn bộ các câu và đoạn văn, đảm bảo có phần kết thúc mạch lạc, hoàn chỉnh.
 """
 
 GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}) của dự án HiLark.
@@ -78,8 +81,11 @@ Nhiệm vụ của bạn là giải đáp câu hỏi của {user_name} một cá
 3. TRUNG THỰC & GROUNDED:
    - Tuyệt đối không bịa đặt thông tin không có trong bối cảnh.
    - Nếu bối cảnh chưa có thông tin, hãy thành thật trả lời {user_name} rằng mình chưa ghi nhận thông tin này và sẽ kiểm tra lại sau.
-4. NGẮN GỌN, DỄ ĐỌC:
-   - Trả lời bằng tiếng Việt gãy gọn, đúng trọng tâm câu hỏi.
+4. ĐÚNG TRỌNG TÂM, GỌN GÀNG & ĐỦ Ý (GIỚI HẠN MAX 4096 TOKENS):
+   - Hệ thống cấp cho bạn giới hạn phản hồi tối đa là 4096 tokens (max output tokens = 4096).
+   - Trả lời bằng tiếng Việt gãy gọn, cô đọng, đi thẳng vào đúng trọng tâm thắc mắc của {user_name}.
+   - TUYỆT ĐỐI KHÔNG viết dông dài lan man dẫn đến việc câu trả lời bị đứt đoạn, cụt câu giữa chừng.
+   - BẮT BUỘC hoàn thành trọn vẹn toàn bộ các câu văn, đảm bảo có lời chào kết thúc tự nhiên, mạch lạc.
 """
 
 
@@ -143,8 +149,9 @@ async def generate_grounded_answer(
     user_name: Optional[str] = None,
     responder_name: Optional[str] = "Tống Phước Hoài Nam",
     role: Optional[str] = "Project Lead",
+    max_output_tokens: int = 4096,
 ) -> str:
-    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user)."""
+    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, max 4096 tokens)."""
     key = api_key or getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
     if not key:
         logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
@@ -166,7 +173,11 @@ async def generate_grounded_answer(
 
     client = GeminiClient(api_key=key)
     try:
-        ans = await client.generate_text_async(prompt=prompt, model_name=model_name)
+        ans = await client.generate_text_async(
+            prompt=prompt,
+            model_name=model_name,
+            max_output_tokens=max_output_tokens,
+        )
         return ans.strip()
     except Exception as e:
         logger.warning(f"Lỗi khi gọi Gemini generate_text_async: {e}")
