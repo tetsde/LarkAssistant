@@ -37,9 +37,21 @@ from utils.llm_extractor import (
     MEMORY_STORE_PATH,
     CLAIM_STORE_PATH,
 )
+from utils.context_composer import (
+    ContextComposer,
+    context_composer,
+    compose_context,
+    RetrievedChunk,
+    NormalizedClaim,
+)
 
 __all__ = [
     "text_filter",
+    "ContextComposer",
+    "context_composer",
+    "compose_context",
+    "RetrievedChunk",
+    "NormalizedClaim",
     "Entity",
     "Fact",
     "EntityStatus",
