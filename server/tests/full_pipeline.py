@@ -19,8 +19,7 @@ Luồng xử lý:
 
 Cách chạy:
     cd /Users/hoainam/Desktop/HiLark/server
-    uv run python tests/full_pipeline.py                 # Interactive mode
-    uv run python tests/full_pipeline.py --scenario      # Chạy kịch bản 5 turn mẫu
+    uv run python tests/full_pipeline.py                 # Interactive mode (nhập tin nhắn trực tiếp)
     uv run python tests/full_pipeline.py --single "Ngân sách dự án Alpha là bao nhiêu?"
 """
 
@@ -426,50 +425,7 @@ def run_pipeline(
 
 
 # =============================================================================
-# KỊCH BẢN 5 TURN MẪU
-# =============================================================================
-
-SCENARIO_TURNS = [
-    "Team mình khởi động dự án Alpha, Nam làm Project Lead và Tuấn làm Tech Lead, hạn chót ngày 15/11.",
-    "Dự án Alpha ký hợp đồng với khách hàng Vingroup, ngân sách được duyệt là 400 triệu.",
-    "Khách hàng Vingroup tăng yêu cầu nên nâng ngân sách lên 600 triệu và lùi deadline sang 30/11.",
-    "Tuấn đang phụ trách phát triển module Payment Gateway cho Alpha, dự kiến xong trước 20/11.",
-    "Do Tuấn bận dự án khác nên chuyển module Payment Gateway sang cho Hoàng làm.",
-]
-
-
-def run_scenario(
-    retrieve_count: int = 5,
-    show_full_context: bool = False,
-    enable_llm_answer: bool = True,
-) -> None:
-    banner("▶ BẮT ĐẦU KỊCH BẢN 5 MULTI-TURN PIPELINE", GREEN)
-
-    print(f"{YELLOW}🧹 Làm mới MongoDB trước khi chạy kịch bản...{RESET}")
-    clear_mongo_stores_sync()
-
-    session_entities: List[Dict[str, Any]] = []
-    session_facts: List[Dict[str, Any]] = []
-
-    for i, message in enumerate(SCENARIO_TURNS, 1):
-        session_entities, session_facts, _ = run_pipeline(
-            message=message,
-            step=i,
-            session_entities=session_entities,
-            session_facts=session_facts,
-            retrieve_count=retrieve_count,
-            show_full_context=show_full_context,
-            enable_llm_answer=enable_llm_answer,
-        )
-        if i < len(SCENARIO_TURNS):
-            time.sleep(0.5)
-
-    banner("🎉 HOÀN THÀNH KỊCH BẢN 5 MULTI-TURN PIPELINE!", GREEN)
-    ok(f"Tổng: {len(session_entities)} entities | {len(session_facts)} facts đã được lưu vào MongoDB.")
-
-
-# =============================================================================
-# INTERACTIVE MODE
+# INTERACTIVE MODE (100% NGƯỜI DÙNG NHẬP)
 # =============================================================================
 
 def run_interactive(
@@ -478,7 +434,7 @@ def run_interactive(
     enable_llm_answer: bool = True,
 ) -> None:
     banner("🚀 HILARK FULL PIPELINE — INTERACTIVE MODE")
-    print(f"{DIM}Lệnh: 'scenario' | 'clear' | 'full' (toggle xem context) | 'llm' (toggle AI trả lời) | 'exit'{RESET}\n")
+    print(f"{DIM}Lệnh: 'clear' | 'full' (toggle xem context) | 'llm' (toggle AI trả lời) | 'exit'{RESET}\n")
 
     session_entities = get_all_entities_sync()
     session_facts    = get_all_facts_sync()
@@ -507,17 +463,6 @@ def run_interactive(
                 session_entities, session_facts = [], []
                 step = 1
                 warn("Đã xóa sạch MongoDB và reset session!")
-                continue
-
-            if user_input.lower() == "scenario":
-                run_scenario(
-                    retrieve_count=retrieve_count,
-                    show_full_context=show_full_context,
-                    enable_llm_answer=enable_llm_answer,
-                )
-                session_entities = get_all_entities_sync()
-                session_facts    = get_all_facts_sync()
-                step = len(SCENARIO_TURNS) + 1
                 continue
 
             if user_input.lower() == "full":
@@ -559,11 +504,6 @@ def run_interactive(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="HiLark Full Pipeline Lab: Lark → LLM Extraction → Query Claims → WeKnora → Context Composer → LLM Answer"
-    )
-    parser.add_argument(
-        "--scenario",
-        action="store_true",
-        help="Chạy tự động kịch bản 5 multi-turn",
     )
     parser.add_argument(
         "--single",
@@ -609,14 +549,6 @@ def main() -> None:
             step=1,
             session_entities=session_entities,
             session_facts=session_facts,
-            retrieve_count=args.count,
-            show_full_context=args.full,
-            enable_llm_answer=enable_llm_answer,
-        )
-        return
-
-    if args.scenario:
-        run_scenario(
             retrieve_count=args.count,
             show_full_context=args.full,
             enable_llm_answer=enable_llm_answer,
