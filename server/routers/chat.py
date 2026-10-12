@@ -3,7 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from core.config import settings
-from models import ChatRequest, MemoryRequest, UserChatRequest
+from models import ChatRequest, MemoryRequest, UserChatRequest, ApproveDraftRequest
 from services.weknora import WeKnoraService, weknora_service
 from services.jev import jev_service
 from services.lark import lark_service

@@ -35,3 +35,12 @@ class UserChatRequest(BaseModel):
 class MemoryRequest(BaseModel):
     text: str
 
+
+class ApproveDraftRequest(BaseModel):
+    """
+    Request duyệt gửi bản nháp (Gửi / Sửa / Bỏ).
+    """
+    message_id: str = Field(..., description="Lark message ID cần reply")
+    action: str = Field(..., description="Hành động: 'send' (Gửi), 'edit' (Sửa), 'discard' (Bỏ)")
+    content: Optional[str] = Field(default=None, description="Nội dung gửi (nếu action='send' hoặc sau khi sửa nếu action='edit')")
+

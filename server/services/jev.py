@@ -24,14 +24,15 @@ class JevService:
                     "instructions": (
                         "Bạn là trợ lý AI (Gatekeeper) nghiêm khắc, lọc tin nhắn cho một vị "
                         "Giám đốc rất bận rộn. Bạn cần phân tích xem tin nhắn có chứa thông tin đáng để "
-                        "GHI NHỚ (lưu trữ) hay không, và có cần phải TRẢ LỜI ngay lập tức hay không. "
-                        "Hãy chọn 1 trong 4 nhãn phân loại phù hợp nhất bên dưới."
+                        "GHI NHỚ (lưu trữ) hay không, và có cần phải TRẢ LỜI ngay lập tức hay SOẠN NHÁP CHỜ DUYỆT hay không. "
+                        "Hãy chọn 1 trong 5 nhãn phân loại phù hợp nhất bên dưới."
                     ),
                     "criteria": {
                         "IGNORE": "Tin nhắn rác, chào hỏi vô thưởng vô phạt, tán gẫu, không chứa thông tin quan trọng. (Không cần ghi nhớ, Không cần trả lời)",
                         "MEMORY_ONLY": "Tin nhắn mang tính chất báo cáo, thông báo tiến độ, tài liệu tham khảo. Cần lưu vào bộ nhớ để sau này tra cứu, nhưng không cần trả lời. (Cần ghi nhớ, Không cần trả lời)",
-                        "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin cơ bản, hỏi quy trình, cần cung cấp câu trả lời nhưng thông tin đó không mang giá trị lưu trữ lâu dài. (Không cần ghi nhớ, Cần trả lời)",
-                        "MEMORY_AND_REPLY": "Tin nhắn cực kỳ quan trọng, sự cố khẩn cấp, xin ý kiến chốt deal, quyết định kinh doanh. Vừa cần lưu lại bằng chứng/quyết định, vừa cần sếp hoặc BOT trả lời ngay. (Cần ghi nhớ, Cần trả lời)"
+                        "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin cơ bản, hỏi quy trình thường ngày, an toàn, cần cung cấp câu trả lời ngay nhưng thông tin đó không mang giá trị lưu trữ lâu dài. (Không cần ghi nhớ, Cần trả lời ngay)",
+                        "MEMORY_AND_REPLY": "Tin nhắn cực kỳ quan trọng, sự cố khẩn cấp, xin ý kiến chốt deal, quyết định kinh doanh. Vừa cần lưu lại bằng chứng/quyết định, vừa cần sếp hoặc BOT trả lời ngay. (Cần ghi nhớ, Cần trả lời)",
+                        "DRAFT_PENDING_APPROVAL": "Soạn nháp chờ duyệt: Câu hỏi có dữ liệu trong knowledge base nhưng có rủi ro, nhạy cảm (về tài chính, ngân sách, hợp đồng, chính sách, cam kết tiến độ quan trọng, nhân sự, hoặc quyết định của sếp). Cần AI soạn sẵn câu trả lời nháp gửi riêng cho sếp/người dùng bấm Gửi / Sửa / Bỏ chứ KHÔNG được tự ý phát ngôn vào nhóm ngay."
                     }
                 }
             }
@@ -59,7 +60,7 @@ class JevService:
                 probabilities = action_data.get("probabilities", {})
                 prob_choice = probabilities.get(choice, 0.0)
 
-                # --- BỘ LỌC ĐỘ TỰ TIN (FLEXIBLE THRESHOLDS VỚI NHÃN MỚI) ---
+                # --- BỘ LỌC ĐỘ TỰ TIN (FLEXIBLE THRESHOLDS VỚI 5 NHÃN) ---
                 if choice == "MEMORY_AND_REPLY":
                     if prob_choice > 0.95:
                         return {"action": "MEMORY_AND_REPLY", "confidence": prob_choice}
@@ -80,6 +81,12 @@ class JevService:
                     else:
                         # Câu hỏi không rõ ràng, vứt
                         return {"action": "IGNORE", "confidence": prob_choice}
+
+                elif choice == "DRAFT_PENDING_APPROVAL":
+                    if prob_choice > 0.5:
+                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
+                    else:
+                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
                         
                 else: # choice == "IGNORE"
                     return {"action": "IGNORE", "confidence": prob_choice}
