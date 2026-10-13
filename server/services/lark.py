@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -172,7 +173,7 @@ class LarkService:
             return self._current_user_profile
 
         fallback_profile = {
-            "name": "User",
+            "name": os.getenv("user_name", "Tống Phước Hoài Nam"),
             "open_id": self.known_user_open_id,
             "union_id": "",
             "avatar_url": "",
@@ -721,14 +722,6 @@ class LarkService:
         """
         Khởi động kết nối WebSocket (Persistent Connection) trực tiếp với Lark.
         """
-        ws_client = lark_ws.Client(
-            app_id=self.app_id,
-            app_secret=self.app_secret,
-            event_handler=self.event_dispatcher,
-            domain=self.domain,
-            log_level=lark.LogLevel.DEBUG,
-        )
-
         # Chủ động nạp thông tin User Profile khi khởi động
         try:
             user_prof = self.get_current_user()
@@ -737,14 +730,39 @@ class LarkService:
         except Exception:
             pass
 
+        def _run_client():
+            # Tạo event loop riêng biệt cho background thread của WebSocket
+            # để tránh xung đột với event loop đang chạy của FastAPI / Uvicorn (RuntimeError: This event loop is already running)
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            import lark_oapi.ws.client as ws_module
+            ws_module.loop = new_loop
+
+            ws_client = lark_ws.Client(
+                app_id=self.app_id,
+                app_secret=self.app_secret,
+                event_handler=self.event_dispatcher,
+                domain=self.domain,
+                log_level=lark.LogLevel.DEBUG,
+            )
+            try:
+                ws_client.start()
+            except Exception as e:
+                logger.error(f"Lark WebSocket gặp lỗi khi chạy: {e}", exc_info=True)
+            finally:
+                try:
+                    new_loop.close()
+                except Exception:
+                    pass
+
         if background:
-            thread = threading.Thread(target=ws_client.start, daemon=True)
+            thread = threading.Thread(target=_run_client, daemon=True, name="LarkWebSocketThread")
             thread.start()
             logger.info("🚀 Lark WebSocket Client đã khởi động ở chế độ Background Thread!")
             return thread
         else:
             logger.info("🚀 Lark WebSocket Client đang lắng nghe sự kiện trực tiếp từ Lark...")
-            ws_client.start()
+            _run_client()
 
     # -------------------------------------------------------------------------
     # 9. HYBRID RUNNER: WEBSOCKET CHO GROUP + POLLING CHO DM 1-1
