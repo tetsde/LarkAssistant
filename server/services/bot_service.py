@@ -177,15 +177,14 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         return
 
     # -------------------------------------------------------------------------
-    # 3. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN)
+    # 3. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
     # -------------------------------------------------------------------------
     is_owner = bool(msg.is_self or msg.sender_id == lark_service.known_user_open_id)
-    if is_owner:
-        # Nếu nhắn trong DM 1-1 (chat_type == "p2p"): Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot!
-        if msg.chat_type == "p2p":
-            clean_text = msg.text.strip()
-            text_lower = clean_text.lower()
-            print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
+    if is_owner and msg.chat_type == "p2p":
+        # Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot trong DM 1-1 (Duyệt digest, Gửi/Sửa/Bỏ nháp...)
+        clean_text = msg.text.strip()
+        text_lower = clean_text.lower()
+        print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
 
         # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST ---
         if "xem digest" in text_lower or "chi tiết digest" in text_lower:

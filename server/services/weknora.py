@@ -127,24 +127,19 @@ class WeKnoraService:
         if not target_id:
             raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
             
-        url = f"{self.base_url}/datasets/{target_id}/document/create_by_text"
-        doc_name = name or f"Memory_{text[:10]}..."
+        url = f"{self.base_url}/knowledge-bases/{target_id}/knowledge/manual"
+        doc_name = name or f"Memory_{text[:15]}..."
         payload = {
-            "name": doc_name,
-            "text": text,
-            "indexing_technique": "high_quality",
-            "process_rule": {
-                "mode": "automatic"
-            }
+            "title": doc_name,
+            "content": text,
+            "status": "publish",
         }
 
-        
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=self.headers, json=payload)
+            response = await client.post(url, headers=self.headers, json=payload, timeout=30.0)
             if response.status_code != 200:
-                # We can ignore or raise
                 raise HTTPException(status_code=response.status_code, detail=f"Failed to save to KB: {response.text}")
-            
+
             return response.json()
 
     async def retrieve(
