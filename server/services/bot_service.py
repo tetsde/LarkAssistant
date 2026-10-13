@@ -181,27 +181,11 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     # -------------------------------------------------------------------------
     is_owner = bool(msg.is_self or msg.sender_id == lark_service.known_user_open_id)
     if is_owner:
-        # Nếu nhắn trong GROUP: Lưu vào staging cho Daily Digest, rồi bỏ qua để chống loop tự trả lời chính mình
-        if msg.chat_type == "group":
-            try:
-                await digest_service.add_staging_message(
-                    message_id=msg.message_id,
-                    chat_id=msg.chat_id,
-                    text=msg.text,
-                    speaker_name=lark_service.get_current_user().get("name", "Tống Phước Hoài Nam"),
-                    speaker_id=msg.sender_id,
-                    chat_name=msg.chat_id,
-                )
-                print(f"📥 [STAGING] Đã lưu tin nhắn của chủ nhân vào conversation_staging ({msg.message_id})")
-            except Exception as e:
-                print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
-            print(f"ℹ️ Bỏ qua tin nhắn do chính bạn gửi trong GROUP ({msg.sender_id}) - Đã chặn vòng lặp.")
-            return
-
-        # Nếu nhắn trong DM 1-1: Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot!
-        clean_text = msg.text.strip()
-        text_lower = clean_text.lower()
-        print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
+        # Nếu nhắn trong DM 1-1 (chat_type == "p2p"): Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot!
+        if msg.chat_type == "p2p":
+            clean_text = msg.text.strip()
+            text_lower = clean_text.lower()
+            print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
 
         # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST ---
         if "xem digest" in text_lower or "chi tiết digest" in text_lower:
@@ -409,7 +393,11 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
             print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
 
     # Chuyển vào Unified Chat Pipeline
-    print(f"⚙️ Đang xử lý qua Chat Pipeline (đích danh: '{target_user_name}' -> JEV Routing)...")
+    if is_owner:
+        print(f"👑 [LARK GROUP CHỦ NHÂN] Tin nhắn của chủ nhân -> Chat Pipeline (chế độ chỉ ghi nhớ/ignore, cấm reply)...")
+    else:
+        print(f"⚙️ Đang xử lý qua Chat Pipeline (đích danh: '{target_user_name}' -> JEV Routing)...")
+
     try:
         result = await process_chat_pipeline(
             query=msg.text,
@@ -417,10 +405,11 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
             channel=f"lark_{msg.chat_type}",
             message_id=msg.message_id,
             chat_id=msg.chat_id,
-            reply_to_lark=True,
+            reply_to_lark=not is_owner,
             user_name=target_user_name,
             responder_name=responder_name,
             role="Project Lead",
+            is_owner=is_owner,
         )
     except Exception as e:
         print(f"❌ Lỗi khi thực thi pipeline: {e}")

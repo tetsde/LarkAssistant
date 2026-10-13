@@ -178,6 +178,7 @@ async def process_chat_pipeline(
     user_name: Optional[str] = None,
     responder_name: Optional[str] = "Tống Phước Hoài Nam",
     role: Optional[str] = "Project Lead",
+    is_owner: bool = False,
 ) -> Dict[str, Any]:
     """
     Quy trình xử lý hội thoại toàn diện (Unified Chat Pipeline):
@@ -229,6 +230,21 @@ async def process_chat_pipeline(
         # Chuyển sang DRAFT_PENDING_APPROVAL để người dùng tự quyết định câu trả lời.
         jev_action = "DRAFT_PENDING_APPROVAL" if ("?" in clean_query or len(clean_query.split()) >= 4) else "IGNORE"
         jev_confidence = 0.0
+
+    # ── [OWNER ANTI-LOOP SHIELD] ──
+    # Nếu tin nhắn do CHÍNH CHỦ NHÂN phát ngôn trong GROUP:
+    # Tuyệt đối không sinh phản hồi để triệt tiêu 100% loop! Chỉ được phép:
+    # 1. MEMORY_ONLY: nếu chứa tri thức, quyết định, ngân sách, deadline cần lưu
+    # 2. IGNORE: cho mọi trường hợp còn lại (tán gẫu, hỏi đáp)
+    if is_owner and channel == "lark_group":
+        if jev_action in ("MEMORY_ONLY", "MEMORY_AND_REPLY"):
+            logger.info(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn có tri thức: Ép JEV {jev_action} -> MEMORY_ONLY (Chỉ ghi nhớ, cấm reply).")
+            print(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn: Ép {jev_action} -> MEMORY_ONLY (Chỉ bóc tách & lưu tri thức, không reply).")
+            jev_action = "MEMORY_ONLY"
+        else:
+            logger.info(f"👑 [OWNER SHIELD] Chủ nhân tán gẫu/hỏi đáp: Ép JEV {jev_action} -> IGNORE (Bỏ qua, không reply chống loop).")
+            print(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn: Ép {jev_action} -> IGNORE (Bỏ qua, không reply chống loop).")
+            jev_action = "IGNORE"
 
     # TH1: IGNORE - Tin rác, chào hỏi vô thưởng vô phạt
     if jev_action == "IGNORE":

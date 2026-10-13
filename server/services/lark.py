@@ -374,34 +374,25 @@ class LarkService:
             print(f"ℹ️ [LARK DISPATCHER] Bỏ qua vì tin nhắn phát từ Bot/App: {lark_msg.message_id}")
             return
 
-        # 2. Xử lý tin nhắn do chính tài khoản của bạn gửi:
-        # - Trong GROUP chat: Bỏ qua để chống loop tự trả lời chính mình (TRỪ KHI ĐÂY LÀ LỆNH ĐIỀU KHIỂN BOT).
-        # - Trong DM 1-1 (chat_type == "p2p"): Đây là bạn đang chat/ra lệnh trực tiếp cho Bot (ví dụ: Gửi / Sửa / Bỏ).
-        if lark_msg.is_self:
-            if lark_msg.chat_type == "group":
-                import re
-                raw_txt = re.sub(r"@\S+", "", lark_msg.text or "").strip().lower()
-                command_prefixes = (
-                    "set-kb", "set_kb", "cài kb", "cai kb", "gán kb", "gan kb",
-                    "get-kb", "get_kb", "xem kb", "kb info", "check kb",
-                    "reset-kb", "reset_kb", "hủy kb", "huy kb", "xóa kb", "xoa kb",
-                )
-                if any(raw_txt.startswith(p) for p in command_prefixes):
-                    print(f"👑 [LARK DISPATCHER] Nhận LỆNH ĐIỀU KHIỂN từ chủ nhân trong Group: '{lark_msg.text}' -> Cho phép xử lý!")
-                else:
-                    print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do chính bạn gửi trong Group ({lark_msg.sender_id}): {lark_msg.message_id}")
-                    return
-            else:
-                print(f"📩 [LARK DISPATCHER] Nhận tin nhắn trực tiếp từ chủ nhân trong DM 1-1: '{lark_msg.text}'")
-
-        # 3. Bỏ qua tin nhắn nằm trong danh sách vừa gửi của hệ thống
+        # 2. Bỏ qua tin nhắn do chính hệ thống vừa phát ngôn gửi đi (tránh bắt lại tin nhắn reply của chính bot)
         if lark_msg.message_id in self._sent_message_ids:
             print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do hệ thống vừa gửi đi: {lark_msg.message_id}")
             return
 
+        # 3. Bỏ qua tin nhắn trùng lặp (Idempotency)
         if self._is_duplicate_message(lark_msg.message_id):
             logger.info(f"Bỏ qua tin nhắn trùng lặp: {lark_msg.message_id}")
             return
+
+        # 4. Nhận diện tin nhắn từ tài khoản của bạn (Chủ nhân):
+        # - Cho phép tin nhắn của chủ nhân đi tiếp vào handler để bot_service xử lý.
+        # - Nếu trong GROUP: sẽ đi vào Chat Pipeline nhưng được chặn họng (chỉ MEMORY_ONLY hoặc IGNORE, chống loop).
+        # - Nếu trong DM 1-1: là lệnh điều khiển trực tiếp (Duyệt/Sửa/Bỏ...).
+        if lark_msg.is_self:
+            if lark_msg.chat_type == "group":
+                print(f"👑 [LARK DISPATCHER] Bắt được tin nhắn từ chủ nhân trong Group: '{lark_msg.text}' -> Chuyển tiếp tới handler (chế độ chỉ ghi nhớ/ignore)!")
+            else:
+                print(f"📩 [LARK DISPATCHER] Nhận tin nhắn trực tiếp từ chủ nhân trong DM 1-1: '{lark_msg.text}'")
 
         logger.info(
             f"📨 Nhận tin nhắn Lark [{lark_msg.chat_type}] từ {lark_msg.sender_id}: "
