@@ -146,6 +146,8 @@ class LarkService:
             self.verification_token or "",
         )
         builder.register_p2_im_message_receive_v1(self._internal_on_message_event)
+        builder.register_p2_im_chat_member_bot_added_v1(self._internal_on_bot_added_event)
+        builder.register_p2_im_chat_member_bot_deleted_v1(self._internal_on_bot_deleted_event)
         return builder.build()
 
     def _get_user_request_option(self) -> lark.RequestOption:
@@ -422,6 +424,38 @@ class LarkService:
                     handler(lark_msg)
             except Exception as e:
                 logger.error(f"Lỗi khi thực thi message handler {handler.__name__}: {e}", exc_info=True)
+
+    def _internal_on_bot_added_event(self, data: P2ImChatMemberBotAddedV1) -> None:
+        """Xử lý sự kiện Bot được thêm vào nhóm chat (im.chat.member.bot.added_v1)."""
+        try:
+            event = getattr(data, "event", None)
+            chat_id = getattr(event, "chat_id", "") if event else ""
+            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
+            operator_id = ""
+            if event and getattr(event, "operator_id", None):
+                operator_id = getattr(event.operator_id, "open_id", "") or getattr(event.operator_id, "user_id", "")
+
+            operator_name = self.get_user_name(operator_id) or operator_id or "Thành viên"
+            print(f"\n" + "=" * 65)
+            print(f"🎉 [LARK BOT EVENT] BOT ĐÃ ĐƯỢC THÊM VÀO NHÓM CHAT!")
+            print(f"   • Tên nhóm : {chat_name}")
+            print(f"   • Chat ID  : {chat_id}")
+            print(f"   • Người thêm: {operator_name}")
+            print("=" * 65 + "\n")
+            logger.info(f"🎉 Bot được thêm vào nhóm '{chat_name}' ({chat_id}) bởi {operator_name}")
+        except Exception as e:
+            logger.error(f"Lỗi xử lý sự kiện bot_added: {e}", exc_info=True)
+
+    def _internal_on_bot_deleted_event(self, data: P2ImChatMemberBotDeletedV1) -> None:
+        """Xử lý sự kiện Bot bị gỡ khỏi nhóm chat (im.chat.member.bot.deleted_v1)."""
+        try:
+            event = getattr(data, "event", None)
+            chat_id = getattr(event, "chat_id", "") if event else ""
+            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
+            print(f"\nℹ️ [LARK BOT EVENT] Bot đã bị gỡ khỏi nhóm: '{chat_name}' ({chat_id})")
+            logger.info(f"ℹ️ Bot bị gỡ khỏi nhóm '{chat_name}' ({chat_id})")
+        except Exception as e:
+            logger.error(f"Lỗi xử lý sự kiện bot_deleted: {e}", exc_info=True)
 
     # -------------------------------------------------------------------------
     # 4. ĐĂNG KÝ MESSAGE HANDLERS
