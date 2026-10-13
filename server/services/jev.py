@@ -1,3 +1,4 @@
+from typing import Optional
 import httpx
 from fastapi import HTTPException
 from core.config import settings
@@ -103,6 +104,7 @@ class JevService:
         chunks: list,
         max_snippet_chars: int = 300,
         timeout: float = 10.0,
+        project_context: Optional[str] = None,
     ) -> list:
         """
         [RAG Gate Tier 2] Lọc mức độ liên quan ngữ nghĩa của các Chunks bằng JEV:
@@ -121,6 +123,8 @@ class JevService:
         candidate_chunks = chunks[:5]
         questions = {}
 
+        ctx_label = f"liên quan đến {project_context.strip()}" if project_context else "liên quan đến bối cảnh dự án/công việc đang trao đổi"
+
         for idx, c in enumerate(candidate_chunks, 1):
             doc_title = (
                 c.get("knowledge_title")
@@ -134,22 +138,28 @@ class JevService:
                 "type": "choice",
                 "instructions": (
                     f"Đoạn trích {idx} từ tài liệu '{doc_title}': \"{snippet}...\". "
-                    f"Đoạn trích này có thuộc bối cảnh dự án phù hợp để tham khảo cho câu hỏi của người dùng không?"
+                    f"Đoạn trích này có chứa thông tin phù hợp để tham khảo cho câu hỏi của người dùng không?"
                 ),
                 "criteria": {
-                    "RELEVANT": "Tài liệu hoặc bối cảnh liên quan đến dự án đang hỗ trợ (HiLark Assistant)",
-                    "IRRELEVANT": "Tài liệu thuộc dự án khác (như Kiaca...) hoặc tài liệu mẫu không liên quan"
+                    "RELEVANT": f"Tài liệu hoặc thông tin hữu ích, {ctx_label} để trả lời câu hỏi",
+                    "IRRELEVANT": "Tài liệu thuộc dự án khác, nội dung lạc đề hoặc tài liệu mẫu không liên quan"
                 }
             }
 
+        state_header = (
+            f"Bối cảnh: Trợ lý AI đang hỗ trợ giải đáp cho {project_context.strip()}.\n"
+            if project_context
+            else "Bối cảnh: Trợ lý AI đang hỗ trợ giải đáp thông tin cho người dùng.\n"
+        )
         payload = {
             "state": (
-                f"Bối cảnh: Trợ lý AI đang hỗ trợ giải đáp cho dự án HiLark Assistant.\n"
+                f"{state_header}"
                 f"Câu hỏi của người dùng: \"{query.strip()}\""
             ),
             "model": "jev-latest",
             "questions": questions,
         }
+
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:

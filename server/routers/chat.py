@@ -24,7 +24,7 @@ logger = logging.getLogger("hilark.chat")
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
-GROUNDED_QA_SYSTEM_PROMPT = """Bạn là Trợ lý Doanh nghiệp HiLark (HiLark AI Assistant) chuyên nghiệp, thông minh, chính xác và trung thực.
+GROUNDED_QA_SYSTEM_PROMPT = """Bạn là Trợ lý Doanh nghiệp AI thông minh, chuyên nghiệp, chính xác và trung thực.
 
 Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA HOÀN TOÀN TRÊN BỘ BỐI CẢNH TRI THỨC dưới đây.
 
@@ -43,7 +43,7 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - Tuyệt đối không suy diễn hoặc bịa đặt thông tin không có trong bối cảnh.
    - Nếu bối cảnh không có dữ liệu để trả lời câu hỏi, hãy lịch sự thông báo rõ rằng hệ thống chưa ghi nhận thông tin này.
 3. TRÍCH DẪN NGUỒN:
-   - Trích dẫn rõ ràng nguồn thông tin nếu có (ví dụ: [Tài liệu: du_an_mau_hilark.pdf] hoặc [Cập nhật hội thoại: ...]).
+   - Trích dẫn rõ ràng nguồn thông tin nếu có (ví dụ: [Tài liệu: ...] hoặc [Cập nhật hội thoại: ...]).
 4. ĐÚNG TRỌNG TÂM, GỌN GÀNG & ĐỦ Ý (GIỚI HẠN MAX 4096 TOKENS):
    - Hệ thống cấp cho bạn giới hạn phản hồi tối đa là 4096 tokens (max output tokens = 4096).
    - Bạn PHẢI trả lời cô đọng, dứt khoát, đi thẳng vào đúng trọng tâm câu hỏi dựa trên dữ liệu tri thức truy vấn được.
@@ -51,7 +51,7 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - BẮT BUỘC hoàn thành trọn vẹn toàn bộ các câu và đoạn văn, đảm bảo có phần kết thúc mạch lạc, hoàn chỉnh.
 """
 
-GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}) của dự án HiLark.
+GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}).
 Bạn đang trực tiếp phản hồi ĐÍCH DANH cho thành viên/đồng nghiệp: {user_name}.
 
 Nhiệm vụ của bạn là giải đáp câu hỏi của {user_name} một cách tự nhiên, chân thành, thân thiện nhưng chuẩn xác và chuyên nghiệp, DỰA HOÀN TOÀN TRÊN BỘ BỐI CẢNH TRI THỨC dưới đây.
@@ -278,7 +278,8 @@ async def process_chat_pipeline(
     chunks = []
     try:
         from services.scope_service import scope_service
-        target_kb = await scope_service.get_kb_for_chat(chat_id) if chat_id else None
+        scope_record = await scope_service.get_scope_by_chat_id(chat_id) if chat_id else None
+        target_kb = scope_record.dataset_id if scope_record else None
         target_kbs = [target_kb] if target_kb else None
         chunks = await weknora_service.retrieve(
             query=clean_query,
@@ -288,24 +289,20 @@ async def process_chat_pipeline(
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
-    # [RAG GATE 2-TIER FILTERING] Kết hợp cả 2 tầng lọc thông minh:
-    # --- TẦNG 1: Lọc thô nhanh theo Project / Entity Heuristics (0ms) ---
-    if chunks and len(chunks) > 1:
-        q_lower = clean_query.lower()
-        if "hilark" in q_lower or "hi lark" in q_lower:
-            filtered_coarse = [
-                c for c in chunks
-                if "kiaca" not in (c.get("knowledge_title") or c.get("document_name") or "").lower()
-            ]
-            if filtered_coarse:
-                chunks = filtered_coarse
-
-    # --- TẦNG 2: JEV Batch Relevance Gate (Lọc ngữ nghĩa thông minh ~300ms, 1 Call duy nhất) ---
+    # [RAG GATE RELEVANCE FILTERING] Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất)
     if chunks and len(chunks) > 1:
         try:
-            chunks = await jev_service.filter_chunks_relevance(clean_query, chunks)
+            proj_ctx = None
+            if scope_record:
+                proj_ctx = scope_record.project_tag or scope_record.dataset_name or scope_record.chat_name
+            chunks = await jev_service.filter_chunks_relevance(
+                clean_query,
+                chunks,
+                project_context=proj_ctx,
+            )
         except Exception as e:
             logger.warning(f"Lỗi khi lọc chunks qua JEV: {e}")
+
 
     # Chuẩn hóa chunks cho ContextComposer
     normalized_chunks = []
