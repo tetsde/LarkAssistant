@@ -50,6 +50,8 @@ from lark_oapi.api.im.v1 import (
     GetMessageRequest,
     ListMessageRequest,
     P2ImMessageReceiveV1,
+    P2ImChatMemberBotAddedV1,
+    P2ImChatMemberBotDeletedV1,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )

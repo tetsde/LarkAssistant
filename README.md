@@ -463,6 +463,15 @@ PYTHONPATH=. uv run python tests/test_interactive.py --scenario
 PYTHONPATH=. uv run python tests/test_full_pipeline.py --single "Ngân sách dự án HiLark là bao nhiêu?"
 ```
 
+### 7. Kiểm tra & Ping User Access Token (Lark Token Health Checker)
+```bash
+# Ping kiểm tra trực tiếp User Access Token (thời hạn, lỗi 20005, chống crash):
+uv run python utils/lark_token.py
+
+# Chạy Unit Test kiểm thử Token Guard:
+PYTHONPATH=. uv run python tests/test_token_ping.py
+```
+
 ---
 
 ## 💬 Danh Mục Lệnh Chat Lark

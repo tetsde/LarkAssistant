@@ -163,7 +163,11 @@ def ping_user_access_token(
 
     Trả về: TokenCheckResult
     """
-    target_token = (token or settings.LARK_USER_ACCESS_TOKEN or "").strip()
+    if token is not None:
+        target_token = token.strip()
+    else:
+        target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
+
     target_domain = (domain or settings.LARK_DOMAIN or "https://open.larksuite.com").rstrip("/")
 
     # TH1: Token chưa được cấu hình
@@ -296,7 +300,11 @@ async def aping_user_access_token(
     timeout: float = 6.0,
 ) -> TokenCheckResult:
     """Phiên bản bất đồng bộ (async) của ping_user_access_token."""
-    target_token = (token or settings.LARK_USER_ACCESS_TOKEN or "").strip()
+    if token is not None:
+        target_token = token.strip()
+    else:
+        target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
+
     target_domain = (domain or settings.LARK_DOMAIN or "https://open.larksuite.com").rstrip("/")
 
     if not target_token:
