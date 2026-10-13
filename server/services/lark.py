@@ -213,6 +213,24 @@ class LarkService:
             self._current_user_profile = fallback_profile
             return fallback_profile
 
+    def check_user_access_token(self, force_ping: bool = False) -> Any:
+        """
+        Kiểm tra và ping trực tiếp User Access Token xem còn sống hay đã hết hạn (expire).
+        Hỗ trợ cache để tránh spam network, force_ping=True để ping lại tức thì.
+        """
+        if not hasattr(self, "_last_token_check") or force_ping or not self._last_token_check:
+            from utils.lark_token import ping_user_access_token
+            self._last_token_check = ping_user_access_token(
+                token=self.user_access_token,
+                domain=self.domain,
+            )
+        return self._last_token_check
+
+    def is_user_token_valid(self) -> bool:
+        """Kiểm tra nhanh xem token còn hợp lệ không."""
+        res = self.check_user_access_token()
+        return bool(res and res.is_valid)
+
     def get_user_name(self, user_id: str) -> Optional[str]:
         """Lấy họ tên hiển thị của một người dùng theo open_id/user_id."""
         if not user_id:
@@ -479,6 +497,18 @@ class LarkService:
         """Validate input và chuẩn bị request option cùng JSON text content."""
         if not target_id or not text:
             return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
+
+        # Kiểm tra nhanh trạng thái User Access Token trước khi gọi API Lark
+        token_check = self.check_user_access_token()
+        if not token_check.is_valid:
+            warn_msg = f"User Access Token không hợp lệ hoặc đã hết hạn: {token_check.message}"
+            logger.warning(f"⚠️ [SAFE FALLBACK] {warn_msg}")
+            return None, None, {
+                "success": False,
+                "error": "token_expired",
+                "code": token_check.code or 20005,
+                "msg": warn_msg,
+            }
 
         try:
             opt = self._get_user_request_option()

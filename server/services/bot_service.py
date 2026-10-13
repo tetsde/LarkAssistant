@@ -556,10 +556,15 @@ def start_bot_service() -> None:
     # 2. Khởi động Digest Scheduler
     start_digest_scheduler_daemon()
 
-    # 3. Thông tin người dùng
+    # 3. Kiểm tra tính hợp lệ và Ping User Access Token (Chống Crash)
+    from utils.lark_token import check_and_warn_token
+    token_res = check_and_warn_token()
+
+    # 4. Thông tin người dùng
     user_info = lark_service.get_current_user()
     if "name" in user_info:
-        print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}")
+        status_suffix = "" if token_res.is_valid else " ⚠️ [Chế độ An Toàn - Token hết hạn]"
+        print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}{status_suffix}")
         print(f"   - Open ID           : {user_info.get('open_id')}")
 
     enable_polling = getattr(settings, "ENABLE_DM_POLLING", False)
