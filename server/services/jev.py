@@ -24,15 +24,15 @@ class JevService:
                     "type": "choice",
                     "instructions": (
                         "Bạn là trợ lý AI (Gatekeeper) nghiêm khắc, lọc tin nhắn cho một vị "
-                        "Giám đốc rất bận rộn. Bạn cần phân tích xem tin nhắn có chứa thông tin đáng để "
-                        "GHI NHỚ (lưu trữ) hay không, và có cần phải TRẢ LỜI ngay lập tức hay SOẠN NHÁP CHỜ DUYỆT hay không. "
+                        "Giám đốc rất bận rộn. Bạn cần phân tích tin nhắn có đáng GHI NHỚ hay không, "
+                        "và nếu cần phản hồi thì trả lời ngay hay tạo bản nháp chờ duyệt. "
                         "Hãy chọn 1 trong 5 nhãn phân loại phù hợp nhất bên dưới."
                     ),
                     "criteria": {
                         "IGNORE": "Tin nhắn rác, chào hỏi vô thưởng vô phạt, tán gẫu, không chứa thông tin quan trọng. (Không cần ghi nhớ, Không cần trả lời)",
                         "MEMORY_ONLY": "Tin nhắn mang tính chất báo cáo, cập nhật tiến độ hoặc tài liệu tham khảo cần lưu vào bộ nhớ để tra cứu, nhưng không ai hỏi. (Cần ghi nhớ, Không cần trả lời)",
                         "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin thông thường về dự án, tiến độ, thành viên team, phân công công việc, quy trình, kiến trúc kỹ thuật hoặc tài liệu hệ thống đã có sẵn trong Knowledge Base. Cần AI tự động tra cứu tri thức và trả lời ngay vào nhóm.",
-                        "MEMORY_AND_REPLY": "Tin nhắn sự cố khẩn cấp, thay đổi quan trọng kèm câu hỏi cần phản hồi ngay. (Cần ghi nhớ, Cần trả lời)",
+                        "MEMORY_AND_DRAFT": "Tin nhắn quan trọng cần ghi nhớ và có câu hỏi cần phản hồi. Lưu thông tin vào memory, soạn câu trả lời nháp gửi chủ nhân duyệt; tuyệt đối không tự reply vào chat.",
                         "DRAFT_PENDING_APPROVAL": "CHỈ áp dụng cho các câu hỏi ĐẶC BIỆT NHẠY CẢM MẬT (như bảng lương cá nhân nhân viên, bí mật tài chính kế toán riêng tư, thỏa thuận hợp đồng bảo mật, tranh chấp pháp lý nghiêm trọng). Còn các câu hỏi tiến độ, thành viên, thông tin dự án chung thì KHÔNG chọn nhãn này."
                     }
                 }
@@ -65,11 +65,11 @@ class JevService:
                 prob_draft_risk = probabilities.get("DRAFT_PENDING_APPROVAL", 0.0)
                 prob_reply = probabilities.get("REPLY_ONLY", 0.0)
 
-                if choice == "MEMORY_AND_REPLY":
+                if choice == "MEMORY_AND_DRAFT":
                     if prob_choice >= 0.70:
-                        return {"action": "MEMORY_AND_REPLY", "confidence": prob_choice}
+                        return {"action": "MEMORY_AND_DRAFT", "confidence": prob_choice}
                     else:
-                        # Hạ cấp xuống chỉ ghi nhớ nếu độ tự tin trả lời chưa đủ cao
+                        # Hạ cấp xuống chỉ ghi nhớ nếu độ tự tin chưa đủ cao.
                         return {"action": "MEMORY_ONLY", "confidence": prob_choice}
 
                 elif choice == "MEMORY_ONLY":
@@ -80,9 +80,9 @@ class JevService:
 
                 elif choice == "REPLY_ONLY":
                     # Ưu tiên tự trả lời các câu hỏi cơ bản, chỉ chặn sang DRAFT khi rủi ro thực sự áp đảo
-                    if prob_draft_risk >= 0.65 and prob_draft_risk > prob_choice:
+                    if prob_draft_risk >= 0.85 and prob_draft_risk > prob_choice:
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_draft_risk}
-                    elif prob_choice >= 0.35:
+                    elif prob_choice >= 0.75:
                         return {"action": "REPLY_ONLY", "confidence": prob_choice}
                     else:
                         return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}

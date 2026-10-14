@@ -694,7 +694,7 @@ def format_server_response(resp: Dict[str, Any]) -> str:
     jev_conf = resp.get("jev_confidence", 0.0)
 
     # 1. Header & JEV routing info
-    jev_color = C_GREEN if jev_act in ("REPLY_ONLY", "MEMORY_AND_REPLY") else C_YELLOW
+    jev_color = C_GREEN if jev_act == "REPLY_ONLY" else C_YELLOW
     lines.append(f"\n{C_CYAN}{C_BOLD}📡 KẾT QUẢ TỪ SERVER (/api/chat):{C_RESET}")
     lines.append(f"   • Phân loại JEV: {jev_color}{C_BOLD}{jev_act}{C_RESET} (Độ tin cậy: {jev_conf:.0%}) | Trạng thái: {C_BOLD}{status}{C_RESET}")
 

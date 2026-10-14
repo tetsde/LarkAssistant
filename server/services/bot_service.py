@@ -408,22 +408,21 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         ext = result.get("extraction") or {}
         num_ent = len(ext.get("entities", []))
         num_facts = len(ext.get("facts", []))
-        print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào bộ nhớ MongoDB/KB.")
+        print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB.")
         print(f"   • Thực thể mới : {num_ent}")
         print(f"   • Facts mới    : {num_facts}")
 
-    elif jev_action == "DRAFT_PENDING_APPROVAL":
+    elif jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
         draft_ans = result.get("draft_answer") or result.get("answer", "")
-        print(f"📝 [DRAFT_PENDING_APPROVAL] CÂU HỎI CÓ RỦI RO -> SOẠN NHÁP CHỜ DUYỆT:")
+        print(f"📝 [{jev_action}] SOẠN NHÁP CHỜ DUYỆT:")
+        if jev_action == "MEMORY_AND_DRAFT":
+            ext = result.get("extraction") or {}
+            print(f"💾 Đã lưu memory vào MongoDB ({len(ext.get('facts', []))} facts).")
         print(f"   • Bản nháp: \"{draft_ans[:150]}{'...' if len(draft_ans) > 150 else ''}\"")
         print(f"   • Tùy chọn: [Gửi] / [Sửa] / [Bỏ]")
         print(f"   (Đã gửi thông báo riêng tới DM của {responder_name}, KHÔNG phát ngôn vào nhóm)")
 
-    elif jev_action in ("REPLY_ONLY", "MEMORY_AND_REPLY"):
-        if jev_action == "MEMORY_AND_REPLY":
-            ext = result.get("extraction") or {}
-            print(f"💾 [MEMORY_AND_REPLY] Đã cập nhật bộ nhớ ({len(ext.get('facts', []))} facts mới).")
-
+    elif jev_action == "REPLY_ONLY":
         answer = result.get("answer", "")
         print(f"💬 [TRẢ LỜI] Câu trả lời đã tạo ({len(answer)} ký tự):")
         print(f"   \"{answer[:150]}{'...' if len(answer) > 150 else ''}\"")

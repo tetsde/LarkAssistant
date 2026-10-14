@@ -183,12 +183,12 @@ async def process_chat_pipeline(
     """
     Quy trình xử lý hội thoại toàn diện (Unified Chat Pipeline):
       1. text_filter: Làm sạch ký tự lạ, validate độ dài tin nhắn.
-      2. JEV Service: Phân loại định tuyến hành động (IGNORE, MEMORY_ONLY, REPLY_ONLY, MEMORY_AND_REPLY).
+    2. JEV Service: Phân loại định tuyến hành động (IGNORE, MEMORY_ONLY, REPLY_ONLY, MEMORY_AND_DRAFT).
       3. Thực thi hành động:
          - IGNORE: Bỏ qua (tin nhắn rác, chào hỏi xã giao).
-         - MEMORY_ONLY: Trích xuất thực thể & mệnh đề -> Lưu MongoDB + WeKnora KB (im lặng ghi nhớ).
+         - MEMORY_ONLY: Trích xuất thực thể & mệnh đề -> Lưu MongoDB.
          - REPLY_ONLY: Tra cứu WeKnora Chunks + MongoDB Claims -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
-         - MEMORY_AND_REPLY: Lưu trích xuất trước -> Tra cứu tổng hợp -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
+         - MEMORY_AND_DRAFT: Lưu memory -> tra cứu context -> soạn draft, chờ chủ nhân duyệt trước khi reply.
     """
     # ── Bước 1: Dọn dẹp ký tự và validate độ dài ──
     try:
@@ -237,7 +237,7 @@ async def process_chat_pipeline(
     # 1. MEMORY_ONLY: nếu chứa tri thức, quyết định, ngân sách, deadline cần lưu
     # 2. IGNORE: cho mọi trường hợp còn lại (tán gẫu, hỏi đáp)
     if is_owner and channel == "lark_group":
-        if jev_action in ("MEMORY_ONLY", "MEMORY_AND_REPLY"):
+        if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
             logger.info(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn có tri thức: Ép JEV {jev_action} -> MEMORY_ONLY (Chỉ ghi nhớ, cấm reply).")
             print(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn: Ép {jev_action} -> MEMORY_ONLY (Chỉ bóc tách & lưu tri thức, không reply).")
             jev_action = "MEMORY_ONLY"
@@ -257,17 +257,13 @@ async def process_chat_pipeline(
             "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời.",
         }
 
-    # Bước 3: Nếu JEV yêu cầu lưu bộ nhớ (MEMORY_ONLY hoặc MEMORY_AND_REPLY)
+    # Bước 3: Lưu memory cho các intent cần ghi nhớ.
     extraction_data = None
-    if jev_action in ("MEMORY_ONLY", "MEMORY_AND_REPLY"):
+    if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
         extraction_data = await process_memory_extraction(
             query_text=clean_query,
             sender=sender,
         )
-        try:
-            await weknora_service.save_to_kb(clean_query)
-        except Exception as e:
-            logger.warning(f"Lỗi khi lưu vào WeKnora KB: {e}")
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
     if jev_action == "MEMORY_ONLY":
@@ -278,10 +274,10 @@ async def process_chat_pipeline(
             "query": clean_query,
             "extraction": extraction_data,
             "answer": None,
-            "message": "Thông tin quan trọng đã được hệ thống trích xuất Thực thể & Mệnh đề thành công. Không cần phản hồi.",
+            "message": "Thông tin quan trọng đã được trích xuất và lưu vào MongoDB. Không cần phản hồi.",
         }
 
-    # TH3 & TH4: REPLY_ONLY hoặc MEMORY_AND_REPLY - Cần tạo câu trả lời Grounded QA
+    # REPLY_ONLY và MEMORY_AND_DRAFT đều cần tạo nội dung từ context.
     # 1. Lấy active claims từ MongoDB
     all_facts = []
     try:
@@ -377,7 +373,7 @@ async def process_chat_pipeline(
     answer = text_filter.clean_output(answer) if answer else "Hệ thống chưa tìm thấy thông tin phù hợp trong cơ sở tri thức để trả lời câu hỏi của bạn."
 
     # TH5: DRAFT_PENDING_APPROVAL - Soạn nháp chờ duyệt (Câu hỏi có dữ liệu nhưng có rủi ro)
-    if jev_action == "DRAFT_PENDING_APPROVAL":
+    if jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
         # Bot KHÔNG gửi trả lời vào nhóm chat!
         # Bot gửi riêng 1-1 cho sếp (chủ nhân token) để sếp chọn: [Gửi / Sửa / Bỏ]
         dm_notice = None
@@ -420,7 +416,7 @@ async def process_chat_pipeline(
                 dm_notice = {"error": str(e)}
 
         return {
-            "status": "draft_pending_approval",
+            "status": "memory_and_draft_pending_approval" if jev_action == "MEMORY_AND_DRAFT" else "draft_pending_approval",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
             "query": clean_query,
@@ -435,7 +431,7 @@ async def process_chat_pipeline(
             "message": "Draft đã được lưu với trạng thái pending; chưa gửi câu trả lời vào nhóm.",
         }
 
-    # TH3 & TH4: REPLY_ONLY hoặc MEMORY_AND_REPLY - Gửi reply trực tiếp vào nhóm nhân danh User
+    # Chỉ REPLY_ONLY mới được gửi thẳng vào nhóm.
     lark_reply_result = None
     if reply_to_lark and message_id:
         try:
@@ -449,7 +445,7 @@ async def process_chat_pipeline(
             lark_reply_result = {"error": str(e), "success": False}
 
     return {
-        "status": "auto_replied" if jev_action == "REPLY_ONLY" else "escalated_and_memorized",
+        "status": "auto_replied",
         "jev_action": jev_action,
         "jev_confidence": jev_confidence,
         "query": clean_query,
@@ -459,7 +455,7 @@ async def process_chat_pipeline(
         "extraction": extraction_data,
         "composed_context": composed,
         "lark_response": lark_reply_result,
-        "message": "Đã tạo câu trả lời tự động." if jev_action == "REPLY_ONLY" else "Đã trích xuất Thực thể & Mệnh đề vào bộ nhớ và tạo câu trả lời khẩn!",
+        "message": "Đã tạo câu trả lời tự động.",
     }
 
 
@@ -516,7 +512,8 @@ async def chat_as_user(request: UserChatRequest):
 @router.post("/memory")
 async def add_memory(request: MemoryRequest):
     """
-    Endpoint chủ động lưu thông tin vào Knowledge Base và trích xuất Entities & Facts vào MongoDB.
+    Endpoint chủ động trích xuất Entities & Facts và lưu vào MongoDB.
+    WeKnora chỉ được cập nhật qua Daily Digest sau khi được duyệt.
     """
     try:
         try:
@@ -540,18 +537,11 @@ async def add_memory(request: MemoryRequest):
 
         mongo_saved = await save_extraction_to_mongo(extraction_result)
 
-        weknora_result = None
-        try:
-            weknora_result = await weknora_service.save_to_kb(request.text)
-        except Exception as e:
-            logger.warning(f"Lỗi khi lưu vào KB: {e}")
-
         return {
             "status": "success",
-            "message": "Đã trích xuất và lưu vào Knowledge Base & MongoDB",
+            "message": "Đã trích xuất và lưu vào MongoDB. WeKnora được cập nhật qua Daily Digest sau khi duyệt.",
             "extraction": mongo_saved,
             "saved_to_mongodb": True,
-            "weknora_data": weknora_result,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

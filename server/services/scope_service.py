@@ -68,16 +68,8 @@ class ScopeService:
         Tra cứu Knowledge Base ID (dataset_id) cho một nhóm chat.
         Nếu nhóm chưa cấu hình riêng, tự động fallback về WEKNORA_DATASET_ID mặc định trong .env.
         """
-        if chat_id:
-            scope = await self.get_scope_by_chat_id(chat_id)
-            if scope and scope.dataset_id:
-                return scope.dataset_id
-
-        # Fallback về KB mặc định
-        default_id = settings.WEKNORA_DATASET_ID or ""
-        if "," in default_id:
-            default_id = default_id.split(",")[0].strip()
-        return default_id
+        dataset_id, _ = await self.get_kb_info_for_chat(chat_id)
+        return dataset_id
 
     async def get_kb_info_for_chat(self, chat_id: Optional[str]) -> Tuple[str, str]:
         """
