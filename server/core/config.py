@@ -23,6 +23,7 @@ class Settings:
     MONGO_STAGING_COLLECTION: str = os.getenv("mongo_staging_collection", "conversation_staging")
     MONGO_DIGEST_COLLECTION: str = os.getenv("mongo_digest_collection", "daily_digests")
     MONGO_CHAT_SCOPE_COLLECTION: str = os.getenv("mongo_chat_scope_collection", "chat_scopes")
+    MONGO_DRAFT_LOGS_COLLECTION: str = os.getenv("mongo_draft_logs_collection", "draft_logs")
 
     # Lark Settings
     LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")
@@ -32,6 +33,8 @@ class Settings:
     LARK_DOMAIN: str = os.getenv("lark_domain") or os.getenv("LARK_DOMAIN", "https://open.larksuite.com")
     LARK_USER_ACCESS_TOKEN: str = os.getenv("access_token_user") or os.getenv("LARK_USER_ACCESS_TOKEN", "")
     LARK_USER_OPEN_ID: str = os.getenv("user_open_id") or os.getenv("LARK_USER_OPEN_ID", "")
+    LARK_USER_NAME: str = os.getenv("user_name") or os.getenv("LARK_USER_NAME", "")
+    LARK_USER_ROLE: str = os.getenv("user_role") or os.getenv("LARK_USER_ROLE", "")
 
 
     # Daily Digest & Approval Settings

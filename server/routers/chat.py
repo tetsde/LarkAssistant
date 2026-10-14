@@ -130,8 +130,8 @@ async def generate_grounded_answer(
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
     user_name: Optional[str] = None,
-    responder_name: Optional[str] = "Tống Phước Hoài Nam",
-    role: Optional[str] = "Project Lead",
+    responder_name: Optional[str] = None,
+    role: Optional[str] = None,
     max_output_tokens: int = 4096,
 ) -> str:
     """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, max 4096 tokens)."""
@@ -140,13 +140,13 @@ async def generate_grounded_answer(
         logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
         return ""
 
-    if user_name:
+    if user_name and responder_name and role:
         prompt = GROUNDED_QA_USER_PERSONA_PROMPT.format(
             context_text=context_text,
             query=query,
             user_name=user_name,
-            responder_name=responder_name or "Tống Phước Hoài Nam",
-            role=role or "Project Lead",
+            responder_name=responder_name,
+            role=role or "",
         )
     else:
         prompt = GROUNDED_QA_SYSTEM_PROMPT.format(
@@ -176,8 +176,8 @@ async def process_chat_pipeline(
     reply_to_lark: bool = False,
     retrieve_count: int = 5,
     user_name: Optional[str] = None,
-    responder_name: Optional[str] = "Tống Phước Hoài Nam",
-    role: Optional[str] = "Project Lead",
+    responder_name: Optional[str] = None,
+    role: Optional[str] = None,
     is_owner: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -382,28 +382,28 @@ async def process_chat_pipeline(
         # Bot gửi riêng 1-1 cho sếp (chủ nhân token) để sếp chọn: [Gửi / Sửa / Bỏ]
         dm_notice = None
 
-        # 1. Lưu bản nháp vào DraftStore để phục vụ lệnh duyệt qua chat [Gửi / Sửa / Bỏ]
-        owner_open_id = lark_service.known_user_open_id
-        if lark_service._current_user_profile and lark_service._current_user_profile.get("open_id"):
-            owner_open_id = lark_service._current_user_profile.get("open_id")
+        # Lưu draft trước khi gửi thông báo để vẫn có thể duyệt lại nếu thông báo lỗi.
+        owner_open_id = lark_service.get_current_user().get("open_id") or lark_service.known_user_open_id
+        if not owner_open_id:
+            raise RuntimeError("Thiếu LARK_USER_OPEN_ID để lưu draft chờ duyệt.")
 
-        draft_store.set_draft(
-            owner_id=owner_open_id,
-            draft=PendingDraft(
+        await draft_store.create(
+            PendingDraft(
+                owner_id=owner_open_id,
                 message_id=message_id or "",
                 chat_id=chat_id or "",
                 query=clean_query,
                 draft_answer=answer,
-                user_name=user_name,
+                user_name=user_name or "bạn",
                 responder_name=responder_name,
-            ),
+            )
         )
 
         if reply_to_lark:
             draft_card_text = (
                 "📝 [SOẠN NHÁP CHỜ DUYỆT - CÂU HỎI CÓ RỦI RO]\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 Người hỏi : {user_name}\n"
+                f"👤 Người hỏi : {user_name or 'bạn'}\n"
                 f"💬 Câu hỏi   : \"{clean_query}\"\n\n"
                 f"💡 Bản nháp AI soạn sẵn:\n"
                 f"\"{answer}\"\n\n"
@@ -414,7 +414,7 @@ async def process_chat_pipeline(
             )
             try:
                 dm_notice = await lark_service.send_bot_dm_to_owner(draft_card_text)
-                logger.info(f"✔ Đã lưu vào DraftStore & gửi bản nháp chờ duyệt vào DM riêng của chủ nhân (Message ID: {message_id})")
+                logger.info(f"Đã lưu draft vào MongoDB và gửi thông báo duyệt (Message ID: {message_id})")
             except Exception as e:
                 logger.error(f"Lỗi gửi bản nháp cho chủ nhân: {e}")
                 dm_notice = {"error": str(e)}
@@ -432,7 +432,7 @@ async def process_chat_pipeline(
             "extraction": extraction_data,
             "composed_context": composed,
             "lark_response": dm_notice,
-            "message": "AI đã soạn câu trả lời nháp thành công. Đang chờ người dùng bấm Gửi / Sửa / Bỏ (Đã gửi vào DM riêng của bạn, chưa phát ngôn vào nhóm).",
+            "message": "Draft đã được lưu với trạng thái pending; chưa gửi câu trả lời vào nhóm.",
         }
 
     # TH3 & TH4: REPLY_ONLY hoặc MEMORY_AND_REPLY - Gửi reply trực tiếp vào nhóm nhân danh User
@@ -473,8 +473,8 @@ async def chat(request: ChatRequest):
         chat_id=request.chat_id,
         reply_to_lark=request.reply_to_lark,
         user_name=request.user_name,
-        responder_name=request.responder_name or "Tống Phước Hoài Nam",
-        role=request.role or "Project Lead",
+        responder_name=request.responder_name,
+        role=request.role,
     )
 
     if result.get("status") == "invalid_input":
@@ -488,7 +488,7 @@ async def chat_as_user(request: UserChatRequest):
     """
     Endpoint chat trả lời ĐÍCH DANH người dùng:
       - Xưng hô và chào hỏi đích danh người hỏi (user_name, VD: 'Hoài Phước').
-      - Đóng vai là người trả lời (responder_name, mặc định: 'Tống Phước Hoài Nam').
+    - Dùng danh tính trả lời nếu request cung cấp responder_name và role.
       - Đi qua text_filter và JEV routing.
       - Hợp nhất tài liệu WeKnora và mệnh đề MongoDB Claims.
       - Tùy chọn gửi tin nhắn phản hồi về Lark qua message_id (reply_to_lark=True).
@@ -601,7 +601,10 @@ async def approve_draft(request: ApproveDraftRequest):
       - 'discard': Hủy bỏ bản nháp, không gửi vào nhóm.
     """
     if request.action == "discard":
-        logger.info(f"Người dùng đã BỎ bản nháp cho message_id={request.message_id}")
+        draft = await draft_store.discard_by_message_id(request.message_id)
+        if not draft:
+            raise HTTPException(status_code=404, detail="Không tìm thấy draft đang chờ duyệt.")
+        logger.info(f"Draft {draft.id} đã được chuyển sang discarded")
         return {
             "status": "discarded",
             "message_id": request.message_id,
@@ -613,22 +616,24 @@ async def approve_draft(request: ApproveDraftRequest):
             raise HTTPException(status_code=400, detail="Cần cung cấp 'content' để gửi vào nhóm")
 
         clean_text = text_filter.clean_output(request.content)
-        try:
-            resp = await lark_service.areply_text(
-                message_id=request.message_id,
-                text=clean_text,
-                as_user=True,  # 100% danh tính User
-            )
-            return {
-                "status": "sent" if request.action == "send" else "edited_and_sent",
-                "message_id": request.message_id,
-                "sent_content": clean_text,
-                "lark_response": resp,
-                "message": "Đã duyệt và gửi tin nhắn vào nhóm thành công dưới danh tính của bạn!",
-            }
-        except Exception as e:
-            logger.error(f"Lỗi khi gửi duyệt bản nháp: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        from services.draft_service import draft_service
+
+        ok, detail, draft, resp = await draft_service.send_by_message_id(
+            request.message_id,
+            clean_text,
+        )
+        if not draft:
+            raise HTTPException(status_code=404, detail=detail)
+        if not ok:
+            raise HTTPException(status_code=502, detail=detail)
+        return {
+            "status": "sent",
+            "message_id": request.message_id,
+            "sent_content": clean_text,
+            "draft_status": draft.status,
+            "lark_response": resp,
+            "message": "Đã lưu trạng thái sent sau khi Lark xác nhận gửi thành công.",
+        }
 
     raise HTTPException(status_code=400, detail="Hành động không hợp lệ. Chọn 'send', 'edit', hoặc 'discard'.")
 

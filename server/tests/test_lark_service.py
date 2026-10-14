@@ -189,9 +189,9 @@ def test_user_identity():
     print(f"  - Avatar: {user_info.get('avatar_url')[:40]}...")
 
     assert "name" in user_info
-    assert user_info["name"] == "Tống Phước Hoài Nam"
+    assert isinstance(user_info["name"], str) and user_info["name"]
     assert user_info.get("open_id") is not None and user_info["open_id"].startswith("ou_")
-    print("✔ TEST 5 PASSED: Xác thực danh tính User Tống Phước Hoài Nam chuẩn 100%!")
+    print("✔ TEST 5 PASSED: Profile trả về tên người dùng!")
 
 
 async def main():

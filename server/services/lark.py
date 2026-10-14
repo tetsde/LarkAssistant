@@ -177,7 +177,7 @@ class LarkService:
             return self._current_user_profile
 
         fallback_profile = {
-            "name": os.getenv("user_name", "Tống Phước Hoài Nam"),
+            "name": settings.LARK_USER_NAME or "User",
             "open_id": self.known_user_open_id,
             "union_id": "",
             "avatar_url": "",
@@ -894,7 +894,7 @@ class LarkService:
                 name = getattr(c, "name", "")
                 if mode == "p2p":
                     return True
-                # Nhóm 2 người tạo tự động giữa 2 người (tên dạng: Tống Phước Hoài Nam, Tống Phước A)
+                # Một số DM hai người có tên chat dạng "Tên người gửi, Tên người nhận".
                 if count is not None and int(count) == 2 and "," in name:
                     return True
         except Exception:

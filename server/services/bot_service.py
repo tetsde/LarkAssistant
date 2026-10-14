@@ -12,7 +12,6 @@ Mục đích:
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 import time
@@ -24,7 +23,7 @@ from models.lark import LarkMessage
 from models.memory import get_vietnam_now
 from routers.chat import process_chat_pipeline
 from services.digest_service import digest_service
-from services.draft_store import PendingDraft, draft_store
+from services.draft_service import draft_service
 from services.lark import lark_service
 from services.scope_service import scope_service
 from utils.digest import get_current_digest_date
@@ -248,47 +247,31 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         # --- B. LỆNH DUYỆT & GỬI BẢN NHÁP CÂU TRẢ LỜI: [Gửi] / [Duyệt] / [OK] ---
         send_keywords = ("gửi", "gui", "ok", "duyệt", "duyet", "gửi đi", "gui di", "send", "yes", "1")
         if text_lower in send_keywords or text_lower.startswith(("gửi ", "gui ", "duyệt ")):
-            draft = draft_store.get_latest_draft(msg.sender_id)
+            ok, detail, draft, _ = await draft_service.send_latest(msg.sender_id)
             if not draft:
-                print(f"⚠️ [DM APPROVAL] Không tìm thấy bản nháp đang chờ duyệt cho {msg.sender_id}")
-                await lark_service.send_bot_dm_to_owner(
-                    "⚠️ Hiện không tìm thấy bản nháp nào đang chờ duyệt.\n"
-                    "(Có thể bản nháp đã được gửi rồi hoặc vừa khởi động lại bot)."
-                )
+                await lark_service.send_bot_dm_to_owner(f"⚠️ {detail}")
                 return
-
-            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT & GỬI bản nháp vào nhóm nhân danh User (msg_id: {draft.message_id})...")
-            try:
-                reply_resp = await lark_service.areply_text(
-                    message_id=draft.message_id,
-                    text=draft.draft_answer,
-                    as_user=True,
+            if ok:
+                confirm_text = (
+                    "✔ ĐÃ GỬI CÂU TRẢ LỜI VÀO NHÓM!\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 Người trả lời: {draft.responder_name or 'User'}\n"
+                    f"💬 Câu hỏi gốc: \"{draft.query}\"\n\n"
+                    f"📄 Nội dung đã gửi:\n\"{draft.approved_content}\"\n"
+                    "📌 Trạng thái: sent\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
-                draft_store.pop_draft(msg.sender_id)
-                if reply_resp.get("success"):
-                    confirm_text = (
-                        "✔ ĐÃ DUYỆT VÀ GỬI THÀNH CÔNG VÀO NHÓM!\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"👤 Danh tính gửi : {draft.responder_name}\n"
-                        f"💬 Câu hỏi gốc   : \"{draft.query}\"\n\n"
-                        f"📄 Nội dung đã phát ngôn:\n"
-                        f"\"{draft.draft_answer}\"\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    )
-                    await lark_service.send_bot_dm_to_owner(confirm_text)
-                    print(f"✔ [DM APPROVAL] Đã gửi câu trả lời vào nhóm và xác nhận về DM thành công!")
-                else:
-                    err_msg = reply_resp.get("msg") or reply_resp.get("error") or "Không rõ lỗi"
-                    await lark_service.send_bot_dm_to_owner(f"❌ Có lỗi khi gửi tin nhắn vào nhóm: {err_msg}")
-            except Exception as e:
-                print(f"❌ [DM APPROVAL] Lỗi gửi duyệt: {e}")
-                await lark_service.send_bot_dm_to_owner(f"❌ Exception khi duyệt gửi: {str(e)}")
+                await lark_service.send_bot_dm_to_owner(confirm_text)
+            else:
+                await lark_service.send_bot_dm_to_owner(
+                    f"❌ Chưa xác nhận gửi thành công. Draft vẫn chờ xử lý. Lỗi: {detail}"
+                )
             return
 
         # --- C. LỆNH BỎ BẢN NHÁP: [Bỏ] / [Hủy] ---
         discard_keywords = ("bỏ", "bo", "hủy", "huy", "bỏ qua", "bo qua", "discard", "cancel", "no", "0")
         if text_lower in discard_keywords:
-            draft = draft_store.pop_draft(msg.sender_id)
+            draft = await draft_service.discard_latest(msg.sender_id)
             if draft:
                 print(f"🗑 [DM APPROVAL] Chủ nhân đã BỎ bản nháp cho message_id={draft.message_id}")
                 await lark_service.send_bot_dm_to_owner(
@@ -313,32 +296,28 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
                 )
                 return
 
-            draft = draft_store.pop_draft(msg.sender_id)
-            if not draft:
-                await lark_service.send_bot_dm_to_owner("⚠️ Không tìm thấy bản nháp đang chờ để sửa.")
-                return
-
             print(f"✏️ [DM APPROVAL] Chỉnh sửa và gửi nội dung mới vào nhóm: \"{edited_content[:80]}...\"")
-            try:
-                reply_resp = await lark_service.areply_text(
-                    message_id=draft.message_id,
-                    text=edited_content,
-                    as_user=True,
+            ok, detail, draft, _ = await draft_service.send_latest(
+                msg.sender_id,
+                approved_content=edited_content,
+            )
+            if not draft:
+                await lark_service.send_bot_dm_to_owner(f"⚠️ {detail}")
+                return
+            if ok:
+                confirm_text = (
+                    "✔ ĐÃ GỬI BẢN CHỈNH SỬA VÀO NHÓM!\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 Người trả lời: {draft.responder_name or 'User'}\n"
+                    f"📄 Nội dung đã gửi:\n\"{edited_content}\"\n"
+                    "📌 Trạng thái: sent\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 )
-                if reply_resp.get("success"):
-                    confirm_text = (
-                        "✔ ĐÃ GỬI BẢN CHỈNH SỬA VÀO NHÓM THÀNH CÔNG!\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"👤 Danh tính gửi: {draft.responder_name}\n"
-                        f"📄 Nội dung mới đã gửi:\n"
-                        f"\"{edited_content}\"\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    )
-                    await lark_service.send_bot_dm_to_owner(confirm_text)
-                else:
-                    await lark_service.send_bot_dm_to_owner(f"❌ Lỗi gửi bản chỉnh sửa: {reply_resp.get('msg')}")
-            except Exception as e:
-                await lark_service.send_bot_dm_to_owner(f"❌ Exception khi gửi bản sửa: {str(e)}")
+                await lark_service.send_bot_dm_to_owner(confirm_text)
+            else:
+                await lark_service.send_bot_dm_to_owner(
+                    f"❌ Chưa xác nhận gửi thành công. Draft vẫn chờ xử lý. Lỗi: {detail}"
+                )
             return
 
     # -------------------------------------------------------------------------
@@ -347,38 +326,37 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
     print(f"📡 Kênh tiếp nhận : {channel_type}")
 
-    # Chuẩn bị danh tính User phản hồi (Tống Phước Hoài Nam)
+    # Dùng danh tính và chức danh từ hồ sơ/cấu hình nếu có.
     user_info = lark_service.get_current_user()
-    responder_name = user_info.get("name", "Tống Phước Hoài Nam")
-    print(f"👤 Danh tính phản hồi: {responder_name}")
+    responder_name = user_info.get("name") or settings.LARK_USER_NAME or None
+    responder_label = responder_name or "User"
+    print(f"👤 Danh tính phản hồi: {responder_label}")
 
     # Nhận diện tên đích danh người hỏi
-    target_user_name = "bạn"
+    target_user_name = None
     if msg.mentions:
         for m in msg.mentions:
             m_name = m.get("name", "")
             if m_name and not (
                 "bot" in m_name.lower()
                 or "hilark" in m_name.lower()
-                or m_name.lower() in responder_name.lower()
-                or responder_name.lower() in m_name.lower()
+                or (responder_name and m_name.lower() in responder_name.lower())
+                or (responder_name and responder_name.lower() in m_name.lower())
             ):
                 target_user_name = m_name
                 break
 
-    if target_user_name == "bạn" and msg.sender_id:
+    if not target_user_name and msg.sender_id:
         sender_real_name = lark_service.get_user_name(msg.sender_id)
         if sender_real_name:
             target_user_name = sender_real_name
 
-    if target_user_name == "bạn":
-        if "phước" in msg.text.lower() or "phuoc" in msg.text.lower():
-            target_user_name = "Hoài Phước"
+    target_user_name = target_user_name or "bạn"
 
     # Tự động lưu tin nhắn vào staging cho Daily Digest
     if msg.chat_type == "group" and msg.text:
         try:
-            speaker = target_user_name if target_user_name != "bạn" else (lark_service.get_user_name(msg.sender_id) or "Thành viên")
+            speaker = target_user_name if target_user_name != "bạn" else "Thành viên"
             await digest_service.add_staging_message(
                 message_id=msg.message_id,
                 chat_id=msg.chat_id,
@@ -407,7 +385,7 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
             reply_to_lark=not is_owner,
             user_name=target_user_name,
             responder_name=responder_name,
-            role="Project Lead",
+            role=settings.LARK_USER_ROLE or None,
             is_owner=is_owner,
         )
     except Exception as e:
@@ -452,7 +430,7 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
 
         lark_res = result.get("lark_response") or {}
         if lark_res.get("success"):
-            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {responder_name.upper()}!")
+            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {responder_label.upper()}!")
         else:
             print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")
 
@@ -566,7 +544,7 @@ def start_bot_service() -> None:
         print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
 
     print("-" * 65)
-    print("💡 Mọi tin nhắn phản hồi sẽ hiện ra dưới danh tính Tống Phước Hoài Nam!")
+    print(f"💡 Danh tính phản hồi: {user_info.get('name') or settings.LARK_USER_NAME or 'User'}")
     print("=" * 65)
 
     # 4. Khởi động WebSocket Client ở background thread

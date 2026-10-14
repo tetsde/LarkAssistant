@@ -10,9 +10,9 @@ class ChatRequest(BaseModel):
     message_id: Optional[str] = None
     chat_id: Optional[str] = None
     sender_id: Optional[str] = None
-    user_name: Optional[str] = Field(default=None, description="Tên đích danh người hỏi (VD: Hoài Phước)")
-    responder_name: Optional[str] = Field(default="Tống Phước Hoài Nam", description="Tên người trả lời")
-    role: Optional[str] = Field(default="Project Lead", description="Vai trò của người trả lời")
+    user_name: Optional[str] = Field(default=None, description="Tên hiển thị của người hỏi")
+    responder_name: Optional[str] = Field(default=None, description="Tên người trả lời")
+    role: Optional[str] = Field(default=None, description="Vai trò của người trả lời")
     reply_to_lark: bool = False
 
 
@@ -21,9 +21,9 @@ class UserChatRequest(BaseModel):
     Request chuyên biệt cho endpoint chat trả lời ĐÍCH DANH người dùng.
     """
     query: str = Field(..., description="Câu hỏi hoặc tin nhắn của người dùng")
-    user_name: str = Field(default="bạn", description="Tên đích danh người nhận câu trả lời (VD: Hoài Phước)")
-    responder_name: str = Field(default="Tống Phước Hoài Nam", description="Tên người trực tiếp phản hồi")
-    role: str = Field(default="Project Lead HiLark", description="Vai trò của người phản hồi")
+    user_name: str = Field(default="bạn", description="Tên hiển thị của người nhận câu trả lời")
+    responder_name: Optional[str] = Field(default=None, description="Tên người trực tiếp phản hồi")
+    role: Optional[str] = Field(default=None, description="Vai trò của người phản hồi")
     channel: str = Field(default="lark", description="Kênh liên lạc")
     message_id: Optional[str] = Field(default=None, description="Lark message ID để reply trực tiếp")
     chat_id: Optional[str] = Field(default=None, description="Lark chat ID")

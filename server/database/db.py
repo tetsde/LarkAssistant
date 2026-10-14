@@ -68,6 +68,10 @@ def get_claims_collection() -> AsyncIOMotorCollection:
     db = get_async_db()
     return db[settings.MONGO_CLAIMS_COLLECTION]
 
+def get_permissson_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Phân quyền dữ liệu (Permissions)."""
+    db = get_async_db()
+    return db[settings.MONGO_PERMISSION_COLLECTION]
 
 def get_staging_collection() -> AsyncIOMotorCollection:
     """Collection lưu trữ Vùng đệm tin nhắn trong ngày (Conversation Staging)."""
@@ -85,6 +89,12 @@ def get_chat_scopes_collection() -> AsyncIOMotorCollection:
     """Collection lưu trữ Ánh xạ phân quyền dữ liệu nhóm chat (Chat Scopes / KB Mappings)."""
     db = get_async_db()
     return db[settings.MONGO_CHAT_SCOPE_COLLECTION]
+
+
+def get_draft_logs_collection() -> AsyncIOMotorCollection:
+    """Collection lưu các bản nháp đang chờ duyệt và trạng thái gửi Lark."""
+    db = get_async_db()
+    return db[settings.MONGO_DRAFT_LOGS_COLLECTION]
 
 
 def get_sync_client() -> MongoClient:
