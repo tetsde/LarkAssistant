@@ -5,6 +5,8 @@ from core.config import settings
 from models.chat import ChatRequest
 from utils.text_filter import text_filter
 
+
+
 class WeKnoraService:
     def __init__(self):
         self.api_key = settings.WEKNORA_API_KEY
