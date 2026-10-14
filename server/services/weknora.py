@@ -184,16 +184,23 @@ class WeKnoraService:
                     print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
                     return []
 
+                effective_vector_threshold = (
+                    settings.vector_threshold if vector_threshold is None else vector_threshold
+                )
+                effective_keyword_threshold = (
+                    settings.keyword_threshold if keyword_threshold is None else keyword_threshold
+                )
+
                 payload: Dict[str, Any] = {
                     "query": query.strip(),
                     "match_count": match_count,
                     "knowledge_base_ids": target_kbs,
                 }
 
-                if vector_threshold is not None:
-                    payload["vector_threshold"] = vector_threshold
-                if keyword_threshold is not None:
-                    payload["keyword_threshold"] = keyword_threshold
+                if effective_vector_threshold is not None:
+                    payload["vector_threshold"] = effective_vector_threshold
+                if effective_keyword_threshold is not None:
+                    payload["keyword_threshold"] = effective_keyword_threshold
                 if disable_keywords_match:
                     payload["disable_keywords_match"] = True
                 if disable_vector_match:
