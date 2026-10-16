@@ -27,10 +27,26 @@ class EntityStatus(str, Enum):
 
 class FactStatus(str, Enum):
     """Status of a fact/claim about an entity."""
-    CURRENT = "current"        # Active, valid information
+    CURRENT = "current"        # Active, valid information (decision by owner or confirmed fact)
+    PROPOSED = "proposed"      # Proposal, request or unconfirmed claim from team member
     SUPERSEDED = "superseded"  # Replaced by a newer fact
     CONFLICTED = "conflicted"  # Direct contradiction across sources
     UNCERTAIN = "uncertain"    # Ambiguous, speculative, unconfirmed
+
+
+class AssertedBy(BaseModel):
+    """
+    Thông tin người phát ngôn / khẳng định Fact và vai trò thẩm quyền.
+    role: 'owner' (CEO/Founder/Sếp - Nguồn sự thật tối cao) | 'member' (Nhân sự - Đề xuất/Báo cáo).
+    """
+    user_id: Optional[str] = Field(default=None, description="Open ID của người nói trên Lark")
+    user_name: Optional[str] = Field(default=None, description="Tên hiển thị của người nói")
+    role: str = Field(default="member", description="'owner' (CEO/Founder) hoặc 'member' (Nhân sự)")
+
+    model_config = {"use_enum_values": True}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
 
 
 class Entity(BaseModel):
@@ -68,14 +84,15 @@ class Entity(BaseModel):
 class Fact(BaseModel):
     """
     A single piece of factual information about an Entity.
-    Answers: "What was stated, about which entity, is it still valid, and where did it come from?"
+    Answers: "What was stated, about which entity, is it still valid, who asserted it, and where did it come from?"
     
     Fields:
       - id: Unique fact ID (e.g. fact_abc123)
       - entity_id: ID of the parent entity this fact belongs to
       - property: Business attribute (deadline, assignee, status, budget, scope...)
       - value: Concise value (e.g. "30/10", "Nam", "200M VND")
-      - status: current, superseded, conflicted, uncertain
+      - status: current, proposed, superseded, conflicted, uncertain
+      - asserted_by: Metadata về người phát ngôn (user_id, user_name, role='owner'|'member')
       - source: Evidence (snippet text or metadata dict)
       - replaces: ID of the old fact this one replaces (or None)
     """
@@ -84,6 +101,10 @@ class Fact(BaseModel):
     property: str = Field(..., description="Business attribute: deadline, assignee, status, budget, scope")
     value: Any = Field(..., description="Concise value")
     status: FactStatus = Field(default=FactStatus.CURRENT)
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = Field(
+        default=None,
+        description="Người khẳng định fact và thẩm quyền phát ngôn ('owner' vs 'member')"
+    )
     source: Union[str, Dict[str, Any]] = Field(default="")
     replaces: Optional[str] = Field(default=None, description="ID of old fact this one replaces")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
