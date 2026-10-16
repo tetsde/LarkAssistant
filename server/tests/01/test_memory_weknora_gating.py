@@ -64,6 +64,118 @@ class TestMemoryWeKnoraGating(unittest.IsolatedAsyncioTestCase):
         process_memory_extraction.assert_awaited_once()
         save_to_kb.assert_not_awaited()
 
+    @patch("services.chat_service.weknora_service.retrieve", new_callable=AsyncMock)
+    @patch("services.chat_service.jev_service.classify_message", new_callable=AsyncMock)
+    @patch("services.chat_service.scope_service.get_scope_by_chat_id", new_callable=AsyncMock)
+    async def test_group_inactive_stops_pipeline(self, mock_get_scope, mock_classify, mock_retrieve):
+        from models.chat_scope import ChatScopeRecord
+        mock_get_scope.return_value = ChatScopeRecord(
+            chat_id="oc_inactive_group",
+            chat_name="Nhóm Lưu Trữ",
+            dataset_id="kb_1",
+            status="Tạm dừng",
+        )
+
+        result = await process_chat_pipeline(
+            query="Dự án này làm đến đâu rồi?",
+            chat_id="oc_inactive_group",
+            sender="user-1",
+        )
+
+        self.assertEqual(result["status"], "group_inactive")
+        mock_classify.assert_not_awaited()
+        mock_retrieve.assert_not_awaited()
+
+    @patch("services.chat_service.lark_service.send_bot_dm_to_owner", new_callable=AsyncMock)
+    @patch("services.chat_service.generate_grounded_answer", new_callable=AsyncMock)
+    @patch("services.chat_service.weknora_service.retrieve", new_callable=AsyncMock)
+    @patch("services.chat_service.jev_service.check_forbidden_query", new_callable=AsyncMock)
+    @patch("services.chat_service.scope_service.get_scope_by_chat_id", new_callable=AsyncMock)
+    async def test_forbidden_query_zero_response(
+        self,
+        mock_get_scope,
+        mock_check_forbidden,
+        mock_retrieve,
+        mock_generate_answer,
+        mock_send_dm,
+    ):
+        from models.chat_scope import ChatScopeRecord
+        mock_get_scope.return_value = ChatScopeRecord(
+            chat_id="oc_active_group",
+            chat_name="Nhóm Dự Án",
+            dataset_id="kb_1",
+            status="Hoạt động",
+            forbidden_labels=["Ngân sách", "Chi phí", "Bảng lương"],
+        )
+        mock_check_forbidden.return_value = {
+            "is_forbidden": True,
+            "confidence": 0.95,
+            "choice": "FORBIDDEN",
+            "matched_label": "Ngân sách",
+            "reason": "jev_classified",
+        }
+
+        result = await process_chat_pipeline(
+            query="Ngân sách dự án này là bao nhiêu vậy?",
+            chat_id="oc_active_group",
+            sender="user-1",
+            channel="lark_group",
+        )
+
+        self.assertEqual(result["status"], "forbidden_query")
+        self.assertIsNone(result["answer"])
+        mock_retrieve.assert_not_awaited()
+        mock_generate_answer.assert_not_awaited()
+        mock_send_dm.assert_awaited_once()
+
+    @patch("services.chat_service.lark_service.areply_text", new_callable=AsyncMock)
+    @patch("services.chat_service.generate_grounded_answer", new_callable=AsyncMock)
+    @patch("services.chat_service.weknora_service.retrieve", new_callable=AsyncMock)
+    @patch("services.chat_service.jev_service.classify_message", new_callable=AsyncMock)
+    @patch("services.chat_service.jev_service.check_forbidden_query", new_callable=AsyncMock)
+    @patch("services.chat_service.scope_service.get_scope_by_chat_id", new_callable=AsyncMock)
+    async def test_scoped_weknora_retrieve_with_knowledge_ids(
+        self,
+        mock_get_scope,
+        mock_check_forbidden,
+        mock_classify,
+        mock_retrieve,
+        mock_generate_answer,
+        mock_reply,
+    ):
+        from models.chat_scope import ChatScopeRecord
+        mock_get_scope.return_value = ChatScopeRecord(
+            chat_id="oc_active_group",
+            chat_name="Nhóm Dự Án",
+            dataset_id="kb_project_1",
+            status="Hoạt động",
+            forbidden_labels=["Ngân sách"],
+            knowledge_ids=["file_pdf_123", "file_docx_456"],
+        )
+        mock_check_forbidden.return_value = {"is_forbidden": False, "confidence": 0.0}
+        mock_classify.return_value = {"action": "REPLY_ONLY", "confidence": 0.90}
+        mock_retrieve.return_value = [
+            {"content": "Tiến độ đạt 80%", "document_name": "spec.pdf", "id": "chunk_1"}
+        ]
+        mock_generate_answer.return_value = "Tiến độ hiện tại đang đạt 80%."
+
+        result = await process_chat_pipeline(
+            query="Tiến độ dự án hiện tại ra sao?",
+            chat_id="oc_active_group",
+            sender="user-1",
+            message_id="msg_1",
+            reply_to_lark=False,
+        )
+
+        self.assertEqual(result["status"], "auto_replied")
+        self.assertEqual(result["answer"], "Tiến độ hiện tại đang đạt 80%.")
+        mock_retrieve.assert_awaited_once_with(
+            query="Tiến độ dự án hiện tại ra sao?",
+            knowledge_base_ids=["kb_project_1"],
+            knowledge_ids=["file_pdf_123", "file_docx_456"],
+            match_count=5,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

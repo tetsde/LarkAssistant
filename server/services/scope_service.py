@@ -209,6 +209,262 @@ class ScopeService:
             logger.error(f"Lỗi khi lấy danh sách chat scopes: {e}", exc_info=True)
             return []
 
+    async def sync_group_from_base_record(
+        self,
+        record: Any,
+        target_dataset_id: Optional[str] = None,
+    ) -> Optional[ChatScopeRecord]:
+        """
+        Đồng bộ 1 bản ghi cấu hình nhóm từ Lark Base sang MongoDB & WeKnora:
+          1. Đọc chat_id, chat_name, status, forbidden_labels, allowed_labels, documents.
+          2. Duyệt qua documents: nếu file chưa có knowledge_id trên WeKnora, tải file bằng
+             Lark Drive Media API và upload sang WeKnora lấy knowledge_id.
+          3. Cập nhật bản ghi ChatScopeRecord trong MongoDB collection 'chat_scopes'.
+        """
+        if not record:
+            return None
+
+        if hasattr(record, "fields"):
+            raw_fields = record.fields or {}
+            rec_id = getattr(record, "record_id", "")
+        else:
+            raw_fields = record.get("fields", record)
+            rec_id = record.get("record_id", "")
+
+        # 1. Trích xuất chat_id
+        chat_id_val = (
+            raw_fields.get("fldMa7EqDd")
+            or raw_fields.get("ID Group")
+            or raw_fields.get("chat_id")
+        )
+        chat_id = _extract_text_field(chat_id_val)
+        if not chat_id:
+            logger.debug(f"[ChatScope Sync] Bản ghi {rec_id} không có ID Group, bỏ qua.")
+            return None
+
+        # 2. Trích xuất tên nhóm / dự án
+        chat_name_val = (
+            raw_fields.get("fldQh1mqwW")
+            or raw_fields.get("Dự án / Nhóm")
+            or raw_fields.get("chat_name")
+        )
+        chat_name = _extract_text_field(chat_name_val) or f"Nhóm {chat_id}"
+
+        # 3. Trích xuất trạng thái
+        status_val = (
+            raw_fields.get("fldbk4Upv9")
+            or raw_fields.get("Trạng thái")
+            or raw_fields.get("status")
+        )
+        status = _extract_text_field(status_val) or "Hoạt động"
+
+        # 4. Trích xuất nhãn cấm xem & nhãn được phép xem
+        forbidden_val = (
+            raw_fields.get("fldsexGPII")
+            or raw_fields.get("Nhãn cấm xem")
+            or raw_fields.get("forbidden_labels")
+        )
+        forbidden_labels = _extract_labels(forbidden_val)
+
+        allowed_val = (
+            raw_fields.get("fldAYjcC5W")
+            or raw_fields.get("Nhãn được phép xem")
+            or raw_fields.get("allowed_labels")
+        )
+        allowed_labels = _extract_labels(allowed_val)
+
+        # 5. Xác định Dataset ID
+        effective_dataset_id = target_dataset_id or settings.WEKNORA_DATASET_ID or ""
+        if "," in effective_dataset_id:
+            effective_dataset_id = effective_dataset_id.split(",")[0].strip()
+
+        # 6. Đọc tài liệu đính kèm Documents
+        docs_val = (
+            raw_fields.get("fldHpn8M87")
+            or raw_fields.get("Documents")
+            or raw_fields.get("documents")
+        )
+        raw_doc_list = docs_val if isinstance(docs_val, list) else []
+
+        existing_scope = await self.get_scope_by_chat_id(chat_id)
+        existing_doc_map = {}
+        if existing_scope and existing_scope.documents:
+            for d in existing_scope.documents:
+                ft = d.get("file_token")
+                kid = d.get("knowledge_id")
+                if ft and kid:
+                    existing_doc_map[ft] = kid
+
+        synced_docs: List[Dict[str, Any]] = []
+        knowledge_ids: List[str] = []
+
+        from services.larkbase import lark_base_service
+
+        for d in raw_doc_list:
+            if not isinstance(d, dict):
+                continue
+            file_token = d.get("file_token") or d.get("attachmentToken") or d.get("id") or ""
+            file_name = d.get("name") or "document.pdf"
+            mime_type = d.get("type") or d.get("mimeType") or "application/pdf"
+            file_size = d.get("size") or 0
+
+            if not file_token:
+                continue
+
+            k_id = existing_doc_map.get(file_token)
+            if not k_id:
+                try:
+                    logger.info(f"📥 [ChatScope Sync] Đang tải file '{file_name}' ({file_token}) từ Lark Base...")
+                    file_bytes = await lark_base_service.adownload_attachment(file_token, use_tenant_token=True)
+                    if file_bytes:
+                        logger.info(f"📤 [ChatScope Sync] Đang nạp '{file_name}' ({len(file_bytes)} bytes) sang WeKnora KB {effective_dataset_id}...")
+                        upload_res = await weknora_service.upload_file(
+                            file_name=file_name,
+                            file_bytes=file_bytes,
+                            dataset_id=effective_dataset_id,
+                            mime_type=mime_type,
+                        )
+                        k_id = upload_res.get("knowledge_id", "")
+                        if k_id:
+                            logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp file thành công: knowledge_id={k_id}")
+                except Exception as e:
+                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý file '{file_name}': {e}", exc_info=True)
+
+            if k_id:
+                synced_docs.append({
+                    "file_token": file_token,
+                    "name": file_name,
+                    "size": file_size,
+                    "type": mime_type,
+                    "knowledge_id": k_id,
+                })
+                knowledge_ids.append(k_id)
+
+        # 7. Lưu hoặc cập nhật ChatScopeRecord trong MongoDB
+        now_iso = get_vietnam_now_iso()
+        coll = get_chat_scopes_collection()
+        created_at = existing_scope.created_at if existing_scope else now_iso
+
+        scope_rec = ChatScopeRecord(
+            chat_id=chat_id,
+            chat_name=chat_name,
+            dataset_id=effective_dataset_id,
+            dataset_name=existing_scope.dataset_name if existing_scope else "Lark Base Knowledge Base",
+            status=status,
+            forbidden_labels=forbidden_labels,
+            allowed_labels=allowed_labels,
+            documents=synced_docs,
+            knowledge_ids=list(dict.fromkeys(knowledge_ids)),
+            record_id=rec_id,
+            updated_by="larkbase_sync",
+            updated_by_name="Lark Base Auto-Sync",
+            created_at=created_at,
+            updated_at=now_iso,
+        )
+
+        await coll.update_one(
+            {"chat_id": chat_id},
+            {"$set": scope_rec.to_dict()},
+            upsert=True,
+        )
+
+        logger.info(
+            f"✔ [ChatScope Sync] Đồng bộ thành công nhóm '{chat_name}' ({chat_id}): "
+            f"Trạng thái='{status}', {len(scope_rec.knowledge_ids)} files WeKnora, "
+            f"Nhãn cấm={forbidden_labels}"
+        )
+        return scope_rec
+
+    async def sync_all_groups_from_base(self) -> List[ChatScopeRecord]:
+        """Quét và đồng bộ toàn bộ bảng Lark Base sang MongoDB và WeKnora."""
+        try:
+            from services.larkbase import lark_base_service
+            if not lark_base_service.app_token:
+                logger.debug("[ChatScope Sync] LARK_BASE_APP_TOKEN chưa được cấu hình, bỏ qua sync toàn bảng.")
+                return []
+
+            records = await lark_base_service.aget_all_records(use_tenant_token=True)
+            results = []
+            for r in records:
+                rec = await self.sync_group_from_base_record(r)
+                if rec:
+                    results.append(rec)
+            logger.info(f"🎉 [ChatScope Sync] Đã quét và đồng bộ thành công {len(results)} nhóm từ Lark Base!")
+            return results
+        except Exception as e:
+            logger.error(f"Lỗi khi đồng bộ toàn bộ Lark Base: {e}", exc_info=True)
+            return []
+
+    async def handle_bitable_record_changed_event(self, event_data: Any) -> None:
+        """
+        Lắng nghe sự kiện Bitable thay đổi (drive.file.bitable_record_changed_v1)
+        tự động cập nhật MongoDB & tải file PDF mới vào WeKnora theo thời gian thực.
+        """
+        try:
+            event = getattr(event_data, "event", None)
+            if not event:
+                return
+            action_list = getattr(event, "action_list", []) or []
+            record_ids = [getattr(a, "record_id", "") for a in action_list if getattr(a, "record_id", "")]
+            if not record_ids:
+                return
+
+            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi, tiến hành đồng bộ: {record_ids}")
+            from services.larkbase import lark_base_service
+            records = await lark_base_service.aget_all_records(use_tenant_token=True)
+            record_map = {r.record_id: r for r in records}
+
+            for rid in record_ids:
+                target_record = record_map.get(rid)
+                if target_record:
+                    await self.sync_group_from_base_record(target_record)
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
+
+
+def _extract_text_field(val: Any) -> str:
+    """Trích xuất chuỗi văn bản sạch từ các kiểu dữ liệu của Lark Base (text, select, array...)."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, list):
+        parts = []
+        for x in val:
+            if isinstance(x, dict):
+                parts.append(str(x.get("text", "") or x.get("name", "") or x.get("id", "")))
+            else:
+                parts.append(str(x))
+        return "".join(parts).strip()
+    if isinstance(val, dict):
+        return str(val.get("text", "") or val.get("name", "") or val.get("id", "")).strip()
+    return str(val).strip()
+
+
+def _extract_labels(val: Any) -> List[str]:
+    """Trích xuất danh sách nhãn (tags) từ chuỗi phân cách phẩy hoặc mảng MultiSelect."""
+    if not val:
+        return []
+    if isinstance(val, str):
+        raw = val.replace(";", ",").replace("\n", ",").split(",")
+        return [r.strip() for r in raw if r.strip()]
+    if isinstance(val, list):
+        labels = []
+        for item in val:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("name") or ""
+                if text:
+                    labels.append(str(text).strip())
+            elif isinstance(item, str):
+                for sub in item.replace(";", ",").replace("\n", ",").split(","):
+                    if sub.strip():
+                        labels.append(sub.strip())
+        return list(dict.fromkeys(labels))
+    if isinstance(val, dict):
+        text = val.get("text") or val.get("name") or ""
+        return [text.strip()] if text.strip() else []
+    return []
+
 
 # Singleton instance
 scope_service = ScopeService()
@@ -217,3 +473,4 @@ __all__ = [
     "ScopeService",
     "scope_service",
 ]
+

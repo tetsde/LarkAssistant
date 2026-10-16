@@ -1,7 +1,10 @@
-from typing import Optional
+import logging
+from typing import Any, Dict, List, Optional, Union
 import httpx
 from fastapi import HTTPException
 from core.config import settings
+
+logger = logging.getLogger(__name__)
 
 class JevService:
     def __init__(self):
@@ -192,6 +195,198 @@ class JevService:
         except Exception:
             return chunks
 
+    async def check_forbidden_query(
+        self,
+        query: str,
+        forbidden_labels: Union[str, List[str], None],
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """
+        [Forbidden Intent Gating] Sử dụng JEV System One để kiểm tra xem câu hỏi của người dùng
+        có vi phạm danh sách nhãn cấm (ví dụ: Ngân sách, Chi phí, Bảng lương, Hợp đồng...) hay không.
+
+        Nếu vi phạm:
+            Bot sẽ IM LẶNG HOÀN TOÀN (Zero-response / Silent Drop), không gọi WeKnora/Gemini.
+
+        Returns:
+            dict: {
+                "is_forbidden": bool,
+                "confidence": float,
+                "choice": str,
+                "forbidden_labels": list[str],
+                "matched_label": Optional[str],
+                "reason": str
+            }
+        """
+        if not query or not query.strip():
+            return {
+                "is_forbidden": False,
+                "confidence": 0.0,
+                "choice": "ALLOWED",
+                "forbidden_labels": [],
+                "matched_label": None,
+                "reason": "empty_query",
+            }
+
+        cleaned_labels: List[str] = []
+        if isinstance(forbidden_labels, str):
+            raw_items = [
+                item.strip()
+                for item in forbidden_labels.replace(";", ",").replace("\n", ",").split(",")
+            ]
+            cleaned_labels = [item for item in raw_items if item]
+        elif isinstance(forbidden_labels, list):
+            cleaned_labels = [
+                str(item).strip() for item in forbidden_labels if str(item).strip()
+            ]
+
+        if not cleaned_labels:
+            return {
+                "is_forbidden": False,
+                "confidence": 0.0,
+                "choice": "ALLOWED",
+                "forbidden_labels": [],
+                "matched_label": None,
+                "reason": "no_forbidden_labels",
+            }
+
+        # Kiểm tra nhanh từ khóa trực tiếp (Fast Keyword Match)
+        query_lower = query.lower()
+        keyword_matched = None
+        for lbl in cleaned_labels:
+            if lbl.lower() in query_lower:
+                keyword_matched = lbl
+                break
+
+        if not self.api_key:
+            if keyword_matched:
+                return {
+                    "is_forbidden": True,
+                    "confidence": 1.0,
+                    "choice": "FORBIDDEN",
+                    "forbidden_labels": cleaned_labels,
+                    "matched_label": keyword_matched,
+                    "reason": "missing_api_key_keyword_match",
+                }
+            return {
+                "is_forbidden": False,
+                "confidence": 0.0,
+                "choice": "ALLOWED",
+                "forbidden_labels": cleaned_labels,
+                "matched_label": None,
+                "reason": "missing_api_key",
+            }
+
+        labels_display = ", ".join(cleaned_labels)
+        payload = {
+            "state": f"Nội dung câu hỏi của người dùng trong nhóm làm việc: \"{query.strip()}\"",
+            "model": "jev-latest",
+            "questions": {
+                "forbidden_intent": {
+                    "type": "choice",
+                    "instructions": (
+                        f"Bạn là chuyên gia an ninh thông tin và bảo mật nội bộ. "
+                        f"Nhiệm vụ của bạn là kiểm tra xem câu hỏi của người dùng có cố tình tra cứu, "
+                        f"hỏi đáp hoặc yêu cầu tiết lộ thông tin liên quan đến bất kỳ chủ đề cấm nào sau đây hay không: [{labels_display}]. "
+                        f"Nếu câu hỏi vi phạm hoặc tìm kiếm thông tin về các chủ đề cấm trên, hãy chọn FORBIDDEN. "
+                        f"Nếu là câu hỏi nghiệp vụ, trao đổi thông thường, kỹ thuật, tiến độ không liên quan đến chủ đề cấm, hãy chọn ALLOWED."
+                    ),
+                    "criteria": {
+                        "FORBIDDEN": f"Câu hỏi liên quan trực tiếp hoặc gián tiếp đến một trong các chủ đề cấm: {labels_display}",
+                        "ALLOWED": "Câu hỏi thông thường, an toàn, không chứa hoặc không đòi hỏi thông tin thuộc các chủ đề cấm."
+                    }
+                }
+            }
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(self.url, headers=self.headers, json=payload)
+                if response.status_code != 200:
+                    logger.warning(f"JEV API returned non-200 ({response.status_code}): {response.text}")
+                    if keyword_matched:
+                        return {
+                            "is_forbidden": True,
+                            "confidence": 1.0,
+                            "choice": "FORBIDDEN",
+                            "forbidden_labels": cleaned_labels,
+                            "matched_label": keyword_matched,
+                            "reason": "api_error_keyword_fallback",
+                        }
+                    return {
+                        "is_forbidden": False,
+                        "confidence": 0.0,
+                        "choice": "ALLOWED",
+                        "forbidden_labels": cleaned_labels,
+                        "matched_label": None,
+                        "reason": f"api_error_{response.status_code}",
+                    }
+
+                data = response.json()
+                action_data = data.get("answers", {}).get("forbidden_intent")
+                if not action_data:
+                    return {
+                        "is_forbidden": bool(keyword_matched),
+                        "confidence": 1.0 if keyword_matched else 0.0,
+                        "choice": "FORBIDDEN" if keyword_matched else "ALLOWED",
+                        "forbidden_labels": cleaned_labels,
+                        "matched_label": keyword_matched,
+                        "reason": "empty_answer_keyword_fallback" if keyword_matched else "empty_answer",
+                    }
+
+                if isinstance(action_data, str):
+                    is_forb = (action_data.upper() == "FORBIDDEN")
+                    return {
+                        "is_forbidden": is_forb or bool(keyword_matched),
+                        "confidence": 1.0 if (is_forb or keyword_matched) else 0.0,
+                        "choice": "FORBIDDEN" if (is_forb or keyword_matched) else "ALLOWED",
+                        "forbidden_labels": cleaned_labels,
+                        "matched_label": keyword_matched,
+                        "reason": "string_response",
+                    }
+
+                choice = action_data.get("choice", "ALLOWED")
+                probabilities = action_data.get("probabilities", {})
+                prob_forbidden = float(probabilities.get("FORBIDDEN", 0.0))
+                prob_allowed = float(probabilities.get("ALLOWED", 0.0))
+
+                is_forbidden = (
+                    (choice == "FORBIDDEN" and prob_forbidden >= 0.65)
+                    or (prob_forbidden >= 0.70)
+                    or bool(keyword_matched)
+                )
+                confidence = prob_forbidden if is_forbidden else prob_allowed
+
+                return {
+                    "is_forbidden": is_forbidden,
+                    "confidence": confidence,
+                    "choice": "FORBIDDEN" if is_forbidden else "ALLOWED",
+                    "forbidden_labels": cleaned_labels,
+                    "matched_label": keyword_matched,
+                    "reason": "jev_classified",
+                }
+
+        except Exception as e:
+            logger.warning(f"JEV check_forbidden_query exception: {e}")
+            if keyword_matched:
+                return {
+                    "is_forbidden": True,
+                    "confidence": 1.0,
+                    "choice": "FORBIDDEN",
+                    "forbidden_labels": cleaned_labels,
+                    "matched_label": keyword_matched,
+                    "reason": "exception_keyword_fallback",
+                }
+            return {
+                "is_forbidden": False,
+                "confidence": 0.0,
+                "choice": "ALLOWED",
+                "forbidden_labels": cleaned_labels,
+                "matched_label": None,
+                "reason": f"exception: {str(e)}",
+            }
+
 
 jev_service = JevService()
+
 

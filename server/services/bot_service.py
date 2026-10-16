@@ -11,6 +11,7 @@ Mục đích:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -25,6 +26,7 @@ from services.chat_service import process_chat_pipeline
 from services.digest_service import digest_service
 from services.draft_service import draft_service
 from services.lark import lark_service
+from services.larkbase import lark_base_service
 from services.scope_service import scope_service
 from utils.digest import get_current_digest_date
 
@@ -401,7 +403,15 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
     print(f"📊 Trạng thái     : {status}")
 
-    if jev_action == "IGNORE":
+    if status == "forbidden_query":
+        chk = result.get("forbidden_check") or {}
+        matched = chk.get("matched_label") or "Chủ đề bị cấm"
+        print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
+
+    elif status == "group_inactive":
+        print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
+
+    elif jev_action == "IGNORE":
         print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
 
     elif jev_action == "MEMORY_ONLY":
@@ -559,6 +569,35 @@ def start_bot_service() -> None:
         print("🚀 Đang kết nối Lark WebSocket Client (Pure WebSocket Mode)...")
         _ws_thread = lark_service.start_ws_client(background=True)
 
+    # 5. Khởi động Lark Base (Bitable) Sync & Subscribe Service
+    if lark_base_service.app_token:
+        try:
+            # A. Đăng ký subscribe sự kiện trên Lark Cloud
+            sub_ok = lark_base_service.subscribe_events()
+            if sub_ok:
+                print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {lark_base_service.app_token})")
+
+            # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base
+            sync_res = lark_base_service.sync_bot_chats()
+            items = sync_res.get("added", []) + sync_res.get("updated", [])
+            if items:
+                print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
+
+            # C. Khởi động worker chạy ngầm quét định kỳ
+            lark_base_service.start_background_sync(interval=30.0)
+
+            # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
+            lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
+
+            # E. Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(scope_service.sync_all_groups_from_base())
+            except RuntimeError:
+                pass
+        except Exception as e:
+            logger.warning(f"Lỗi khởi tạo Lark Base Service trong lifecycle: {e}")
+
     _bot_started = True
     logger.info("✔ Lark Bot Service đã sẵn sàng!")
 
@@ -568,6 +607,13 @@ def stop_bot_service() -> None:
     global _bot_started, _scheduler_stop_event
     logger.info("Đang dừng Lark Bot Service...")
     _scheduler_stop_event.set()
+
+    # Dừng worker đồng bộ nền của Lark Base
+    try:
+        lark_base_service.stop_background_sync()
+    except Exception as e:
+        logger.debug(f"Lỗi khi dừng Lark Base worker: {e}")
+
     _bot_started = False
     logger.info("✔ Đã dừng Lark Bot Service thành công.")
 

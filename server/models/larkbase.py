@@ -58,6 +58,21 @@ class LarkBaseField:
         if not self.type_name:
             self.type_name = BITABLE_FIELD_TYPE_MAP.get(self.type, f"Unknown ({self.type})")
 
+    @classmethod
+    def from_api_dict(cls, data: Dict[str, Any]) -> LarkBaseField:
+        """Parse dictionary trả về từ Lark Bitable Field API thành LarkBaseField."""
+        desc = data.get("description")
+        if isinstance(desc, dict):
+            desc = desc.get("text", "")
+        return cls(
+            field_id=str(data.get("field_id", "")),
+            field_name=str(data.get("field_name", "")),
+            type=int(data.get("type", 1)),
+            is_primary=bool(data.get("is_primary", False)),
+            description=str(desc) if desc else None,
+            property=data.get("property"),
+        )
+
 
 @dataclass
 class LarkBaseRecord:

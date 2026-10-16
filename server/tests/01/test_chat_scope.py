@@ -153,6 +153,58 @@ class TestChatScope(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Đã gỡ bỏ Knowledge Base riêng", msg_admin)
         mock_coll.delete_one.assert_called_once_with({"chat_id": "oc_group"})
 
+    @patch("services.scope_service.get_chat_scopes_collection")
+    @patch("services.scope_service.weknora_service.upload_file")
+    @patch("services.larkbase.lark_base_service.adownload_attachment")
+    async def test_sync_group_from_base_record(self, mock_download, mock_upload, mock_coll_getter):
+        mock_coll = AsyncMock()
+        mock_coll.find_one.return_value = None
+        mock_coll.update_one.return_value = AsyncMock()
+        mock_coll_getter.return_value = mock_coll
+
+        mock_download.return_value = b"mock pdf bytes"
+        mock_upload.return_value = {"success": True, "knowledge_id": "k_id_999"}
+
+        raw_record = {
+            "record_id": "rec_test_1",
+            "fields": {
+                "ID Group": "oc_group_alpha",
+                "Dự án / Nhóm": "Dự án Alpha",
+                "Trạng thái": "Hoạt động",
+                "Nhãn cấm xem": "Ngân sách, Chi phí, Bảng lương",
+                "Documents": [
+                    {
+                        "file_token": "tok_file_1",
+                        "name": "spec.pdf",
+                        "size": 12345,
+                        "type": "application/pdf",
+                    }
+                ],
+            },
+        }
+
+        rec = await self.service.sync_group_from_base_record(raw_record)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.chat_id, "oc_group_alpha")
+        self.assertEqual(rec.chat_name, "Dự án Alpha")
+        self.assertEqual(rec.status, "Hoạt động")
+        self.assertTrue(rec.is_active)
+        self.assertEqual(rec.forbidden_labels, ["Ngân sách", "Chi phí", "Bảng lương"])
+        self.assertEqual(rec.knowledge_ids, ["k_id_999"])
+        self.assertEqual(len(rec.documents), 1)
+        self.assertEqual(rec.documents[0]["knowledge_id"], "k_id_999")
+
+    async def test_sync_group_skip_empty_chat_id(self):
+        raw_record = {
+            "record_id": "rec_empty",
+            "fields": {
+                "Dự án / Nhóm": "Nhóm không có ID Group",
+            },
+        }
+        rec = await self.service.sync_group_from_base_record(raw_record)
+        self.assertIsNone(rec)
+
 
 if __name__ == "__main__":
     unittest.main()
+

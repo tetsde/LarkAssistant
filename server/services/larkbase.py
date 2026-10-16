@@ -13,11 +13,22 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
+import lark_oapi as lark
+from lark_oapi.api.drive.v1 import (
+    P2DriveFileBitableRecordChangedV1,
+    P2DriveFileBitableFieldChangedV1,
+    P2DriveFileEditV1,
+)
+from lark_oapi.api.im.v1 import (
+    P2ImChatMemberBotAddedV1,
+    P2ImChatMemberBotDeletedV1,
+)
 
 # Tự động nạp thư mục gốc của server vào sys.path để import nhất quán
 SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -61,8 +72,8 @@ class LarkBaseService:
     """
     Service giao tiếp và thao tác dữ liệu với Lark Base (Bitable) API:
       - Quản lý xác thực qua User Access Token hoặc Bot Tenant Access Token.
-      - Kiến trúc Dual Transport: Đồng bộ (Sync) cho CLI/Scripts/Lark SDK và 
-        Native Async (Bất đồng bộ) non-blocking cho FastAPI endpoints & lifecycle.
+      - Kiến trúc Tinh gọn: Đồng bộ (Sync) làm lõi xử lý, tích hợp Thread-based Async
+        (asyncio.to_thread) non-blocking cho FastAPI endpoints & lifecycle mà không bị nhân đôi code.
       - Tái sử dụng HTTP connection pool, tự động bóc tách và chuẩn hóa dữ liệu.
     """
 
@@ -111,9 +122,8 @@ class LarkBaseService:
         self._tenant_token: Optional[str] = None
         self._tenant_token_expires_at: float = 0.0
 
-        # Persistent HTTP clients (Connection Pooling)
+        # Persistent HTTP client (Connection Pooling)
         self._sync_client: Optional[httpx.Client] = None
-        self._async_client: Optional[httpx.AsyncClient] = None
 
     # -------------------------------------------------------------------------
     # CLIENT & URL PROPERTIES
@@ -125,13 +135,6 @@ class LarkBaseService:
         if self._sync_client is None or self._sync_client.is_closed:
             self._sync_client = httpx.Client(timeout=self.timeout)
         return self._sync_client
-
-    @property
-    def async_client(self) -> httpx.AsyncClient:
-        """Trả về HTTP async client tái sử dụng connection pool cho FastAPI."""
-        if self._async_client is None or self._async_client.is_closed:
-            self._async_client = httpx.AsyncClient(timeout=self.timeout)
-        return self._async_client
 
     @property
     def _records_url(self) -> str:
@@ -343,26 +346,6 @@ class LarkBaseService:
         )
         return self._parse_api_response(resp, action_name=action_name)
 
-    async def _arequest(
-        self,
-        method: str,
-        url: str,
-        params: Optional[Dict[str, Any]] = None,
-        json_data: Optional[Dict[str, Any]] = None,
-        use_tenant_token: bool = False,
-        action_name: str = "Thao tác",
-    ) -> Dict[str, Any]:
-        """Thực thi HTTP request Bất đồng bộ Native (Async) qua httpx.AsyncClient."""
-        headers = self._get_headers(use_tenant_token=use_tenant_token)
-        resp = await self.async_client.request(
-            method=method,
-            url=url,
-            headers=headers,
-            params=params,
-            json=json_data,
-        )
-        return self._parse_api_response(resp, action_name=action_name)
-
     # =========================================================================
     # 1. SYNCHRONOUS CRUD METHODS (DÙNG CHO BOT DISPATCHER & CLI)
     # =========================================================================
@@ -544,23 +527,28 @@ class LarkBaseService:
         )
         return self._record_from_data(data.get("record", {}), fallback_id=record_id)
 
-    def delete_record(self, record_id: str, use_tenant_token: bool = True) -> bool:
-        """Xóa một bản ghi trong bảng Lark Base theo record_id (Sync)."""
-        if not record_id:
-            return False
+    def download_attachment(self, file_token: str, use_tenant_token: bool = True) -> bytes:
+        """
+        Tải file đính kèm từ cột Attachment của Lark Base qua Drive Media Download API (Sync).
+        Trả về nội dung nhị phân (bytes) của file để sẵn sàng upload sang WeKnora.
+        """
+        if not file_token:
+            raise ValueError("file_token không được để trống khi tải tệp đính kèm.")
 
-        url = f"{self._records_url}/{record_id}"
+        url = f"{self.domain}/open-apis/drive/v1/medias/{file_token}/download"
+        headers = self._get_headers(use_tenant_token=use_tenant_token)
+
         try:
-            data = self._request(
-                method="DELETE",
-                url=url,
-                use_tenant_token=use_tenant_token,
-                action_name="Xóa record",
-            )
-            return bool(data.get("deleted", False))
+            resp = self.sync_client.get(url, headers=headers, timeout=60.0)
+            if resp.status_code == 200:
+                return resp.content
+            else:
+                logger.error(f"Lỗi tải attachment từ Lark (HTTP {resp.status_code}): {resp.text}")
+                raise ValueError(f"Không thể tải file attachment {file_token} (HTTP {resp.status_code})")
         except Exception as e:
-            logger.error(f"Lỗi khi xóa record {record_id}: {e}")
-            return False
+            logger.error(f"Lỗi khi tải attachment {file_token}: {e}")
+            raise
+
 
     def get_bot_chats(self) -> List[Dict[str, Any]]:
         """Lấy danh sách tất cả các nhóm chat mà Bot đang tham gia trên Lark (Sync)."""
@@ -660,198 +648,72 @@ class LarkBaseService:
             logger.warning(f"Không thể gọi API subscribe Base: {e}")
             return False
 
-    # =========================================================================
-    # 2. NATIVE ASYNCHRONOUS CRUD METHODS (DÙNG CHO FASTAPI ROUTES & LIFECYCLE)
-    # =========================================================================
+    def start_background_sync(self, interval: float = 30.0) -> None:
+        """Khởi động daemon thread định kỳ quét và đồng bộ nhóm chat bot vào Lark Base."""
+        if hasattr(self, "_sync_thread") and self._sync_thread and self._sync_thread.is_alive():
+            logger.info("ℹ️ Background sync worker của Lark Base đã đang chạy.")
+            return
 
-    async def aget_records(
-        self,
-        page_size: int = 100,
-        page_token: Optional[str] = None,
-        filter: Optional[str] = None,
-        sort: Optional[str] = None,
-        field_names: Optional[List[str]] = None,
-        view_id: Optional[str] = None,
-        user_id_type: str = "open_id",
-        text_field_as_array: bool = False,
-        use_tenant_token: bool = False,
-    ) -> Dict[str, Any]:
-        """Lấy một trang bản ghi từ bảng Lark Base (Native Async)."""
-        params = self._build_record_params(
-            page_size=page_size,
-            page_token=page_token,
-            filter=filter,
-            sort=sort,
-            field_names=field_names,
-            view_id=view_id,
-            user_id_type=user_id_type,
-            text_field_as_array=text_field_as_array,
-        )
-        return await self._arequest("GET", self._records_url, params=params, use_tenant_token=use_tenant_token, action_name="Đọc records async")
+        self._stop_sync_event = threading.Event()
 
-    async def aget_all_records(
-        self,
-        max_records: Optional[int] = None,
-        filter: Optional[str] = None,
-        sort: Optional[str] = None,
-        field_names: Optional[List[str]] = None,
-        view_id: Optional[str] = None,
-        page_size: int = 100,
-        use_tenant_token: bool = False,
-    ) -> List[LarkBaseRecord]:
-        """Tự động duyệt phân trang để lấy toàn bộ bản ghi trong bảng (Native Async)."""
-        all_records: List[LarkBaseRecord] = []
-        page_token: Optional[str] = None
-
-        while True:
-            fetch_size = page_size
-            if max_records is not None:
-                remaining = max_records - len(all_records)
-                if remaining <= 0:
+        def _worker():
+            logger.info(f"🚀 Lark Base Background Sync Worker đã khởi động (chu kỳ {interval}s).")
+            while not self._stop_sync_event.is_set():
+                time.sleep(interval)
+                if self._stop_sync_event.is_set():
                     break
-                fetch_size = min(page_size, remaining)
+                try:
+                    res = self.sync_bot_chats()
+                    items = res.get("added", []) + res.get("updated", [])
+                    if items:
+                        print("\n" + "=" * 65)
+                        print("🔄 [LARK BASE SYNC] TỰ ĐỘNG ĐỒNG BỘ NHÓM CHAT MỚI VÀO BASE:")
+                        print("-" * 65)
+                        for item in items:
+                            print(f"✔ Đã lưu vào Base: {item.get('name')} ({item.get('chat_id')}) -> Record: {item.get('record_id')}")
+                        print("=" * 65 + "\n")
+                except Exception as e:
+                    logger.debug(f"Lỗi khi tự động sync nhóm chat vào Base: {e}")
 
-            data = await self.aget_records(
-                page_size=fetch_size,
-                page_token=page_token,
-                filter=filter,
-                sort=sort,
-                field_names=field_names,
-                view_id=view_id,
-                use_tenant_token=use_tenant_token,
-            )
+        self._sync_thread = threading.Thread(target=_worker, daemon=True, name="LarkBaseSyncWorker")
+        self._sync_thread.start()
 
-            items = data.get("items", []) or []
-            for item in items:
-                all_records.append(self._record_from_data(item))
-                if max_records is not None and len(all_records) >= max_records:
-                    break
+    def stop_background_sync(self) -> None:
+        """Dừng an toàn background sync worker."""
+        if hasattr(self, "_stop_sync_event") and self._stop_sync_event:
+            self._stop_sync_event.set()
+        logger.info("🛑 Đã dừng Lark Base Background Sync Worker.")
 
-            if not data.get("has_more") or not data.get("page_token"):
-                break
-            page_token = data.get("page_token")
+    # =========================================================================
+    # 2. ASYNCHRONOUS WRAPPER METHODS (DÙNG CHO FASTAPI ROUTES & LIFECYCLE)
+    # =========================================================================
 
-        return all_records
+    async def aget_records(self, *args, **kwargs) -> Dict[str, Any]:
+        """Lấy một trang bản ghi từ bảng Lark Base (Async qua to_thread)."""
+        return await asyncio.to_thread(self.get_records, *args, **kwargs)
 
-    async def aget_fields(self, view_id: Optional[str] = None, use_tenant_token: bool = False) -> List[LarkBaseField]:
-        """Đọc danh sách và thông tin schema của các cột (Fields) trong bảng (Native Async)."""
-        params = {"view_id": view_id} if view_id else None
-        data = await self._arequest("GET", self._fields_url, params=params, use_tenant_token=use_tenant_token, action_name="Đọc fields async")
-        items = data.get("items", []) or []
-        return [LarkBaseField.from_api_dict(item) for item in items]
+    async def aget_all_records(self, *args, **kwargs) -> List[LarkBaseRecord]:
+        """Tự động duyệt phân trang lấy toàn bộ bản ghi (Async qua to_thread)."""
+        return await asyncio.to_thread(self.get_all_records, *args, **kwargs)
 
-    async def aread_all(
-        self,
-        max_records: Optional[int] = None,
-        filter: Optional[str] = None,
-        fetch_fields: bool = True,
-        use_tenant_token: bool = False,
-    ) -> LarkBaseQueryResult:
-        """Đọc toàn diện bảng Base: lấy toàn bộ records kèm cấu trúc schema cột (Native Async)."""
-        fields: List[LarkBaseField] = []
-        if fetch_fields:
-            try:
-                fields = await self.aget_fields(use_tenant_token=use_tenant_token)
-            except Exception as e:
-                logger.warning(f"Không thể đọc danh sách field schema async: {e}")
+    async def aget_fields(self, *args, **kwargs) -> List[LarkBaseField]:
+        """Đọc danh sách schema các cột trong bảng (Async qua to_thread)."""
+        return await asyncio.to_thread(self.get_fields, *args, **kwargs)
 
-        records = await self.aget_all_records(
-            max_records=max_records,
-            filter=filter,
-            use_tenant_token=use_tenant_token,
-        )
+    async def aread_all(self, *args, **kwargs) -> LarkBaseQueryResult:
+        """Đọc toàn diện bảng Base: lấy toàn bộ records kèm schema (Async qua to_thread)."""
+        return await asyncio.to_thread(self.read_all, *args, **kwargs)
 
-        return LarkBaseQueryResult(
-            app_token=self.app_token,
-            table_id=self.table_id,
-            total_records=len(records),
-            records=records,
-            fields=fields,
-        )
+    async def afind_record_by_chat_id(self, *args, **kwargs) -> Optional[LarkBaseRecord]:
+        """Tìm kiếm bản ghi theo chat_id (Async qua to_thread)."""
+        return await asyncio.to_thread(self.find_record_by_chat_id, *args, **kwargs)
 
-    async def afind_record_by_chat_id(self, chat_id: str, use_tenant_token: bool = True) -> Optional[LarkBaseRecord]:
-        """Tìm kiếm bản ghi đầu tiên có ID Group trùng khớp với chat_id (Native Async)."""
-        if not chat_id:
-            return None
-        clean_chat_id = str(chat_id).strip()
+    async def adownload_attachment(self, *args, **kwargs) -> bytes:
+        """Tải file đính kèm từ cột Attachment của Lark Base (Async qua to_thread)."""
+        return await asyncio.to_thread(self.download_attachment, *args, **kwargs)
 
-        try:
-            records = await self.aget_all_records(
-                filter=f'CurrentValue.[{DEFAULT_COL_CHAT_ID}] = "{clean_chat_id}"',
-                use_tenant_token=use_tenant_token,
-            )
-            if records:
-                return records[0]
-        except Exception as e:
-            logger.debug(f"Filter trực tiếp async theo cột '{DEFAULT_COL_CHAT_ID}' thất bại: {e}")
+   
 
-        try:
-            all_records = await self.aget_all_records(use_tenant_token=use_tenant_token)
-            for r in all_records:
-                raw_val = r.clean_fields.get(DEFAULT_COL_CHAT_ID) or r.fields.get(DEFAULT_COL_CHAT_ID)
-                if str(raw_val or "").strip() == clean_chat_id:
-                    return r
-        except Exception as e:
-            logger.error(f"Lỗi khi tìm async bản ghi theo chat_id '{clean_chat_id}': {e}")
-
-        return None
-
-    async def acreate_record(
-        self,
-        fields: Dict[str, Any],
-        user_id_type: str = "open_id",
-        use_tenant_token: bool = True,
-    ) -> LarkBaseRecord:
-        """Tạo mới một bản ghi trong bảng Lark Base (Native Async)."""
-        data = await self._arequest(
-            method="POST",
-            url=self._records_url,
-            params={"user_id_type": user_id_type},
-            json_data={"fields": fields},
-            use_tenant_token=use_tenant_token,
-            action_name="Tạo record async",
-        )
-        return self._record_from_data(data.get("record", {}))
-
-    async def aupdate_record(
-        self,
-        record_id: str,
-        fields: Dict[str, Any],
-        user_id_type: str = "open_id",
-        use_tenant_token: bool = True,
-    ) -> LarkBaseRecord:
-        """Cập nhật một bản ghi trong bảng Lark Base (Native Async)."""
-        if not record_id:
-            raise ValueError("record_id không được để trống khi cập nhật.")
-
-        url = f"{self._records_url}/{record_id}"
-        data = await self._arequest(
-            method="PUT",
-            url=url,
-            params={"user_id_type": user_id_type},
-            json_data={"fields": fields},
-            use_tenant_token=use_tenant_token,
-            action_name="Cập nhật record async",
-        )
-        return self._record_from_data(data.get("record", {}), fallback_id=record_id)
-
-    async def adelete_record(self, record_id: str, use_tenant_token: bool = True) -> bool:
-        """Xóa một bản ghi trong bảng Lark Base theo record_id (Native Async)."""
-        if not record_id:
-            return False
-
-        url = f"{self._records_url}/{record_id}"
-        try:
-            data = await self._arequest(
-                method="DELETE",
-                url=url,
-                use_tenant_token=use_tenant_token,
-                action_name="Xóa record async",
-            )
-            return bool(data.get("deleted", False))
-        except Exception as e:
-            logger.error(f"Lỗi khi xóa record async {record_id}: {e}")
-            return False
 
 
 # =============================================================================
@@ -866,15 +728,6 @@ def find_lark_base_record_by_chat_id(chat_id: str) -> Optional[LarkBaseRecord]:
     """Hàm tiện ích tra cứu nhanh bản ghi theo chat_id."""
     return lark_base_service.find_record_by_chat_id(chat_id)
 
-
-def create_lark_base_record(fields: Dict[str, Any]) -> LarkBaseRecord:
-    """Hàm tiện ích tạo nhanh bản ghi trong Lark Base."""
-    return lark_base_service.create_record(fields)
-
-
-def update_lark_base_record(record_id: str, fields: Dict[str, Any]) -> LarkBaseRecord:
-    """Hàm tiện ích cập nhật nhanh bản ghi trong Lark Base."""
-    return lark_base_service.update_record(record_id, fields)
 
 
 def read_lark_base_records(
@@ -895,22 +748,9 @@ def read_lark_base_records(
     return [r.to_dict(clean=clean) for r in records]
 
 
-async def aread_lark_base_records(
-    app_token: Optional[str] = None,
-    table_id: Optional[str] = None,
-    user_access_token: Optional[str] = None,
-    clean: bool = True,
-    max_records: Optional[int] = None,
-    filter: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Hàm bất đồng bộ tương ứng của read_lark_base_records (Native Async)."""
-    svc = LarkBaseService(
-        app_token=app_token,
-        table_id=table_id,
-        user_access_token=user_access_token,
-    )
-    records = await svc.aget_all_records(max_records=max_records, filter=filter)
-    return [r.to_dict(clean=clean) for r in records]
+async def aread_lark_base_records(*args, **kwargs) -> List[Dict[str, Any]]:
+    """Hàm bất đồng bộ tương ứng của read_lark_base_records (bọc qua asyncio.to_thread)."""
+    return await asyncio.to_thread(read_lark_base_records, *args, **kwargs)
 
 
 # =============================================================================
@@ -919,17 +759,10 @@ async def aread_lark_base_records(
 
 def start_bitable_ws_listener(service: LarkBaseService) -> None:
     """
-    Khởi động WebSocket Client ĐỘC LẬP dành riêng cho Lark Base (Bitable).
-    Chỉ đăng ký và xử lý các sự kiện thay đổi dữ liệu của Base:
-      - drive.file.bitable_record_changed_v1
-      - drive.file.bitable_field_changed_v1
-    TUYỆT ĐỐI KHÔNG can thiệp hoặc lắng nghe tin nhắn chat IM của Bot.
+    Khởi động tiến trình Đồng bộ và Lắng nghe sự kiện Lark Base (Bitable) Real-time:
+      - Tự động đồng bộ toàn bộ nhóm chat của Bot vào bảng Lark Base.
+      - Lắng nghe sự kiện thay đổi dữ liệu bảng (Bitable) và sự kiện Bot tham gia nhóm theo thời gian thực.
     """
-    import lark_oapi as lark
-    from lark_oapi.api.drive.v1 import (
-        P2DriveFileBitableRecordChangedV1,
-        P2DriveFileBitableFieldChangedV1,
-    )
 
     app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
     app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
@@ -937,14 +770,29 @@ def start_bitable_ws_listener(service: LarkBaseService) -> None:
     verification_token = getattr(settings, "LARK_VERIFICATION_TOKEN", "") or os.getenv("LARK_VERIFICATION_TOKEN", "")
 
     print("\n" + "=" * 70)
-    print("⚡ HILARK - LẮNG NGHE SỰ KIỆN LARK BASE REAL-TIME (WEBSOCKET ĐỘC LẬP)")
+    print("⚡ HILARK - ĐỒNG BỘ VÀ LẮNG NGHE SỰ KIỆN LARK BASE REAL-TIME")
     print("=" * 70)
     print(f"App ID     : {app_id}")
     print(f"Domain     : {service.domain}")
     print(f"Base Token : {service.app_token}")
     print(f"Table ID   : {service.table_id}")
 
-    # Đọc trước schema các trường để hiển thị tên cột thay vì field_id khó hiểu
+    # 1. ĐỒNG BỘ NHÓM CHAT BOT VÀO LARK BASE
+    print("\n🔄 Đang quét và đồng bộ nhóm chat của Bot vào Base...")
+    try:
+        res = service.sync_bot_chats()
+        total_chats = res.get("total_chats", 0)
+        added = res.get("added", [])
+        updated = res.get("updated", [])
+        print(f"✔ Tổng số nhóm chat tìm thấy : {total_chats}")
+        print(f"✔ Đã thêm mới vào Base       : {len(added)}")
+        print(f"✔ Đã cập nhật vào dòng trống : {len(updated)}")
+        for item in added + updated:
+            print(f"   • {item.get('name')}: {item.get('chat_id')} -> Record: {item.get('record_id')}")
+    except Exception as e:
+        logger.warning(f"⚠️  Không thể đồng bộ nhóm chat vào Base: {e}")
+
+    # Bước 2: Đọc trước schema các trường để hiển thị tên cột thay vì field_id khó hiểu
     field_name_map: Dict[str, str] = {}
     try:
         fields = service.get_fields(use_tenant_token=True)
@@ -999,11 +847,53 @@ def start_bitable_ws_listener(service: LarkBaseService) -> None:
         except Exception as e:
             logger.error(f"Lỗi khi xử lý sự kiện bitable_field_changed: {e}")
 
-    # Build EventDispatcher CHỈ CHO BASE (Tuyệt đối không có IM message)
+    def on_bot_added(data: P2ImChatMemberBotAddedV1) -> None:
+        try:
+            event = getattr(data, "event", None)
+            chat_id = getattr(event, "chat_id", "") if event else ""
+            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            print("\n" + "=" * 65)
+            print("🎉 [LARK BOT] PHÁT HIỆN BOT VỪA ĐƯỢC THÊM VÀO NHÓM CHAT MỚI!")
+            print("-" * 65)
+            print(f"🕒 Thời gian : {now_str}")
+            print(f"💬 Tên nhóm  : {chat_name}")
+            print(f"🆔 Chat ID   : {chat_id}")
+            print("🔄 Đang tự động đồng bộ nhóm mới vào Lark Base...")
+
+            res = service.sync_bot_chats()
+            items = res.get("added", []) + res.get("updated", [])
+            if items:
+                for item in items:
+                    print(f"✔ Đã cập nhật vào Base: {item.get('name')} -> Record: {item.get('record_id')}")
+            else:
+                print(f"ℹ️ Nhóm đã tồn tại trong Lark Base.")
+            print("=" * 65 + "\n")
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý sự kiện bot_added: {e}")
+
+    def on_bot_deleted(data: P2ImChatMemberBotDeletedV1) -> None:
+        try:
+            event = getattr(data, "event", None)
+            chat_id = getattr(event, "chat_id", "") if event else ""
+            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
+            print(f"\nℹ️ [LARK BOT] Bot vừa bị gỡ khỏi nhóm: '{chat_name}' ({chat_id})\n")
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý sự kiện bot_deleted: {e}")
+
+    def on_file_edit(data: P2DriveFileEditV1) -> None:
+        # Sự kiện cấp Drive đi kèm khi sửa bảng Base, bỏ qua vì đã xử lý chi tiết ở on_record_changed
+        pass
+
+    # Build EventDispatcher cho Base và Sự kiện thành viên Bot (Không can thiệp vào IM text chat)
     dispatcher = (
         lark.EventDispatcherHandler.builder(encrypt_key, verification_token)
         .register_p2_drive_file_bitable_record_changed_v1(on_record_changed)
         .register_p2_drive_file_bitable_field_changed_v1(on_field_changed)
+        .register_p2_drive_file_edit_v1(on_file_edit)
+        .register_p2_im_chat_member_bot_added_v1(on_bot_added)
+        .register_p2_im_chat_member_bot_deleted_v1(on_bot_deleted)
         .build()
     )
 
@@ -1022,15 +912,41 @@ def start_bitable_ws_listener(service: LarkBaseService) -> None:
     else:
         print("ℹ️ Đang kết nối trực tiếp với Lark WebSocket...")
 
+    # Khởi động thread chạy ngầm định kỳ quét và đồng bộ nhóm chat bot (kể cả khi không có webhook event)
+    stop_sync_event = threading.Event()
+
+    def _background_sync_worker():
+        while not stop_sync_event.is_set():
+            time.sleep(15)
+            if stop_sync_event.is_set():
+                break
+            try:
+                res = service.sync_bot_chats()
+                items = res.get("added", []) + res.get("updated", [])
+                if items:
+                    print("\n" + "=" * 65)
+                    print("🔄 [TỰ ĐỘNG ĐỒNG BỘ] PHÁT HIỆN VÀ ĐỒNG BỘ NHÓM CHAT MỚI VÀO BASE:")
+                    print("-" * 65)
+                    for item in items:
+                        print(f"✔ Đã lưu vào Base: {item.get('name')} ({item.get('chat_id')}) -> Record: {item.get('record_id')}")
+                    print("=" * 65 + "\n")
+            except Exception as e:
+                logger.debug(f"Lỗi khi tự động sync nền: {e}")
+
+    sync_thread = threading.Thread(target=_background_sync_worker, daemon=True, name="HiLark-SyncWorker")
+    sync_thread.start()
+
     print("👉 Hãy thử mở Lark Base trên trình duyệt, thêm dòng hoặc sửa 1 ô bất kỳ...")
     print("-" * 70)
 
     try:
         ws_client.start()
     except (KeyboardInterrupt, SystemExit):
+        stop_sync_event.set()
         print("\n🛑 Đã dừng lắng nghe sự kiện Lark Base an toàn.")
         os._exit(0)
     except Exception as e:
+        stop_sync_event.set()
         logger.error(f"Lỗi khi chạy WebSocket client: {e}")
         os._exit(1)
 
@@ -1086,31 +1002,10 @@ def main():
     parser.add_argument(
         "--listen",
         action="store_true",
-        help="Lắng nghe sự kiện thay đổi dữ liệu bảng theo thời gian thực (Lark WebSocket)",
-    )
-    parser.add_argument(
-        "--sync",
-        action="store_true",
-        help="Tự động quét và đồng bộ toàn bộ các nhóm chat của Bot vào bảng Lark Base",
+        help="Đồng bộ toàn bộ nhóm chat bot vào Lark Base và lắng nghe sự kiện thay đổi dữ liệu thời gian thực (WebSocket)",
     )
 
     args = parser.parse_args()
-
-    if args.sync:
-        service = LarkBaseService(app_token=args.app_token, table_id=args.table_id)
-        print("\n" + "=" * 70)
-        print("🔄 HILARK - TỰ ĐỘNG ĐỒNG BỘ NHÓM CHAT BOT VÀO LARK BASE")
-        print("=" * 70)
-        print(f"Base Token : {service.app_token}")
-        print(f"Table ID   : {service.table_id}")
-        res = service.sync_bot_chats()
-        print(f"✔ Tổng số nhóm chat tìm thấy : {res.get('total_chats', 0)}")
-        print(f"✔ Đã thêm mới vào Base       : {len(res.get('added', []))}")
-        print(f"✔ Đã cập nhật vào dòng trống : {len(res.get('updated', []))}")
-        for item in res.get("added", []) + res.get("updated", []):
-            print(f"   • {item.get('name')}: {item.get('chat_id')} -> Record: {item.get('record_id')}")
-        print("=" * 70 + "\n")
-        return
 
     if args.listen:
         service = LarkBaseService(app_token=args.app_token, table_id=args.table_id)

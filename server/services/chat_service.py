@@ -259,6 +259,76 @@ async def process_chat_pipeline(
         except Exception as e:
             logger.warning(f"Lỗi khi lưu Staging từ process_chat_pipeline: {e}")
 
+    # ── Tra cứu Cấu hình & Phân quyền Nhóm từ Lark Base / MongoDB ──
+    scope_record = None
+    if chat_id:
+        try:
+            scope_record = await scope_service.get_scope_by_chat_id(chat_id)
+        except Exception as e:
+            logger.warning(f"Lỗi khi tra cứu scope_record cho chat_id={chat_id}: {e}")
+
+    # ── [CHỐT CHẶN 1: KIỂM TRA TRẠNG THÁI NHÓM] (Active vs Inactive) ──
+    if scope_record and not scope_record.is_active:
+        logger.info(
+            f"🛑 [GROUP INACTIVE] Nhóm '{scope_record.chat_name}' ({chat_id}) đang ở trạng thái '{scope_record.status}'. Bỏ qua hoàn toàn tin nhắn."
+        )
+        return {
+            "status": "group_inactive",
+            "jev_action": "IGNORE",
+            "jev_confidence": 1.0,
+            "query": clean_query,
+            "answer": None,
+            "message": f"Nhóm chat đang ở trạng thái '{scope_record.status}'. Bot tạm dừng phản hồi.",
+        }
+
+    # ── [CHỐT CHẶN 2: KIỂM TRA NHÃN CẤM XEM BẰNG JEV] (Forbidden Intent Gating) ──
+    if scope_record and scope_record.forbidden_labels:
+        try:
+            forbidden_res = await jev_service.check_forbidden_query(
+                query=clean_query,
+                forbidden_labels=scope_record.forbidden_labels,
+            )
+            if forbidden_res.get("is_forbidden"):
+                matched_label = forbidden_res.get("matched_label") or "Chủ đề bảo mật bị cấm"
+                conf = forbidden_res.get("confidence", 1.0)
+                logger.warning(
+                    f"⛔ [FORBIDDEN DROP] Thành viên '{user_name}' ({sender}) trong nhóm '{scope_record.chat_name}' "
+                    f"hỏi vào chủ đề cấm '{matched_label}' (Độ tin cậy: {conf:.2f}). Kích hoạt Zero-response."
+                )
+                print(
+                    f"⛔ [FORBIDDEN DROP] Thành viên '{user_name}' hỏi vào chủ đề cấm '{matched_label}'. "
+                    f"Bot IM LẶNG HOÀN TOÀN (Zero-response)."
+                )
+
+                # Cảnh báo âm thầm tới DM của Chủ nhân nếu tin nhắn xuất phát từ group
+                if channel == "lark_group":
+                    alert_text = (
+                        f"⚠️ [CẢNH BÁO BẢO MẬT: TRUY CẬP TRÁI PHÉP]\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👥 Nhóm chat : {scope_record.chat_name} ({chat_id})\n"
+                        f"👤 Thành viên: {user_name or 'N/A'} ({sender or 'N/A'})\n"
+                        f"💬 Câu hỏi   : \"{clean_query}\"\n"
+                        f"🚫 Nhãn cấm  : {matched_label}\n"
+                        f"🛡️ Phản hồi  : Bot đã IM LẶNG HOÀN TOÀN, không phát ngôn vào nhóm và không gọi WeKnora.\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    try:
+                        await lark_service.send_bot_dm_to_owner(alert_text)
+                    except Exception as e:
+                        logger.debug(f"Không thể gửi alert DM cho chủ nhân: {e}")
+
+                return {
+                    "status": "forbidden_query",
+                    "jev_action": "IGNORE",
+                    "jev_confidence": conf,
+                    "query": clean_query,
+                    "answer": None,
+                    "message": f"Câu hỏi vi phạm nhãn cấm xem '{matched_label}'. Đã kích hoạt cơ chế Zero-response.",
+                    "forbidden_check": forbidden_res,
+                }
+        except Exception as e:
+            logger.error(f"Lỗi khi kiểm tra forbidden_query qua JEV: {e}")
+
     # ── Bước 2: JEV Routing - Phân loại xem tin nhắn có đáng xử lý hay không ──
     try:
         jev_result = await jev_service.classify_message(clean_query)
@@ -325,14 +395,22 @@ async def process_chat_pipeline(
 
     # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat
     chunks = []
-    scope_record = None
     try:
-        scope_record = await scope_service.get_scope_by_chat_id(chat_id) if chat_id else None
+        if not scope_record and chat_id:
+            scope_record = await scope_service.get_scope_by_chat_id(chat_id)
+
         target_kb = scope_record.dataset_id if scope_record else None
         target_kbs = [target_kb] if target_kb else None
+
+        # ── [CHỐT CHẶN 3: RAG ISOLATION] Chỉ tìm kiếm trong đúng các file Documents của nhóm ──
+        target_knowledge_ids = (
+            scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
+        )
+
         chunks = await weknora_service.retrieve(
             query=clean_query,
             knowledge_base_ids=target_kbs,
+            knowledge_ids=target_knowledge_ids,
             match_count=retrieve_count,
         )
     except Exception as e:
