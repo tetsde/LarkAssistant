@@ -491,6 +491,7 @@ class ContextComposer:
         entity_map: Optional[Dict[str, Any]] = None,
         extra_system_instruction: Optional[str] = None,
         auto_align: bool = True,
+        scope_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Đóng gói toàn diện WeKnora Retriever + Claims Data thành 1 Context hoàn chỉnh.
@@ -501,6 +502,7 @@ class ContextComposer:
           - query: Câu hỏi người dùng (dùng để neo ngữ cảnh bổ sung)
           - entity_map: Bảng tra cứu thực thể và aliases
           - auto_align: Tự động so khớp chéo thực thể (Cách 1) loại bỏ claims không liên quan
+          - scope_context: Bối cảnh nhóm chat & danh mục file docs từ Lark Base / MongoDB
         """
         # 1. Chuẩn hóa dữ liệu
         chunks = self.normalize_retriever_data(retriever_data)
@@ -519,10 +521,40 @@ class ContextComposer:
         docs_text = self.format_retriever_section(chunks)
         claims_text = self.format_claims_section(claims)
 
-        # 3. Tạo context text
+        scope_lines: List[str] = []
+        if scope_context:
+            chat_name = scope_context.get("chat_name") or ""
+            project_name = scope_context.get("project_name") or ""
+            doc_list = scope_context.get("documents") or []
+
+            scope_lines.append("--- PHẦN 0: BỐI CẢNH DỰ ÁN & HỒ SƠ TÀI LIỆU CỦA NHÓM (GROUP SCOPE PROFILE) ---")
+            if chat_name:
+                scope_lines.append(f"• Tên nhóm chat       : {chat_name}")
+            if project_name:
+                scope_lines.append(f"• Dự án phụ trách     : {project_name}")
+            if doc_list:
+                scope_lines.append("• Danh mục tài liệu đính kèm của nhóm:")
+                for d in doc_list:
+                    d_name = d if isinstance(d, str) else d.get("name", "")
+                    if d_name:
+                        scope_lines.append(f"  - 📄 {d_name}")
+            scope_lines.append("• Chỉ dẫn suy luận bối cảnh ngầm định:")
+            scope_lines.append(
+                f"  Mọi câu hỏi chung về 'dự án', 'tài liệu', 'kế hoạch', 'mục tiêu' từ thành viên trong nhóm này "
+                f"MẶC ĐỊNH là đang hỏi về dự án '{project_name or chat_name}' và các tài liệu đính kèm trên. "
+                f"TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng 'em hỏi dự án nào'!"
+            )
+
+        # 4. Tạo context text
         context_parts: List[str] = [
             "=== BỘ BỐI CẢNH TRI THỨC TỔNG HỢP (HIERARCHICAL KNOWLEDGE CONTEXT) ===",
             "",
+        ]
+
+        if scope_lines:
+            context_parts.extend(["\n".join(scope_lines), ""])
+
+        context_parts.extend([
             "--- PHẦN 1: TÀI LIỆU DỰ ÁN & VĂN BẢN (WEKNORA RETRIEVER) ---",
             docs_text,
             "",
@@ -531,7 +563,7 @@ class ContextComposer:
             "",
             "--- PHẦN 3: NGUYÊN TẮC XỬ LÝ DỮ LIỆU ---",
             self.conflict_rules,
-        ]
+        ])
 
         if extra_system_instruction:
             context_parts.extend(["", "--- CHỈ DẪN BỔ SUNG ---", extra_system_instruction.strip()])

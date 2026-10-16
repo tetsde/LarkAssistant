@@ -36,6 +36,9 @@ class ScopeService:
             admins.add(settings.LARK_USER_OPEN_ID.strip())
         if settings.DIGEST_APPROVER_ID:
             admins.add(settings.DIGEST_APPROVER_ID.strip())
+        from services.lark import lark_service
+        if lark_service.owner_open_id:
+            admins.add(lark_service.owner_open_id.strip())
         extra_admins = os.getenv("admin_open_ids", "")
         if extra_admins:
             for aid in extra_admins.split(","):

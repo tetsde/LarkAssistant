@@ -459,6 +459,7 @@ Hãy trích xuất:
         target_approver = (
             approver_open_id
             or settings.DIGEST_APPROVER_ID
+            or lark_service.owner_open_id
             or lark_service.known_user_open_id
         )
 
@@ -508,7 +509,7 @@ Hãy trích xuất:
 
         try:
             if target_approver:
-                res = await lark_service.send_bot_dm_to_owner(msg_text)
+                res = await lark_service.send_bot_dm_to_owner(msg_text, target_open_id=target_approver)
                 if not res.get("success"):
                     logger.error(
                         f"❌ [DIGEST APPROVAL] Thất bại khi gửi tin duyệt tới approver: "

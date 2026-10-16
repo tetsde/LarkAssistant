@@ -180,7 +180,11 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     # -------------------------------------------------------------------------
     # 3. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
     # -------------------------------------------------------------------------
-    is_owner = bool(msg.is_self or msg.sender_id == lark_service.known_user_open_id)
+    is_owner = bool(
+        msg.is_self
+        or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
+        or (lark_service.known_user_open_id and msg.sender_id == lark_service.known_user_open_id)
+    )
     if is_owner and msg.chat_type == "p2p":
         # Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot trong DM 1-1 (Duyệt digest, Gửi/Sửa/Bỏ nháp...)
         clean_text = msg.text.strip()

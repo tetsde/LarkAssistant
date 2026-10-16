@@ -9,7 +9,8 @@ Vị trí: server/models/chat_scope.py
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field
 from models.memory import get_vietnam_now_iso
 
@@ -42,6 +43,29 @@ class ChatScopeRecord(BaseModel):
             return True
         st = self.status.strip().lower()
         return st in ("hoạt động", "active", "enable", "enabled", "true", "1")
+
+    def get_document_names(self) -> List[str]:
+        """Trả về danh sách tên file tài liệu đính kèm của nhóm."""
+        names = []
+        for doc in self.documents:
+            if isinstance(doc, dict) and doc.get("name"):
+                names.append(doc["name"].strip())
+        return names
+
+    def get_project_name(self) -> str:
+        """
+        Trích xuất tên dự án đại diện của nhóm chat:
+        Ưu tiên: project_tag -> Tên suy luận từ file đính kèm (docs) -> chat_name
+        """
+        if self.project_tag and self.project_tag.strip():
+            return self.project_tag.strip()
+        doc_names = self.get_document_names()
+        if doc_names:
+            first_doc = doc_names[0]
+            clean = re.sub(r"\.(pdf|docx?|xlsx?|md|txt)$", "", first_doc, flags=re.IGNORECASE)
+            clean = re.sub(r"^(project_charter_|tai_lieu_|ke_hoach_|doc_)", "", clean, flags=re.IGNORECASE)
+            return clean.replace("_", " ").title()
+        return self.chat_name or "Dự án nội bộ"
 
     def to_dict(self) -> Dict[str, Any]:
         d = self.model_dump()

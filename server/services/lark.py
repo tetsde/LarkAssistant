@@ -213,9 +213,10 @@ class LarkService:
                 return fallback_profile
 
             data = resp.data
+            open_id = getattr(data, "open_id", "") or self.known_user_open_id
             profile = {
                 "name": getattr(data, "name", "") or "User",
-                "open_id": getattr(data, "open_id", "") or self.known_user_open_id,
+                "open_id": open_id,
                 "union_id": getattr(data, "union_id", ""),
                 "avatar_url": getattr(data, "avatar_url", ""),
                 "email": getattr(data, "email", "") or getattr(data, "enterprise_email", ""),
@@ -223,12 +224,27 @@ class LarkService:
                 "tenant_key": getattr(data, "tenant_key", ""),
             }
             self._current_user_profile = profile
+            if open_id:
+                self.known_user_open_id = open_id
             logger.info(f"👤 Đang hoạt động dưới danh tính User: {profile['name']} (open_id: {profile['open_id']})")
             return profile
         except Exception as e:
             logger.error(f"Exception khi lấy user info: {e}", exc_info=True)
             self._current_user_profile = fallback_profile
             return fallback_profile
+
+    @property
+    def owner_open_id(self) -> str:
+        """
+        Tự động trích xuất và trả về Open ID của chủ nhân từ User Access Token.
+        Không cần phải cấu hình thủ công user_open_id hay digest_approver_id trong .env.
+        """
+        if self.known_user_open_id:
+            return self.known_user_open_id
+        if self._current_user_profile and self._current_user_profile.get("open_id"):
+            return self._current_user_profile["open_id"]
+        prof = self.get_current_user()
+        return prof.get("open_id") or ""
 
     def check_user_access_token(self, force_ping: bool = False) -> Any:
         """
@@ -471,6 +487,18 @@ class LarkService:
                     logger.info(f"✅ Đã tự động tạo dòng mới trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
                 else:
                     logger.info(f"ℹ️ Nhóm '{chat_name}' ({chat_id}) đã tồn tại trong Lark Base (Record: {base_record.record_id})")
+
+                # Đồng bộ tức thì nhóm chat mới vào MongoDB (chat_scopes)
+                if base_record:
+                    from services.scope_service import scope_service
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(scope_service.sync_group_from_base_record(base_record))
+                    except RuntimeError:
+                        try:
+                            asyncio.run(scope_service.sync_group_from_base_record(base_record))
+                        except Exception as sync_err:
+                            logger.warning(f"Không thể sync ngay sang MongoDB: {sync_err}")
             except Exception as e:
                 logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {e}", exc_info=True)
 
@@ -628,18 +656,19 @@ class LarkService:
     # 5. GỬI & REPLY TIN NHẮN (100% USER ACCESS TOKEN - GỠ BỎ HOÀN TOÀN BOT CHAT)
     # -------------------------------------------------------------------------
 
-    async def send_bot_dm_to_owner(self, text: str) -> Dict[str, Any]:
+    async def send_bot_dm_to_owner(self, text: str, target_open_id: Optional[str] = None) -> Dict[str, Any]:
         """
         ĐÂY LÀ ĐOẠN LOGIC DUY NHẤT TRONG HỆ THỐNG MÀ BOT GỬI TIN NHẮN DƯỚI DANH NGHĨA BOT:
         Bot chỉ có quyền gửi tin nhắn riêng (DM 1-1) tới CHÍNH ĐÍCH DANH CHỦ SỞ HỮU ACCESS_TOKEN.
-        Đích đến được hardcode cố định tới open_id của chủ nhân, không thể gửi vào nhóm hay người khác.
+        Đích đến tự động trích xuất từ user_access_token (hoặc nhận target_open_id truyền vào).
         """
         if not text:
             return {"success": False, "error": "text không được rỗng"}
 
-        owner_open_id = self.known_user_open_id
-        if self._current_user_profile and self._current_user_profile.get("open_id"):
-            owner_open_id = self._current_user_profile.get("open_id")
+        owner_open_id = target_open_id or self.owner_open_id
+        if not owner_open_id:
+            logger.error("❌ [LARK BOT DM] Không tìm thấy open_id của chủ nhân (từ token hoặc cấu hình) để gửi tin.")
+            return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         request = (

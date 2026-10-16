@@ -115,6 +115,10 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
    - NGƯỜI HỎI LÀ {user_name}: Bạn đang nói chuyện trực tiếp với {user_name}. TUYỆT ĐỐI KHÔNG nhầm lẫn hay gán ghép vai trò, nhiệm vụ, kỹ năng hay lộ trình của nhân sự khác (như Trí, Nguyên...) vào {user_name}.
    - NGUYÊN TẮC THẨM QUYỀN: Nếu bối cảnh có mục 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT], đây CHỈ LÀ ĐỀ XUẤT CÁ NHÂN từ nhân sự (nguyện vọng xin làm lead, xin chuyển đổi vai trò), CHƯA PHẢI QUYẾT ĐỊNH CỦA BẠN. Hãy trả lời rõ ràng: "Đề xuất này của em anh đã ghi nhận nhưng cần cân nhắc thêm trước khi chốt nhé".
    - TUYỆT ĐỐI KHÔNG sinh thẻ trích dẫn nguồn lộ liễu (như [Cập nhật hội thoại: ...] hay [Tài liệu: ...]) trong câu trả lời.
+
+7. NGUYÊN TẮC SUY LUẬN BỐI CẢNH DỰ ÁN & TÀI LIỆU CỦA NHÓM (SCOPE DEFAULTING):
+   - Bạn đang trả lời trong một nhóm chat dự án cụ thể. Nếu thành viên hỏi các câu hỏi chung chung về dự án (ví dụ: "cho em xin thông tin dự án", "dự án này làm gì", "kế hoạch dự án ra sao", "mục tiêu dự án"), bạn MẶC ĐỊNH hiểu rằng thành viên đang hỏi về dự án và các tài liệu đính kèm của nhóm này (được nêu rõ trong 'PHẦN 0: BỐI CẢNH DỰ ÁN & HỒ SƠ TÀI LIỆU CỦA NHÓM' hoặc trong tài liệu WeKnora).
+   - TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng những câu như: "em cần thông tin về dự án nào", "anh chưa rõ em hỏi dự án nào". Hãy chủ động cung cấp ngay bức tranh tổng quan/chi tiết của dự án thuộc nhóm này cho người hỏi!
 """
 
 
@@ -430,8 +434,29 @@ async def process_chat_pipeline(
             scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
         )
 
+        # ── [TỐI ƯU TRUY XUẤT: QUERY SCOPE AUGMENTATION] ──
+        # Nếu thành viên hỏi câu chung chung về dự án / tài liệu / kế hoạch,
+        # tự động gắn thêm tên dự án của nhóm vào query tìm kiếm WeKnora để định vị chính xác chunk tài liệu
+        retrieval_query = clean_query
+        proj_context_name = None
+        if scope_record:
+            proj_context_name = (
+                scope_record.get_project_name()
+                if hasattr(scope_record, "get_project_name")
+                else (scope_record.project_tag or scope_record.chat_name or "")
+            )
+            if proj_context_name and proj_context_name.lower() not in clean_query.lower():
+                lower_q = clean_query.lower()
+                vague_keywords = [
+                    "dự án", "project", "kế hoạch", "charter", "thông tin",
+                    "triển khai", "mục tiêu", "tài liệu", "tiến độ", "overview", "tổng quan"
+                ]
+                if any(w in lower_q for w in vague_keywords):
+                    retrieval_query = f"{clean_query} {proj_context_name}"
+                    logger.info(f"🔍 [RAG Query Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
+
         chunks = await weknora_service.retrieve(
-            query=clean_query,
+            query=retrieval_query,
             knowledge_base_ids=target_kbs,
             knowledge_ids=target_knowledge_ids,
             match_count=retrieve_count,
@@ -442,9 +467,7 @@ async def process_chat_pipeline(
     # [RAG GATE RELEVANCE FILTERING] Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất)
     if chunks and len(chunks) > 1:
         try:
-            proj_ctx = None
-            if scope_record:
-                proj_ctx = scope_record.project_tag or scope_record.dataset_name or scope_record.chat_name
+            proj_ctx = proj_context_name or (scope_record.dataset_name if scope_record else None) or (scope_record.chat_name if scope_record else None)
             chunks = await jev_service.filter_chunks_relevance(
                 clean_query,
                 chunks,
@@ -488,12 +511,27 @@ async def process_chat_pipeline(
         jev_action = "DRAFT_PENDING_APPROVAL"
 
     # 3. Hợp nhất ngữ cảnh với ContextComposer
+    scope_ctx_data = None
+    if scope_record:
+        doc_names = (
+            scope_record.get_document_names()
+            if hasattr(scope_record, "get_document_names")
+            else [d.get("name") for d in (scope_record.documents or []) if isinstance(d, dict) and d.get("name")]
+        )
+        proj_name = proj_context_name or (scope_record.chat_name if scope_record else "Dự án nội bộ")
+        scope_ctx_data = {
+            "chat_name": scope_record.chat_name,
+            "project_name": proj_name,
+            "documents": doc_names,
+        }
+
     composer = ContextComposer()
     composed = composer.compose(
         retriever_data=clean_chunks if clean_chunks else None,
         claims_data=clean_claims if clean_claims else None,
         query=clean_query,
         auto_align=True,
+        scope_context=scope_ctx_data,
     )
 
     # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh)
