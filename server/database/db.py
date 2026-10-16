@@ -220,10 +220,33 @@ async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
 # THAO TÁC CRUD FACTS / CLAIMS
 # ==========================================
 
-async def get_all_facts(entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Lấy danh sách tất cả facts trong MongoDB, tùy chọn lọc theo entity_id."""
+async def get_all_facts(
+    entity_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Lấy danh sách facts trong MongoDB:
+      - Tùy chọn lọc theo entity_id.
+      - Tùy chọn lọc theo scope (chat_id, project_tag hoặc scope_type=='global').
+    """
     col = get_claims_collection()
-    query = {"entity_id": entity_id} if entity_id else {}
+    query: Dict[str, Any] = {}
+    if entity_id:
+        query["entity_id"] = entity_id
+
+    if chat_id or project_tag:
+        scope_or: List[Dict[str, Any]] = [{"scope_type": "global"}]
+        if chat_id:
+            scope_or.append({"chat_id": chat_id})
+        if project_tag:
+            scope_or.append({"project_tag": project_tag})
+
+        if query:
+            query = {"$and": [query, {"$or": scope_or}]}
+        else:
+            query = {"$or": scope_or}
+
     cursor = col.find(query)
     facts = []
     async for doc in cursor:
@@ -253,12 +276,17 @@ async def supersede_facts_by_ids(fact_ids: List[str]) -> int:
 # LƯU KẾT QUẢ TRÍCH XUẤT VÀO MONGODB
 # ==========================================
 
-async def save_extraction_to_mongo(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+async def save_extraction_to_mongo(
+    extraction_result: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+    scope_type: str = "chat",
+) -> Dict[str, Any]:
     """
     Lưu kết quả trích xuất vào MongoDB (Memories & Claims):
-      1. Upsert entities vào collection memories.
+      1. Upsert entities vào collection memories (gán scope nếu chưa có).
       2. Đánh dấu superseded cho facts cũ trong collection claims.
-      3. Insert/Upsert facts mới vào collection claims.
+      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope.
     """
     new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
     new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
@@ -266,6 +294,13 @@ async def save_extraction_to_mongo(extraction_result: Dict[str, Any]) -> Dict[st
 
     # 1. Upsert entities
     for ent in new_entities:
+        if isinstance(ent, dict):
+            if chat_id and not ent.get("chat_id"):
+                ent["chat_id"] = chat_id
+            if project_tag and not ent.get("project_tag"):
+                ent["project_tag"] = project_tag
+            if not ent.get("scope_type"):
+                ent["scope_type"] = scope_type
         await upsert_entity(ent)
 
     # 2. Cập nhật superseded facts
@@ -277,7 +312,7 @@ async def save_extraction_to_mongo(extraction_result: Dict[str, Any]) -> Dict[st
     if superseded_ids:
         await supersede_facts_by_ids(superseded_ids)
 
-    # 3. Thêm facts mới vào collection claims
+    # 3. Thêm facts mới vào collection claims gắn scope
     claims_col = get_claims_collection()
     for fact in new_facts:
         fid = fact.get("id")
@@ -285,6 +320,12 @@ async def save_extraction_to_mongo(extraction_result: Dict[str, Any]) -> Dict[st
             continue
         fact_copy = dict(fact)
         fact_copy.pop("_id", None)
+        if chat_id and not fact_copy.get("chat_id"):
+            fact_copy["chat_id"] = chat_id
+        if project_tag and not fact_copy.get("project_tag"):
+            fact_copy["project_tag"] = project_tag
+        if not fact_copy.get("scope_type"):
+            fact_copy["scope_type"] = scope_type
         await claims_col.update_one(
             {"id": fid},
             {"$set": fact_copy},
@@ -341,10 +382,33 @@ def get_all_entities_sync(workspace_id: str = "default") -> List[Dict[str, Any]]
     return [_clean_mongo_doc(doc) for doc in col.find(query)]
 
 
-def get_all_facts_sync(entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Lấy toàn bộ facts từ MongoDB (sync)."""
+def get_all_facts_sync(
+    entity_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Lấy toàn bộ facts từ MongoDB (sync):
+      - Tùy chọn lọc theo entity_id.
+      - Tùy chọn lọc theo scope (chat_id, project_tag hoặc scope_type=='global').
+    """
     col = get_sync_claims_collection()
-    query = {"entity_id": entity_id} if entity_id else {}
+    query: Dict[str, Any] = {}
+    if entity_id:
+        query["entity_id"] = entity_id
+
+    if chat_id or project_tag:
+        scope_or: List[Dict[str, Any]] = [{"scope_type": "global"}]
+        if chat_id:
+            scope_or.append({"chat_id": chat_id})
+        if project_tag:
+            scope_or.append({"project_tag": project_tag})
+
+        if query:
+            query = {"$and": [query, {"$or": scope_or}]}
+        else:
+            query = {"$or": scope_or}
+
     return [_clean_mongo_doc(doc) for doc in col.find(query)]
 
 
@@ -396,13 +460,30 @@ def supersede_facts_by_ids_sync(fact_ids: List[str]) -> int:
     return result.modified_count
 
 
-def save_extraction_to_mongo_sync(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
-    """Lưu kết quả trích xuất vào MongoDB đồng bộ (sync)."""
+def save_extraction_to_mongo_sync(
+    extraction_result: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+    scope_type: str = "chat",
+) -> Dict[str, Any]:
+    """
+    Lưu kết quả trích xuất vào MongoDB đồng bộ (sync):
+      1. Upsert entities vào collection memories (gán scope nếu chưa có).
+      2. Đánh dấu superseded cho facts cũ trong collection claims.
+      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope.
+    """
     new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
     new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
     superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
 
     for ent in new_entities:
+        if isinstance(ent, dict):
+            if chat_id and not ent.get("chat_id"):
+                ent["chat_id"] = chat_id
+            if project_tag and not ent.get("project_tag"):
+                ent["project_tag"] = project_tag
+            if not ent.get("scope_type"):
+                ent["scope_type"] = scope_type
         upsert_entity_sync(ent)
 
     superseded_ids = [
@@ -420,6 +501,12 @@ def save_extraction_to_mongo_sync(extraction_result: Dict[str, Any]) -> Dict[str
             continue
         fact_copy = dict(fact)
         fact_copy.pop("_id", None)
+        if chat_id and not fact_copy.get("chat_id"):
+            fact_copy["chat_id"] = chat_id
+        if project_tag and not fact_copy.get("project_tag"):
+            fact_copy["project_tag"] = project_tag
+        if not fact_copy.get("scope_type"):
+            fact_copy["scope_type"] = scope_type
         claims_col.update_one(
             {"id": fid},
             {"$set": fact_copy},

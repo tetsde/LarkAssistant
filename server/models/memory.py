@@ -68,6 +68,9 @@ class Entity(BaseModel):
     description: str = Field(default="")
     attributes: Dict[str, Any] = Field(default_factory=dict)
     status: EntityStatus = Field(default=EntityStatus.ACTIVE)
+    chat_id: Optional[str] = Field(default=None, description="Lark chat_id nơi thực thể được khởi tạo/đề cập")
+    project_tag: Optional[str] = Field(default=None, description="Tên/Mã dự án liên kết")
+    scope_type: str = Field(default="chat", description="'chat' (nội bộ nhóm), 'project' (dự án), 'global' (toàn công ty)")
     source_message_ids: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)
@@ -92,6 +95,9 @@ class Fact(BaseModel):
       - property: Business attribute (deadline, assignee, status, budget, scope...)
       - value: Concise value (e.g. "30/10", "Nam", "200M VND")
       - status: current, proposed, superseded, conflicted, uncertain
+      - chat_id: Lark chat_id (e.g. oc_xxx) nơi phát sinh mệnh đề
+      - project_tag: Tên/Mã dự án của nhóm chat
+      - scope_type: 'chat' | 'project' | 'global'
       - asserted_by: Metadata về người phát ngôn (user_id, user_name, role='owner'|'member')
       - source: Evidence (snippet text or metadata dict)
       - replaces: ID of the old fact this one replaces (or None)
@@ -101,6 +107,9 @@ class Fact(BaseModel):
     property: str = Field(..., description="Business attribute: deadline, assignee, status, budget, scope")
     value: Any = Field(..., description="Concise value")
     status: FactStatus = Field(default=FactStatus.CURRENT)
+    chat_id: Optional[str] = Field(default=None, description="Lark chat_id (oc_xxx) nơi phát ngôn mệnh đề")
+    project_tag: Optional[str] = Field(default=None, description="Tên/Mã dự án liên kết")
+    scope_type: str = Field(default="chat", description="'chat' (nội bộ nhóm), 'project' (dự án), 'global' (toàn công ty)")
     asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = Field(
         default=None,
         description="Người khẳng định fact và thẩm quyền phát ngôn ('owner' vs 'member')"

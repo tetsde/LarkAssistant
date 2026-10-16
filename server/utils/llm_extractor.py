@@ -1253,11 +1253,15 @@ def load_stored_entities() -> List[Dict[str, Any]]:
         return []
 
 
-def load_stored_facts() -> List[Dict[str, Any]]:
-    """Tải danh sách facts từ MongoDB (Single Source of Truth)."""
+def load_stored_facts(
+    entity_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Tải danh sách facts từ MongoDB (Single Source of Truth) có lọc theo scope."""
     try:
         from database.db import get_all_facts_sync
-        return get_all_facts_sync()
+        return get_all_facts_sync(entity_id=entity_id, chat_id=chat_id, project_tag=project_tag)
     except Exception as e:
         logger.warning(f"Không thể nạp facts từ MongoDB: {e}")
         return []
@@ -1307,11 +1311,21 @@ def clear_stores() -> None:
 
 
 
-def apply_and_save_extraction(extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+def apply_and_save_extraction(
+    extraction_result: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+    scope_type: str = "chat",
+) -> Dict[str, Any]:
     """
     Cập nhật kết quả trích xuất trực tiếp vào MongoDB (Single Source of Truth).
     Ủy quyền cho save_extraction_to_mongo_sync.
     """
     from database.db import save_extraction_to_mongo_sync
-    return save_extraction_to_mongo_sync(extraction_result)
+    return save_extraction_to_mongo_sync(
+        extraction_result,
+        chat_id=chat_id,
+        project_tag=project_tag,
+        scope_type=scope_type,
+    )
 

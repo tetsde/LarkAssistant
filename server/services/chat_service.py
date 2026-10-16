@@ -130,13 +130,16 @@ async def process_memory_extraction(
     query_text: str,
     sender: str = "User",
     asserted_by: Optional[Dict[str, Any]] = None,
+    chat_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+    scope_type: str = "chat",
 ) -> Dict[str, Any]:
-    """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB."""
+    """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope."""
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
     try:
         existing_entities = await get_mongo_entities()
-        existing_facts = await get_mongo_facts()
+        existing_facts = await get_mongo_facts(chat_id=chat_id, project_tag=project_tag)
     except Exception as e:
         logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
         existing_entities = []
@@ -154,7 +157,12 @@ async def process_memory_extraction(
         existing_facts=existing_facts,
     )
 
-    mongo_saved = await save_extraction_to_mongo(extraction_result)
+    mongo_saved = await save_extraction_to_mongo(
+        extraction_result,
+        chat_id=chat_id,
+        project_tag=project_tag,
+        scope_type=scope_type,
+    )
 
     total_entities = mongo_saved.get("total_stored_entities", 0)
     total_facts = mongo_saved.get("total_stored_facts", 0)
