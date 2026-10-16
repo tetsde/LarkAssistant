@@ -18,22 +18,7 @@ from typing import Any, Dict, Optional
 
 VIETNAM_TZ = timezone(timedelta(hours=7))
 
-
-def decode_jwt_token_payload(token: str) -> Optional[Dict[str, Any]]:
-    """Giải mã phần payload của JWT token mà không cần thư viện ngoài."""
-    if not token or "." not in token:
-        return None
-    try:
-        parts = token.split(".")
-        if len(parts) >= 2:
-            payload = parts[1]
-            padded = payload + "=" * (-len(payload) % 4)
-            data_bytes = base64.urlsafe_b64decode(padded)
-            return json.loads(data_bytes.decode("utf-8", errors="ignore"))
-    except Exception:
-        pass
-    return None
-
+from utils.lark_token import decode_jwt_token_payload
 
 def inspect_bitable_token(token: str) -> Dict[str, Any]:
     """

@@ -68,11 +68,6 @@ def get_claims_collection() -> AsyncIOMotorCollection:
     db = get_async_db()
     return db[settings.MONGO_CLAIMS_COLLECTION]
 
-def get_permissson_collection() -> AsyncIOMotorCollection:
-    """Collection lưu trữ Phân quyền dữ liệu (Permissions)."""
-    db = get_async_db()
-    return db[settings.MONGO_PERMISSION_COLLECTION]
-
 def get_staging_collection() -> AsyncIOMotorCollection:
     """Collection lưu trữ Vùng đệm tin nhắn trong ngày (Conversation Staging)."""
     db = get_async_db()

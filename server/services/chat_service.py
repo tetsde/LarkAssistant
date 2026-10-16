@@ -558,7 +558,7 @@ async def process_chat_pipeline(
     if jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
         dm_notice = None
 
-        owner_open_id = lark_service.get_current_user().get("open_id") or lark_service.known_user_open_id
+        owner_open_id = lark_service.owner_open_id
         if not owner_open_id:
             raise RuntimeError("Thiếu LARK_USER_OPEN_ID để lưu draft chờ duyệt.")
 

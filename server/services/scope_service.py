@@ -24,6 +24,25 @@ from services.weknora import weknora_service
 
 logger = logging.getLogger(__name__)
 
+# Ánh xạ tên trường và Field ID của Lark Base (Bitable)
+BASE_FIELD_MAP: Dict[str, List[str]] = {
+    "chat_id": ["fldMa7EqDd", "ID Group", "chat_id"],
+    "chat_name": ["fldQh1mqwW", "Dự án / Nhóm", "chat_name"],
+    "status": ["fldbk4Upv9", "Trạng thái", "status"],
+    "forbidden_labels": ["fldsexGPII", "Nhãn cấm xem", "forbidden_labels"],
+    "allowed_labels": ["fldAYjcC5W", "Nhãn cho phép xem", "allowed_labels"],
+    "documents": ["fldHpn8M87", "Documents", "documents"],
+    "dataset_id": ["fldKBId", "Knowledge Base ID", "dataset_id"],
+}
+
+
+def _get_base_field(raw_fields: Dict[str, Any], key: str) -> Any:
+    """Tra cứu giá trị trường từ raw_fields theo danh sách tên/ID tương thích."""
+    for candidate in BASE_FIELD_MAP.get(key, []):
+        if candidate in raw_fields:
+            return raw_fields[candidate]
+    return raw_fields.get(key)
+
 
 class ScopeService:
     def __init__(self):
@@ -235,46 +254,20 @@ class ScopeService:
             rec_id = record.get("record_id", "")
 
         # 1. Trích xuất chat_id
-        chat_id_val = (
-            raw_fields.get("fldMa7EqDd")
-            or raw_fields.get("ID Group")
-            or raw_fields.get("chat_id")
-        )
-        chat_id = _extract_text_field(chat_id_val)
+        chat_id = _extract_text_field(_get_base_field(raw_fields, "chat_id"))
         if not chat_id:
             logger.debug(f"[ChatScope Sync] Bản ghi {rec_id} không có ID Group, bỏ qua.")
             return None
 
         # 2. Trích xuất tên nhóm / dự án
-        chat_name_val = (
-            raw_fields.get("fldQh1mqwW")
-            or raw_fields.get("Dự án / Nhóm")
-            or raw_fields.get("chat_name")
-        )
-        chat_name = _extract_text_field(chat_name_val) or f"Nhóm {chat_id}"
+        chat_name = _extract_text_field(_get_base_field(raw_fields, "chat_name")) or f"Nhóm {chat_id}"
 
         # 3. Trích xuất trạng thái
-        status_val = (
-            raw_fields.get("fldbk4Upv9")
-            or raw_fields.get("Trạng thái")
-            or raw_fields.get("status")
-        )
-        status = _extract_text_field(status_val) or "Hoạt động"
+        status = _extract_text_field(_get_base_field(raw_fields, "status")) or "Hoạt động"
 
         # 4. Trích xuất nhãn cấm xem & nhãn được phép xem
-        forbidden_val = (
-            raw_fields.get("fldsexGPII")
-            or raw_fields.get("Nhãn cấm xem")
-            or raw_fields.get("forbidden_labels")
-        )
-        forbidden_labels = _extract_labels(forbidden_val)
-
-        allowed_val = (
-            raw_fields.get("fldAYjcC5W")
-            or raw_fields.get("Nhãn được phép xem")
-            or raw_fields.get("allowed_labels")
-        )
-        allowed_labels = _extract_labels(allowed_val)
+        forbidden_labels = _extract_labels(_get_base_field(raw_fields, "forbidden_labels"))
+        allowed_labels = _extract_labels(_get_base_field(raw_fields, "allowed_labels"))
 
         # 5. Xác định Dataset ID
         effective_dataset_id = target_dataset_id or settings.WEKNORA_DATASET_ID or ""
@@ -282,11 +275,7 @@ class ScopeService:
             effective_dataset_id = effective_dataset_id.split(",")[0].strip()
 
         # 6. Đọc tài liệu đính kèm Documents
-        docs_val = (
-            raw_fields.get("fldHpn8M87")
-            or raw_fields.get("Documents")
-            or raw_fields.get("documents")
-        )
+        docs_val = _get_base_field(raw_fields, "documents")
         raw_doc_list = docs_val if isinstance(docs_val, list) else []
 
         existing_scope = await self.get_scope_by_chat_id(chat_id)
@@ -425,48 +414,21 @@ class ScopeService:
             logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
 
 
+from utils.larkbase.cleaner import clean_field_value
+from utils.rule_engine import parse_labels
+
+
 def _extract_text_field(val: Any) -> str:
-    """Trích xuất chuỗi văn bản sạch từ các kiểu dữ liệu của Lark Base (text, select, array...)."""
-    if val is None:
+    """Trích xuất chuỗi văn bản sạch từ các kiểu dữ liệu của Lark Base."""
+    cleaned = clean_field_value(val)
+    if cleaned is None:
         return ""
-    if isinstance(val, str):
-        return val.strip()
-    if isinstance(val, list):
-        parts = []
-        for x in val:
-            if isinstance(x, dict):
-                parts.append(str(x.get("text", "") or x.get("name", "") or x.get("id", "")))
-            else:
-                parts.append(str(x))
-        return "".join(parts).strip()
-    if isinstance(val, dict):
-        return str(val.get("text", "") or val.get("name", "") or val.get("id", "")).strip()
-    return str(val).strip()
+    if isinstance(cleaned, list):
+        return ", ".join(str(x) for x in cleaned if x)
+    return str(cleaned).strip()
 
 
-def _extract_labels(val: Any) -> List[str]:
-    """Trích xuất danh sách nhãn (tags) từ chuỗi phân cách phẩy hoặc mảng MultiSelect."""
-    if not val:
-        return []
-    if isinstance(val, str):
-        raw = val.replace(";", ",").replace("\n", ",").split(",")
-        return [r.strip() for r in raw if r.strip()]
-    if isinstance(val, list):
-        labels = []
-        for item in val:
-            if isinstance(item, dict):
-                text = item.get("text") or item.get("name") or ""
-                if text:
-                    labels.append(str(text).strip())
-            elif isinstance(item, str):
-                for sub in item.replace(";", ",").replace("\n", ",").split(","):
-                    if sub.strip():
-                        labels.append(sub.strip())
-        return list(dict.fromkeys(labels))
-    if isinstance(val, dict):
-        text = val.get("text") or val.get("name") or ""
-        return [text.strip()] if text.strip() else []
-    return []
+_extract_labels = parse_labels
 
 
 # Singleton instance

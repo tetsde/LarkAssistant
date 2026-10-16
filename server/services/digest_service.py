@@ -460,7 +460,6 @@ Hãy trích xuất:
             approver_open_id
             or settings.DIGEST_APPROVER_ID
             or lark_service.owner_open_id
-            or lark_service.known_user_open_id
         )
 
         summary_lines = [

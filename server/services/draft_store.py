@@ -9,59 +9,8 @@ from typing import Any, Dict, Optional
 from pymongo import ReturnDocument
 
 from database.db import get_draft_logs_collection
+from models.chat import PendingDraft
 from models.memory import get_vietnam_now_iso
-
-
-@dataclass
-class PendingDraft:
-    owner_id: str
-    message_id: str
-    chat_id: str
-    query: str
-    draft_answer: str
-    user_name: str
-    responder_name: Optional[str] = None
-    id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    status: str = "pending"
-    approved_content: Optional[str] = None
-    last_error: Optional[str] = None
-    created_at: str = field(default_factory=get_vietnam_now_iso)
-    updated_at: str = field(default_factory=get_vietnam_now_iso)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "owner_id": self.owner_id,
-            "message_id": self.message_id,
-            "chat_id": self.chat_id,
-            "query": self.query,
-            "draft_answer": self.draft_answer,
-            "user_name": self.user_name,
-            "responder_name": self.responder_name,
-            "status": self.status,
-            "approved_content": self.approved_content,
-            "last_error": self.last_error,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
-
-    @classmethod
-    def from_document(cls, document: Dict[str, Any]) -> PendingDraft:
-        return cls(
-            id=document.get("id") or str(document.get("_id", uuid.uuid4().hex)),
-            owner_id=document["owner_id"],
-            message_id=document.get("message_id", ""),
-            chat_id=document.get("chat_id", ""),
-            query=document.get("query", ""),
-            draft_answer=document.get("draft_answer", ""),
-            user_name=document.get("user_name", "bạn"),
-            responder_name=document.get("responder_name"),
-            status=document.get("status", "pending"),
-            approved_content=document.get("approved_content"),
-            last_error=document.get("last_error"),
-            created_at=document.get("created_at") or get_vietnam_now_iso(),
-            updated_at=document.get("updated_at") or get_vietnam_now_iso(),
-        )
 
 
 class DraftStore:

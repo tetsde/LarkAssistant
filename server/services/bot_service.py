@@ -183,7 +183,6 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     is_owner = bool(
         msg.is_self
         or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
-        or (lark_service.known_user_open_id and msg.sender_id == lark_service.known_user_open_id)
     )
     if is_owner and msg.chat_type == "p2p":
         # Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot trong DM 1-1 (Duyệt digest, Gửi/Sửa/Bỏ nháp...)

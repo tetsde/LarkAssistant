@@ -244,7 +244,7 @@ class LarkService:
         if self._current_user_profile and self._current_user_profile.get("open_id"):
             return self._current_user_profile["open_id"]
         prof = self.get_current_user()
-        return prof.get("open_id") or ""
+        return prof.get("open_id") or getattr(settings, "LARK_USER_OPEN_ID", "") or ""
 
     def check_user_access_token(self, force_ping: bool = False) -> Any:
         """

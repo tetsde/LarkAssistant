@@ -44,3 +44,49 @@ class ApproveDraftRequest(BaseModel):
     action: str = Field(..., description="Hành động: 'send' (Gửi), 'edit' (Sửa), 'discard' (Bỏ)")
     content: Optional[str] = Field(default=None, description="Nội dung gửi (nếu action='send' hoặc sau khi sửa nếu action='edit')")
 
+
+import uuid
+from typing import Any, Dict
+from models.memory import get_vietnam_now_iso
+
+
+class PendingDraft(BaseModel):
+    """
+    Bản nháp câu trả lời chờ chủ nhân (owner) phê duyệt trước khi gửi về nhóm chat Lark.
+    Lưu trong MongoDB collection 'draft_logs'.
+    """
+    owner_id: str = Field(..., description="Lark open_id của chủ nhân duyệt draft")
+    message_id: str = Field(..., description="Message ID của tin nhắn gốc cần reply")
+    chat_id: str = Field(..., description="ID cuộc trò chuyện trên Lark")
+    query: str = Field(..., description="Nội dung câu hỏi của người dùng")
+    draft_answer: str = Field(..., description="Nội dung câu trả lời do AI soạn sẵn")
+    user_name: str = Field(default="bạn", description="Tên hiển thị của người hỏi")
+    responder_name: Optional[str] = Field(default=None, description="Tên người phản hồi danh nghĩa")
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    status: str = Field(default="pending", description="Trạng thái: pending, sent, discarded, failed")
+    approved_content: Optional[str] = Field(default=None, description="Nội dung thực tế sau khi duyệt/sửa")
+    last_error: Optional[str] = Field(default=None, description="Lỗi gần nhất nếu gửi thất bại")
+    created_at: str = Field(default_factory=get_vietnam_now_iso)
+    updated_at: str = Field(default_factory=get_vietnam_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+    @classmethod
+    def from_document(cls, document: Dict[str, Any]) -> "PendingDraft":
+        return cls(
+            id=document.get("id") or str(document.get("_id", uuid.uuid4().hex)),
+            owner_id=document["owner_id"],
+            message_id=document.get("message_id", ""),
+            chat_id=document.get("chat_id", ""),
+            query=document.get("query", ""),
+            draft_answer=document.get("draft_answer", ""),
+            user_name=document.get("user_name", "bạn"),
+            responder_name=document.get("responder_name"),
+            status=document.get("status", "pending"),
+            approved_content=document.get("approved_content"),
+            last_error=document.get("last_error"),
+            created_at=document.get("created_at") or get_vietnam_now_iso(),
+            updated_at=document.get("updated_at") or get_vietnam_now_iso(),
+        )
+

@@ -112,38 +112,41 @@ class TokenCheckResult:
 # 1. HÀM BÓC TÁCH JWT EXPIRATION (OFFLINE / FAST CHECK)
 # =============================================================================
 
+def decode_jwt_token_payload(token: str) -> Optional[Dict[str, Any]]:
+    """Giải mã phần payload của JWT token mà không cần thư viện ngoài."""
+    if not token or not isinstance(token, str) or "." not in token:
+        return None
+    try:
+        parts = token.strip().split(".")
+        if len(parts) >= 2:
+            payload_b64 = parts[1]
+            padding = "=" * ((4 - len(payload_b64) % 4) % 4)
+            data_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
+            return json.loads(data_bytes.decode("utf-8", errors="ignore"))
+    except Exception as e:
+        logger.debug(f"Không thể parse JWT payload: {e}")
+    return None
+
+
 def parse_jwt_expiration(token: str) -> Tuple[bool, Optional[datetime], Optional[int], Optional[Dict[str, Any]]]:
     """
     Bóc tách payload JWT an toàn để kiểm tra thời hạn (exp timestamp).
     Trả về: (is_expired, expires_at_dt, remaining_seconds, payload_dict)
     """
-    if not token or not isinstance(token, str):
+    payload = decode_jwt_token_payload(token)
+    if not payload:
         return True, None, None, None
 
-    token = token.strip()
-    parts = token.split(".")
-    if len(parts) < 2:
-        return True, None, None, None
+    exp_timestamp = payload.get("exp")
+    if exp_timestamp is None:
+        return False, None, None, payload
 
-    try:
-        payload_b64 = parts[1]
-        padding = "=" * ((4 - len(payload_b64) % 4) % 4)
-        decoded_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
-        payload = json.loads(decoded_bytes.decode("utf-8"))
+    now_timestamp = int(time.time())
+    remaining = int(exp_timestamp) - now_timestamp
+    is_expired = remaining <= 0
 
-        exp_timestamp = payload.get("exp")
-        if exp_timestamp is None:
-            return False, None, None, payload
-
-        now_timestamp = int(time.time())
-        remaining = int(exp_timestamp) - now_timestamp
-        is_expired = remaining <= 0
-
-        exp_dt = datetime.fromtimestamp(exp_timestamp, tz=VIETNAM_TZ)
-        return is_expired, exp_dt, remaining, payload
-    except Exception as e:
-        logger.debug(f"Không thể parse JWT payload: {e}")
-        return True, None, None, None
+    exp_dt = datetime.fromtimestamp(exp_timestamp, tz=VIETNAM_TZ)
+    return is_expired, exp_dt, remaining, payload
 
 
 # =============================================================================

@@ -170,7 +170,7 @@ class TestMemoryWeKnoraGating(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "auto_replied")
         self.assertEqual(result["answer"], "Tiến độ hiện tại đang đạt 80%.")
         mock_retrieve.assert_awaited_once_with(
-            query="Tiến độ dự án hiện tại ra sao?",
+            query="Tiến độ dự án hiện tại ra sao? Nhóm Dự Án",
             knowledge_base_ids=["kb_project_1"],
             knowledge_ids=["file_pdf_123", "file_docx_456"],
             match_count=5,

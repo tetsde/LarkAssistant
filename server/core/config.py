@@ -12,8 +12,12 @@ class Settings:
     BASE_URL: str = os.getenv("base_url", "http://localhost/api/v1")
     JEV_API_KEY: str = os.getenv("jev_api", "")
     WEKNORA_DATASET_ID: str = os.getenv("dataset_id", "")
-    GEMINI_API_KEY: str = os.getenv("gemini_api", "")
-    gemini_api: str = os.getenv("gemini_api", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api", "")
+
+    # Backward compatibility alias
+    @property
+    def gemini_api(self) -> str:
+        return self.GEMINI_API_KEY
 
     # MongoDB Settings
     MONGO_URL: str = os.getenv("mongo_url", "mongodb://localhost:27017")
@@ -40,7 +44,6 @@ class Settings:
     LARK_BASE_APP_TOKEN: str = os.getenv("LARK_BASE_APP_TOKEN") or os.getenv("app_token", "")
     LARK_BASE_TABLE_ID: str = os.getenv("LARK_BASE_TABLE_ID") or os.getenv("table_id", "")
 
-
     # Daily Digest & Approval Settings
     DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")
     DIGEST_APPROVER_ID: str = os.getenv("digest_approver_id", "")
@@ -50,8 +53,17 @@ class Settings:
     ENABLE_DM_POLLING: bool = (os.getenv("ENABLE_DM_POLLING") or os.getenv("enable_dm_polling", "false")).lower() in ("true", "1", "yes")
     DM_POLL_INTERVAL: float = float(os.getenv("DM_POLL_INTERVAL") or os.getenv("dm_poll_interval", "60.0"))
 
+    # RAG Search Thresholds
     vector_threshold: float = float(os.getenv("vector_threshold") or os.getenv("VECTOR_THRESHOLD", "0.75"))
     keyword_threshold: float = float(os.getenv("keyword_threshold") or os.getenv("KEYWORD_THRESHOLD", "0.75"))
+
+    @property
+    def VECTOR_THRESHOLD(self) -> float:
+        return self.vector_threshold
+
+    @property
+    def KEYWORD_THRESHOLD(self) -> float:
+        return self.keyword_threshold
 
 settings = Settings()
 
