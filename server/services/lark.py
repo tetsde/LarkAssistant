@@ -38,6 +38,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import lark_oapi as lark
@@ -54,6 +55,11 @@ from lark_oapi.api.im.v1 import (
     P2ImChatMemberBotDeletedV1,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
+)
+from lark_oapi.api.drive.v1 import (
+    P2DriveFileBitableRecordChangedV1,
+    P2DriveFileBitableFieldChangedV1,
+    P2DriveFileEditV1,
 )
 from lark_oapi.core.const import APPLICATION_JSON, UTF_8
 from lark_oapi.core.model import RawRequest
@@ -132,6 +138,10 @@ class LarkService:
         # Danh sách các hàm callback lắng nghe tin nhắn
         self._message_handlers: List[Callable[[LarkMessage], Any]] = []
 
+        # Danh sách các hàm callback lắng nghe sự kiện Lark Base (Bitable)
+        self._bitable_record_handlers: List[Callable[[Any], Any]] = []
+        self._bitable_field_handlers: List[Callable[[Any], Any]] = []
+
         # Cache chống duplicate message_id (Lark có cơ chế retry nếu chưa nhận 200 trong 3s)
         self._processed_msg_ids: OrderedDict[str, float] = OrderedDict()
         self._dedup_lock = asyncio.Lock() if hasattr(asyncio, "Lock") else None
@@ -148,6 +158,9 @@ class LarkService:
         builder.register_p2_im_message_receive_v1(self._internal_on_message_event)
         builder.register_p2_im_chat_member_bot_added_v1(self._internal_on_bot_added_event)
         builder.register_p2_im_chat_member_bot_deleted_v1(self._internal_on_bot_deleted_event)
+        builder.register_p2_drive_file_bitable_record_changed_v1(self._internal_on_bitable_record_changed_event)
+        builder.register_p2_drive_file_bitable_field_changed_v1(self._internal_on_bitable_field_changed_event)
+        builder.register_p2_drive_file_edit_v1(self._internal_on_drive_file_edit_event)
         return builder.build()
 
     def _get_user_request_option(self) -> lark.RequestOption:
@@ -434,6 +447,33 @@ class LarkService:
             print(f"   • Người thêm: {operator_name}")
             print("=" * 65 + "\n")
             logger.info(f"🎉 Bot được thêm vào nhóm '{chat_name}' ({chat_id}) bởi {operator_name}")
+
+            if not chat_id:
+                logger.warning("Không tìm thấy chat_id trong sự kiện bot_added. Bỏ qua ghi nhận Base.")
+                return
+
+            # -----------------------------------------------------------------
+            # TỰ ĐỘNG ĐỒNG BỘ VÀO LARK BASE (BITABLE)
+            # -----------------------------------------------------------------
+            from services.larkbase import lark_base_service
+
+            base_record = None
+            is_new_entry = False
+
+            try:
+                base_record = lark_base_service.find_record_by_chat_id(chat_id)
+                if not base_record:
+                    # Tạo bản ghi mới trên Lark Base với chat_id và chat_name
+                    base_record = lark_base_service.create_record({
+                        "Dự án / Nhóm": chat_name,
+                        "ID Group": chat_id,
+                    })
+                    logger.info(f"✅ Đã tự động tạo dòng mới trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
+                else:
+                    logger.info(f"ℹ️ Nhóm '{chat_name}' ({chat_id}) đã tồn tại trong Lark Base (Record: {base_record.record_id})")
+            except Exception as e:
+                logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {e}", exc_info=True)
+
         except Exception as e:
             logger.error(f"Lỗi xử lý sự kiện bot_added: {e}", exc_info=True)
 
@@ -448,8 +488,106 @@ class LarkService:
         except Exception as e:
             logger.error(f"Lỗi xử lý sự kiện bot_deleted: {e}", exc_info=True)
 
+    def _internal_on_bitable_record_changed_event(self, data: P2DriveFileBitableRecordChangedV1) -> None:
+        """Xử lý sự kiện bản ghi trong Lark Base bị thay đổi (drive.file.bitable_record_changed_v1)."""
+        try:
+            event = getattr(data, "event", None)
+            if not event:
+                return
+
+            file_token = getattr(event, "file_token", "")
+            table_id = getattr(event, "table_id", "")
+            operator_id = ""
+            if getattr(event, "operator_id", None):
+                operator_id = getattr(event.operator_id, "open_id", "") or getattr(event.operator_id, "user_id", "")
+            operator_name = self.get_user_name(operator_id) or operator_id or "Thành viên"
+
+            action_list = getattr(event, "action_list", []) or []
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            print("\n" + "=" * 65)
+            print("📊 [LARK BASE EVENT] PHÁT HIỆN DỮ LIỆU BẢNG BASE THAY ĐỔI:")
+            print("-" * 65)
+            print(f"🕒 Thời gian    : {now_str}")
+            print(f"📦 Base Token   : {file_token}")
+            print(f"📊 Table ID     : {table_id}")
+            print(f"👤 Người sửa    : {operator_name} ({operator_id})")
+            print(f"📝 Số hành động : {len(action_list)}")
+
+            for idx, act in enumerate(action_list, 1):
+                rec_id = getattr(act, "record_id", "")
+                action_type = getattr(act, "action", "")
+                print(f"  [{idx}] Record ID: {rec_id} | Hành động: {action_type}")
+
+                before_list = getattr(act, "before_value", []) or []
+                after_list = getattr(act, "after_value", []) or []
+                if before_list or after_list:
+                    field_ids = set()
+                    b_map = {}
+                    a_map = {}
+                    for b in before_list:
+                        fid = getattr(b, "field_id", "")
+                        b_map[fid] = getattr(b, "field_value", "")
+                        field_ids.add(fid)
+                    for a in after_list:
+                        fid = getattr(a, "field_id", "")
+                        a_map[fid] = getattr(a, "field_value", "")
+                        field_ids.add(fid)
+
+                    for fid in field_ids:
+                        old_v = b_map.get(fid, "(trống)")
+                        new_v = a_map.get(fid, "(trống)")
+                        print(f"      • Cột {fid}: {old_v} -> {new_v}")
+
+            print("=" * 65 + "\n")
+            logger.info(f"📊 Lark Base change event received for table {table_id} by {operator_name}")
+
+            for handler in self._bitable_record_handlers:
+                try:
+                    if asyncio.iscoroutinefunction(handler):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(handler(data))
+                        except RuntimeError:
+                            asyncio.run(handler(data))
+                    else:
+                        handler(data)
+                except Exception as e:
+                    logger.error(f"Lỗi khi thực thi bitable_record_handler: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Lỗi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
+
+    def _internal_on_bitable_field_changed_event(self, data: P2DriveFileBitableFieldChangedV1) -> None:
+        """Xử lý sự kiện cấu trúc cột trong Lark Base bị thay đổi (drive.file.bitable_field_changed_v1)."""
+        try:
+            event = getattr(data, "event", None)
+            table_id = getattr(event, "table_id", "") if event else ""
+            file_token = getattr(event, "file_token", "") if event else ""
+            print(f"\n📐 [LARK BASE EVENT] Cấu trúc cột của Base '{file_token}' (bảng '{table_id}') vừa thay đổi.")
+            logger.info(f"📐 Lark Base field changed for table {table_id}")
+
+            for handler in self._bitable_field_handlers:
+                try:
+                    if asyncio.iscoroutinefunction(handler):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(handler(data))
+                        except RuntimeError:
+                            asyncio.run(handler(data))
+                    else:
+                        handler(data)
+                except Exception as e:
+                    logger.error(f"Lỗi khi thực thi bitable_field_handler: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Lỗi xử lý sự kiện bitable_field_changed: {e}", exc_info=True)
+
+    def _internal_on_drive_file_edit_event(self, data: P2DriveFileEditV1) -> None:
+        """Xử lý sự kiện chỉnh sửa file trên Drive (drive.file.edit_v1)."""
+        logger.debug("Drive file edit event received (drive.file.edit_v1)")
+
     # -------------------------------------------------------------------------
     # 4. ĐĂNG KÝ MESSAGE HANDLERS
+    # 4. ĐĂNG KÝ HANDLERS (MESSAGE & BITABLE)
     # -------------------------------------------------------------------------
 
     def on_message(self, func: Callable[[LarkMessage], Any]) -> Callable[[LarkMessage], Any]:
@@ -457,6 +595,7 @@ class LarkService:
         Decorator để đăng ký hàm xử lý tin nhắn tới.
         Hỗ trợ cả async def và def thông thường.
         """
+        """Decorator để đăng ký hàm xử lý tin nhắn tới."""
         self.register_handler(func)
         return func
 
@@ -464,6 +603,26 @@ class LarkService:
         """Đăng ký hàm xử lý tin nhắn."""
         if handler not in self._message_handlers:
             self._message_handlers.append(handler)
+
+    def on_bitable_record_changed(self, func: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        """Decorator đăng ký hàm xử lý khi bản ghi trong Lark Base thay đổi."""
+        self.register_bitable_record_handler(func)
+        return func
+
+    def register_bitable_record_handler(self, handler: Callable[[Any], Any]) -> None:
+        """Đăng ký hàm xử lý sự kiện bitable record changed."""
+        if handler not in self._bitable_record_handlers:
+            self._bitable_record_handlers.append(handler)
+
+    def on_bitable_field_changed(self, func: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        """Decorator đăng ký hàm xử lý khi cấu trúc cột trong Lark Base thay đổi."""
+        self.register_bitable_field_handler(func)
+        return func
+
+    def register_bitable_field_handler(self, handler: Callable[[Any], Any]) -> None:
+        """Đăng ký hàm xử lý sự kiện bitable field changed."""
+        if handler not in self._bitable_field_handlers:
+            self._bitable_field_handlers.append(handler)
 
     # -------------------------------------------------------------------------
     # 5. GỬI & REPLY TIN NHẮN (100% USER ACCESS TOKEN - GỠ BỎ HOÀN TOÀN BOT CHAT)
@@ -619,10 +778,14 @@ class LarkService:
         receive_id_type: str = "chat_id",  # "chat_id", "open_id", "user_id"
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """Gửi tin nhắn mới async BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token)."""
-        opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
-        if err:
-            return err
+        """Gửi tin nhắn mới async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot)."""
+        if as_user:
+            opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+            if err:
+                return err
+        else:
+            opt = None
+            content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
             CreateMessageRequest.builder()
@@ -644,10 +807,14 @@ class LarkService:
         receive_id_type: str = "chat_id",
         as_user: bool = True,
     ) -> Dict[str, Any]:
-        """Gửi tin nhắn mới đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG."""
-        opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
-        if err:
-            return err
+        """Gửi tin nhắn mới đồng bộ (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot)."""
+        if as_user:
+            opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+            if err:
+                return err
+        else:
+            opt = None
+            content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
             CreateMessageRequest.builder()
@@ -800,7 +967,7 @@ class LarkService:
                 app_secret=self.app_secret,
                 event_handler=self.event_dispatcher,
                 domain=self.domain,
-                log_level=lark.LogLevel.DEBUG,
+                log_level=lark.LogLevel.INFO,
             )
             try:
                 ws_client.start()

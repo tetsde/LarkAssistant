@@ -36,6 +36,10 @@ class Settings:
     LARK_USER_NAME: str = os.getenv("user_name") or os.getenv("LARK_USER_NAME", "")
     LARK_USER_ROLE: str = os.getenv("user_role") or os.getenv("LARK_USER_ROLE", "")
 
+    # Lark Base (Bitable) Settings
+    LARK_BASE_APP_TOKEN: str = os.getenv("LARK_BASE_APP_TOKEN") or os.getenv("app_token", "")
+    LARK_BASE_TABLE_ID: str = os.getenv("LARK_BASE_TABLE_ID") or os.getenv("table_id", "")
+
 
     # Daily Digest & Approval Settings
     DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")

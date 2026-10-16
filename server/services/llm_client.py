@@ -11,7 +11,7 @@ phục vụ cho cả 3 nghiệp vụ cốt lõi:
   - Tự động fallback qua danh sách model ưu tiên: gemini-2.5-flash -> gemini-flash-latest -> gemini-2.0-flash
   - Mặc định tắt thinkingBudget (thinkingBudget: 0) để tối ưu độ trễ và tiết kiệm quota
   - Hỗ trợ cả cơ chế Bất đồng bộ (Async) cho FastAPI Server và Đồng bộ (Sync) cho Scripts/CLI/Tests
-  - Lazy validation API key từ core.config hoặc environment
+  - Xử lý trích xuất an toàn (Safety block handling & Finish reason detection)
 """
 
 from __future__ import annotations
@@ -65,6 +65,124 @@ class LLMClient:
         key = self._ensure_api_key()
         return f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
 
+    def _build_payload(
+        self,
+        prompt: str,
+        temperature: float,
+        max_output_tokens: int,
+        thinking_budget: int = 0,
+        is_json: bool = False,
+    ) -> Dict[str, Any]:
+        """Tạo payload cấu hình chuẩn hóa cho Gemini API."""
+        gen_config: Dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+            "thinkingConfig": {"thinkingBudget": thinking_budget},
+        }
+        if is_json:
+            gen_config["responseMimeType"] = "application/json"
+
+        return {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": gen_config,
+        }
+
+    def _extract_text_from_response(self, resp: httpx.Response, model: str) -> Optional[str]:
+        """
+        Bóc tách text phản hồi từ JSON của Gemini API.
+        Trả về chuỗi text nếu thành công, hoặc None nếu response code không phải 200.
+        Phát hiện sớm các trường hợp bị chặn bởi Safety Filters.
+        """
+        if resp.status_code == 200:
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                candidate = candidates[0]
+                parts = candidate.get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "")
+                
+                finish_reason = candidate.get("finishReason", "")
+                if finish_reason and finish_reason != "STOP":
+                    logger.warning(f"Model {model} trả về không có text. finishReason={finish_reason}")
+            
+            # Kiểm tra Safety block cấp độ prompt
+            prompt_feedback = data.get("promptFeedback", {})
+            block_reason = prompt_feedback.get("blockReason")
+            if block_reason:
+                logger.warning(f"Model {model} chặn prompt vì lý do an toàn: blockReason={block_reason}")
+            
+            # Trả về text rỗng nếu 200 nhưng không có parts
+            return ""
+
+        return None
+
+    # --------------------------------------------------------------------------
+    # CORE EXECUTORS (NATIVE ASYNC & SYNC)
+    # --------------------------------------------------------------------------
+
+    async def _aexecute(self, payload: Dict[str, Any], model_name: Optional[str] = None) -> str:
+        """Thực thi gọi Gemini API bất đồng bộ (Native Async) kèm cơ chế tự động fallback model."""
+        models_to_try = [model_name] if model_name else self.default_models
+        last_error = None
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for model in models_to_try:
+                url = self._get_url(model)
+                try:
+                    resp = await client.post(url, json=payload)
+                    text = self._extract_text_from_response(resp, model)
+                    if text is not None:
+                        return text
+
+                    if resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
+                        logger.warning(last_error)
+                        continue
+                    elif resp.status_code in (429, 503):
+                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
+                        logger.warning(last_error)
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
+                    continue
+
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+
+    def _execute(self, payload: Dict[str, Any], model_name: Optional[str] = None) -> str:
+        """Thực thi gọi Gemini API đồng bộ (Sync) kèm cơ chế tự động fallback model."""
+        models_to_try = [model_name] if model_name else self.default_models
+        last_error = None
+
+        with httpx.Client(timeout=self.timeout) as client:
+            for model in models_to_try:
+                url = self._get_url(model)
+                try:
+                    resp = client.post(url, json=payload)
+                    text = self._extract_text_from_response(resp, model)
+                    if text is not None:
+                        return text
+
+                    if resp.status_code in (404, 400):
+                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
+                        logger.warning(last_error)
+                        continue
+                    elif resp.status_code in (429, 503):
+                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
+                        logger.warning(last_error)
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
+                    continue
+
+        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+
     # --------------------------------------------------------------------------
     # 1. GENERATE JSON (DÀNH CHO ENTITY / FACT EXTRACTION VÀ DỮ LIỆU CÓ CẤU TRÚC)
     # --------------------------------------------------------------------------
@@ -78,47 +196,14 @@ class LLMClient:
         thinking_budget: int = 0,
     ) -> str:
         """Gọi Gemini API bất đồng bộ (async) với responseMimeType='application/json'."""
-        models_to_try = [model_name] if model_name else self.default_models
-        last_error = None
-
-        payload: Dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "responseMimeType": "application/json",
-                "maxOutputTokens": max_output_tokens,
-                "thinkingConfig": {"thinkingBudget": thinking_budget},
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = self._get_url(model)
-                try:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                return parts[0].get("text", "")
-                    elif resp.status_code in (404, 400):
-                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    elif resp.status_code in (429, 503):
-                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
-                    continue
-
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        payload = self._build_payload(
+            prompt=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=True,
+        )
+        return await self._aexecute(payload, model_name=model_name)
 
     def generate_json(
         self,
@@ -129,47 +214,14 @@ class LLMClient:
         thinking_budget: int = 0,
     ) -> str:
         """Gọi Gemini API đồng bộ (sync) với responseMimeType='application/json'."""
-        models_to_try = [model_name] if model_name else self.default_models
-        last_error = None
-
-        payload: Dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "responseMimeType": "application/json",
-                "maxOutputTokens": max_output_tokens,
-                "thinkingConfig": {"thinkingBudget": thinking_budget},
-            },
-        }
-
-        with httpx.Client(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = self._get_url(model)
-                try:
-                    resp = client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                return parts[0].get("text", "")
-                    elif resp.status_code in (404, 400):
-                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    elif resp.status_code in (429, 503):
-                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
-                    continue
-
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        payload = self._build_payload(
+            prompt=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=True,
+        )
+        return self._execute(payload, model_name=model_name)
 
     # Aliases cho trích xuất thực thể
     generate_async = generate_json_async
@@ -188,46 +240,14 @@ class LLMClient:
         thinking_budget: int = 0,
     ) -> str:
         """Gọi Gemini API bất đồng bộ (async) để sinh văn bản tự nhiên (không ép JSON)."""
-        models_to_try = [model_name] if model_name else self.default_models
-        last_error = None
-
-        payload: Dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens,
-                "thinkingConfig": {"thinkingBudget": thinking_budget},
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = self._get_url(model)
-                try:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                return parts[0].get("text", "")
-                    elif resp.status_code in (404, 400):
-                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    elif resp.status_code in (429, 503):
-                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
-                    continue
-
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        payload = self._build_payload(
+            prompt=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=False,
+        )
+        return await self._aexecute(payload, model_name=model_name)
 
     def generate_text(
         self,
@@ -238,46 +258,14 @@ class LLMClient:
         thinking_budget: int = 0,
     ) -> str:
         """Gọi Gemini API đồng bộ (sync) để sinh văn bản tự nhiên (không ép JSON)."""
-        models_to_try = [model_name] if model_name else self.default_models
-        last_error = None
-
-        payload: Dict[str, Any] = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens,
-                "thinkingConfig": {"thinkingBudget": thinking_budget},
-            },
-        }
-
-        with httpx.Client(timeout=self.timeout) as client:
-            for model in models_to_try:
-                url = self._get_url(model)
-                try:
-                    resp = client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                return parts[0].get("text", "")
-                    elif resp.status_code in (404, 400):
-                        last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    elif resp.status_code in (429, 503):
-                        last_error = f"Model {model} bị nghẽn/hết quota (status {resp.status_code}): {resp.text}"
-                        logger.warning(last_error)
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
-                    continue
-
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        payload = self._build_payload(
+            prompt=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=False,
+        )
+        return self._execute(payload, model_name=model_name)
 
 
 # Alias tương thích ngược cho GeminiClient

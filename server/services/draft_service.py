@@ -25,21 +25,8 @@ class DraftService:
         content = approved_content or draft.approved_content or draft.draft_answer
         return await self._send_claimed(draft, content)
 
-    async def send_by_message_id(
-        self,
-        message_id: str,
-        content: str,
-    ) -> Tuple[bool, str, Optional[PendingDraft], Optional[Dict[str, Any]]]:
-        draft = await self.store.claim_by_message_id(message_id)
-        if not draft:
-            return False, "Không tìm thấy draft đang chờ cho message_id này.", None, None
-        return await self._send_claimed(draft, content)
-
     async def discard_latest(self, owner_id: str) -> Optional[PendingDraft]:
         return await self.store.discard_latest_pending(owner_id)
-
-    async def discard_by_message_id(self, message_id: str) -> Optional[PendingDraft]:
-        return await self.store.discard_by_message_id(message_id)
 
     async def _send_claimed(
         self,

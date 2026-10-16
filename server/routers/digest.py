@@ -4,10 +4,9 @@ HiLark - Daily Digest Router
 Vị trí: server/routers/digest.py
 
 Cung cấp các endpoint REST API:
-  - Lôi dữ liệu Daily Digest từ MongoDB đẩy sang WeKnora Knowledge Base
-  - Quét và đồng bộ hàng loạt các digest còn tồn đọng (pending / failed)
-  - Xem chi tiết bản ghi digest theo ID
-  - Kích hoạt tổng hợp ngày cho một chat group
+  - Xem chi tiết bản ghi digest theo ID hoặc bản gần nhất
+  - Phê duyệt / Từ chối bản ghi Daily Digest
+  - Kích hoạt tổng hợp ngày cho tất cả nhóm chat hoặc 1 nhóm chat
 """
 
 from typing import Any, Dict, Optional
@@ -84,51 +83,6 @@ async def run_scheduled_digests_endpoint(
     }
 
 
-@router.post("/{digest_id}/sync")
-async def sync_single_digest(
-    digest_id: str,
-    dataset_id: Optional[str] = Query(None, description="Dataset/KB ID trên WeKnora (nếu muốn ghi đè)"),
-):
-    """
-    Lôi bản ghi Daily Digest từ collection daily_digests trong MongoDB và đẩy lên WeKnora.
-    """
-    record = await digest_service.get_digest_by_id(digest_id)
-    if not record:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy digest {digest_id} trong MongoDB.")
-
-    success = await digest_service.sync_digest_to_weknora(record, dataset_id=dataset_id)
-    if not success:
-        raise HTTPException(status_code=500, detail="Đồng bộ digest lên WeKnora thất bại.")
-
-    return {
-        "code": 0,
-        "message": "Đồng bộ lên WeKnora thành công",
-        "data": {
-            "digest_id": record.id,
-            "weknora_doc_id": record.weknora_doc_id,
-            "weknora_kb_id": record.weknora_kb_id,
-            "sync_status": record.sync_status,
-        },
-    }
-
-
-@router.post("/sync-pending")
-async def sync_pending_digests(
-    limit: int = Query(20, ge=1, le=100, description="Số lượng bản ghi tối đa xử lý"),
-    dataset_id: Optional[str] = Query(None, description="Dataset/KB ID trên WeKnora"),
-):
-    """
-    Quét tự động tất cả các bản ghi Daily Digest trong MongoDB có trạng thái pending hoặc failed
-    và thực hiện đồng bộ bù lên WeKnora.
-    """
-    result = await digest_service.sync_pending_digests(limit=limit, dataset_id=dataset_id)
-    return {
-        "code": 0,
-        "message": f"Đã quét và đồng bộ {result.get('synced_count', 0)}/{result.get('total_found', 0)} bản ghi",
-        "data": result,
-    }
-
-
 @router.post("/process-daily")
 async def process_and_sync_daily(req: ProcessDailyRequest):
     """
@@ -151,4 +105,3 @@ async def process_and_sync_daily(req: ProcessDailyRequest):
         "message": "Đã tổng hợp daily digest thành công",
         "data": digest.to_dict(),
     }
-

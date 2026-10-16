@@ -21,7 +21,7 @@ from typing import Optional
 from core.config import settings
 from models.lark import LarkMessage
 from models.memory import get_vietnam_now
-from routers.chat import process_chat_pipeline
+from services.chat_service import process_chat_pipeline
 from services.digest_service import digest_service
 from services.draft_service import draft_service
 from services.lark import lark_service

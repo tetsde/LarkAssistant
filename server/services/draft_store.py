@@ -93,20 +93,6 @@ class DraftStore:
         )
         return PendingDraft.from_document(document) if document else None
 
-    async def claim_by_message_id(self, message_id: str) -> Optional[PendingDraft]:
-        document = await get_draft_logs_collection().find_one_and_update(
-            {"message_id": message_id, "status": "pending"},
-            {
-                "$set": {
-                    "status": "sending",
-                    "updated_at": get_vietnam_now_iso(),
-                    "last_error": None,
-                }
-            },
-            return_document=ReturnDocument.AFTER,
-        )
-        return PendingDraft.from_document(document) if document else None
-
     async def mark_pending(
         self,
         draft_id: str,
@@ -147,14 +133,6 @@ class DraftStore:
             {"owner_id": owner_id, "status": "pending"},
             {"$set": {"status": "discarded", "updated_at": get_vietnam_now_iso()}},
             sort=[("created_at", -1)],
-            return_document=ReturnDocument.AFTER,
-        )
-        return PendingDraft.from_document(document) if document else None
-
-    async def discard_by_message_id(self, message_id: str) -> Optional[PendingDraft]:
-        document = await get_draft_logs_collection().find_one_and_update(
-            {"message_id": message_id, "status": "pending"},
-            {"$set": {"status": "discarded", "updated_at": get_vietnam_now_iso()}},
             return_document=ReturnDocument.AFTER,
         )
         return PendingDraft.from_document(document) if document else None

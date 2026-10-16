@@ -24,6 +24,12 @@ from models.digest import (
     DailyDigestRecord,
 )
 from models.chat_scope import ChatScopeRecord
+from models.larkbase import (
+    BITABLE_FIELD_TYPE_MAP,
+    LarkBaseField,
+    LarkBaseRecord,
+    LarkBaseQueryResult,
+)
 
 __all__ = [
     "ChatRequest",
@@ -54,5 +60,9 @@ __all__ = [
     "StagingMessage",
     "DailyDigestRecord",
     "ChatScopeRecord",
+    "BITABLE_FIELD_TYPE_MAP",
+    "LarkBaseField",
+    "LarkBaseRecord",
+    "LarkBaseQueryResult",
 ]
 

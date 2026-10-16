@@ -17,8 +17,9 @@ from services.scope_service import ScopeService
 class TestChatScope(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.service = ScopeService()
-        self.admin_id = settings.LARK_USER_OPEN_ID or "ou_admin_123"
+        self.admin_id = "ou_admin_123"
         self.attacker_id = "ou_hacker_456"
+        self.service.get_admin_open_ids = lambda: [self.admin_id]
 
     def test_model_serialization(self):
         """Kiểm tra ChatScopeRecord to_dict và khởi tạo."""
