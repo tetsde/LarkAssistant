@@ -429,14 +429,19 @@ async def process_chat_pipeline(
         target_kb = scope_record.dataset_id if scope_record else None
         target_kbs = [target_kb] if target_kb else None
 
-        # ── [CHỐT CHẶN 3: RAG ISOLATION] Chỉ tìm kiếm trong đúng các file Documents của nhóm ──
+        # ── [GIẢI PHÁP 2: RAG HARD ISOLATION] Chỉ tìm kiếm trong đúng các file Documents của nhóm ──
         target_knowledge_ids = (
             scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
         )
+        if target_knowledge_ids:
+            logger.info(
+                f"🔒 [RAG Isolation] Giới hạn tìm kiếm trong {len(target_knowledge_ids)} tài liệu của nhóm: {target_knowledge_ids}"
+            )
 
-        # ── [TỐI ƯU TRUY XUẤT: QUERY SCOPE AUGMENTATION] ──
-        # Nếu thành viên hỏi câu chung chung về dự án / tài liệu / kế hoạch,
-        # tự động gắn thêm tên dự án của nhóm vào query tìm kiếm WeKnora để định vị chính xác chunk tài liệu
+        # ── [GIẢI PHÁP 1: CONTEXT-DRIVEN QUERY EXPANSION] ──
+        # Bỏ hoàn toàn danh sách từ khóa tĩnh (vague_keywords).
+        # Mọi câu hỏi chuyên môn trong nhóm dự án mặc định hướng về dự án đó.
+        # Nếu câu hỏi chưa nhắc đến tên dự án, tự động bổ sung tên bối cảnh dự án vào query WeKnora.
         retrieval_query = clean_query
         proj_context_name = None
         if scope_record:
@@ -446,14 +451,8 @@ async def process_chat_pipeline(
                 else (scope_record.project_tag or scope_record.chat_name or "")
             )
             if proj_context_name and proj_context_name.lower() not in clean_query.lower():
-                lower_q = clean_query.lower()
-                vague_keywords = [
-                    "dự án", "project", "kế hoạch", "charter", "thông tin",
-                    "triển khai", "mục tiêu", "tài liệu", "tiến độ", "overview", "tổng quan"
-                ]
-                if any(w in lower_q for w in vague_keywords):
-                    retrieval_query = f"{clean_query} {proj_context_name}"
-                    logger.info(f"🔍 [RAG Query Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
+                retrieval_query = f"{clean_query} {proj_context_name}"
+                logger.info(f"🔍 [RAG Scope Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
 
         chunks = await weknora_service.retrieve(
             query=retrieval_query,
