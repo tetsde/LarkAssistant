@@ -53,6 +53,12 @@ from utils.larkbase import (
     decode_jwt_token_payload,
     inspect_bitable_token,
 )
+from utils.rule_engine import (
+    UnifiedRuleEngine,
+    SanitizeResult,
+    rule_engine,
+    sanitize,
+)
 
 __all__ = [
     "clean_field_value",
@@ -102,5 +108,10 @@ __all__ = [
     "generate_claim_id",
     "load_stored_claims",
     "save_stored_claims",
+    # Rule engine & Security
+    "UnifiedRuleEngine",
+    "SanitizeResult",
+    "rule_engine",
+    "sanitize",
 ]
 

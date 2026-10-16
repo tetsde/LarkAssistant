@@ -34,6 +34,7 @@ from services.llm_client import LLMClient, llm_client
 from services.scope_service import scope_service
 from services.weknora import weknora_service
 from utils.context_composer import ContextComposer
+from utils.rule_engine import rule_engine
 from utils.text_filter import text_filter
 
 logger = logging.getLogger("hilark.chat_service")
@@ -109,6 +110,11 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
    - "Cảm ơn mọi người đã hoàn thành đợt triển khai đúng hạn. Kết quả lần này cho thấy sự phối hợp giữa các bộ phận đã tốt hơn. Mình tiếp tục giữ cách làm này và ghi lại những điểm cần cải thiện cho đợt sau nhé."
    - "Bản thử nghiệm đã chạy được rồi, cảm ơn mọi người. Hôm nay mình tập trung sửa ba lỗi ảnh hưởng trực tiếp đến người dùng; các phần còn lại để vòng sau. Có vướng mắc thì báo ngay trong nhóm nhé."
    - "Minh phụ trách tổng hợp số liệu bán hàng của ba khu vực giúp anh, gồm doanh thu, tỷ lệ hoàn đơn và các biến động đáng chú ý. Gửi bản đầu tiên trước 15 giờ thứ Năm; nếu thiếu dữ liệu, báo anh sớm nhé."
+
+6. NGUYÊN TẮC BẢO TOÀN DANH TÍNH & THẨM QUYỀN (QUAN TRỌNG NHẤT):
+   - NGƯỜI HỎI LÀ {user_name}: Bạn đang nói chuyện trực tiếp với {user_name}. TUYỆT ĐỐI KHÔNG nhầm lẫn hay gán ghép vai trò, nhiệm vụ, kỹ năng hay lộ trình của nhân sự khác (như Trí, Nguyên...) vào {user_name}.
+   - NGUYÊN TẮC THẨM QUYỀN: Nếu bối cảnh có mục 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT], đây CHỈ LÀ ĐỀ XUẤT CÁ NHÂN từ nhân sự (nguyện vọng xin làm lead, xin chuyển đổi vai trò), CHƯA PHẢI QUYẾT ĐỊNH CỦA BẠN. Hãy trả lời rõ ràng: "Đề xuất này của em anh đã ghi nhận nhưng cần cân nhắc thêm trước khi chốt nhé".
+   - TUYỆT ĐỐI KHÔNG sinh thẻ trích dẫn nguồn lộ liễu (như [Cập nhật hội thoại: ...] hay [Tài liệu: ...]) trong câu trả lời.
 """
 
 
@@ -116,7 +122,11 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
 # HELPER FUNCTIONS
 # =============================================================================
 
-async def process_memory_extraction(query_text: str, sender: str = "User") -> Dict[str, Any]:
+async def process_memory_extraction(
+    query_text: str,
+    sender: str = "User",
+    asserted_by: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB."""
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
@@ -135,6 +145,7 @@ async def process_memory_extraction(query_text: str, sender: str = "User") -> Di
         workspace_id="default",
         source_message_id=msg_id,
         sender=sender,
+        asserted_by=asserted_by,
         existing_entities=existing_entities,
         existing_facts=existing_facts,
     )
@@ -176,13 +187,16 @@ async def generate_grounded_answer(
         logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
         return ""
 
-    if user_name and responder_name and role:
+    effective_role = role or getattr(settings, "LARK_USER_ROLE", "") or "CEO / Founder / CTO"
+    effective_responder = responder_name or getattr(settings, "LARK_USER_NAME", "") or ""
+
+    if user_name:
         prompt = GROUNDED_QA_USER_PERSONA_PROMPT.format(
             context_text=context_text,
             query=query,
             user_name=user_name,
-            responder_name=responder_name,
-            role=role or "",
+            responder_name=effective_responder or "Sếp",
+            role=effective_role,
         )
     else:
         prompt = GROUNDED_QA_SYSTEM_PROMPT.format(
@@ -364,12 +378,21 @@ async def process_chat_pipeline(
             "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời.",
         }
 
+    # Xác định thẩm quyền người phát ngôn
+    speaker_role = "owner" if is_owner else "member"
+    asserted_by = {
+        "user_id": sender or "",
+        "user_name": user_name or sender or "Thành viên",
+        "role": speaker_role,
+    }
+
     # Bước 3: Lưu memory cho các intent cần ghi nhớ.
     extraction_data = None
     if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
         extraction_data = await process_memory_extraction(
             query_text=clean_query,
             sender=sender,
+            asserted_by=asserted_by,
         )
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
@@ -385,13 +408,13 @@ async def process_chat_pipeline(
         }
 
     # REPLY_ONLY và MEMORY_AND_DRAFT đều cần tạo nội dung từ context.
-    # 1. Lấy active claims từ MongoDB
+    # 1. Lấy active claims (gồm cả Current và Proposed) từ MongoDB
     all_facts = []
     try:
         all_facts = await get_mongo_facts()
     except Exception as e:
         logger.warning(f"Lỗi khi đọc facts từ MongoDB: {e}")
-    active_claims = [f for f in all_facts if f.get("status", "current") == "current"]
+    active_claims = [f for f in all_facts if f.get("status", "current") in ("current", "proposed")]
 
     # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat
     chunks = []
@@ -445,9 +468,19 @@ async def process_chat_pipeline(
             "score": c.get("score"),
         })
 
+    # ── [CHỐT CHẶN BẢO MẬT: UNIFIED RULE ENGINE] ──
+    # Lọc WeKnora Chunks và MongoDB Claims theo nhãn cấm (forbidden_labels) từ Lark Base
+    forbidden_labels = scope_record.forbidden_labels if scope_record else []
+    clean_chunks, clean_claims = rule_engine.sanitize(
+        chunks=normalized_chunks,
+        claims=active_claims,
+        forbidden_labels=forbidden_labels,
+        query=clean_query,
+    )
+
     # [SAFETY - RAG GATE] Nếu REPLY_ONLY nhưng không có chunks KB nào đủ cơ sở tri thức
     # -> Downgrade bắt buộc sang DRAFT_PENDING_APPROVAL để người dùng tự kiểm tra & duyệt
-    if jev_action == "REPLY_ONLY" and not normalized_chunks and not active_claims:
+    if jev_action == "REPLY_ONLY" and not clean_chunks and not clean_claims:
         logger.warning(
             f"[RAG GATE] REPLY_ONLY nhưng KB rỗng (0 chunks, 0 claims) "
             f"-> Downgrade sang DRAFT_PENDING_APPROVAL. Query: '{clean_query}'"
@@ -457,8 +490,8 @@ async def process_chat_pipeline(
     # 3. Hợp nhất ngữ cảnh với ContextComposer
     composer = ContextComposer()
     composed = composer.compose(
-        retriever_data=normalized_chunks if normalized_chunks else None,
-        claims_data=active_claims if active_claims else None,
+        retriever_data=clean_chunks if clean_chunks else None,
+        claims_data=clean_claims if clean_claims else None,
         query=clean_query,
         auto_align=True,
     )

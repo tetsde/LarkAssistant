@@ -68,6 +68,14 @@ class TextFilter:
             flags=re.IGNORECASE
         )
 
+        # 1.1 Xoá các thẻ ngoặc trích dẫn nguồn RAG nếu LLM vô tình sinh ra (vd: [Cập nhật hội thoại: ...], [Tài liệu: ...])
+        cleaned = re.sub(
+            r'\[(?:Cập nhật hội thoại|Tài liệu|Nguồn|Source|Chunk ID|Document)[^\]]*\]',
+            '',
+            cleaned,
+            flags=re.IGNORECASE
+        )
+
         # 2. Xóa khoảng trắng đứng trước dấu câu do việc xóa thẻ để lại (vd: "abc , xyz" -> "abc, xyz")
         cleaned = re.sub(r'[ \t]+([,.:;?!])', r'\1', cleaned)
 

@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 from models.memory import (
     EntityStatus,
     FactStatus,
+    AssertedBy,
     Entity,
     Fact,
     build_entity_tree,
@@ -246,6 +247,7 @@ MANDATORY RULES:
 ⛔ RESTRICTIONS:
 - DO NOT create entities for generic anonymous roles without proper brand or company names: "khách hàng", "bên khách hàng", "người dùng", "khách", "đối tác", "team", "anh em", "chúng tôi".
 - DO NOT create entities for bare conversational pronouns or particles: "anh", "em", "chúng tôi", "ai đó", "dạ", "alo".
+- TUYỆT ĐỐI KHÔNG đưa đại từ xưng hô ("mình", "bên mình", "em", "anh", "tôi", "bạn", "chúng tôi") vào trường "aliases" của bất kỳ entity nào. Aliases chỉ được là tên gọi tắt, mã dự án hoặc biệt danh chính danh.
 - Timestamps and dates alone ("today", "tomorrow", "Oct 18") are NOT entities. Dates are values of Facts (e.g. deadlines), linked to the project entity!
 - VIETNAMESE DISAMBIGUATION: The word "Mai" at sentence starts in Vietnamese almost always means "Tomorrow" (temporal marker), NOT a person named Mai, unless preceded by explicit honorifics like "chị Mai" or "bạn Mai".
 - PERSON ASSIGNMENT: In phrases like "giao [X] lead" or "cho [X] phụ trách", [X] is the person being assigned even if written in lowercase (e.g., "giao nguyên lead" -> person name is "Nguyên").
@@ -319,6 +321,7 @@ EXTRACTION RULES:
    - DO NOT paste whole sentences into "value" (full sentences belong in "source_snippet").
 4. "status":
    - "current": Confirmed, active fact that is currently valid.
+   - "proposed": Proposal, request, or suggestion (e.g. asking to change roles, requesting to become lead, suggested ideas).
    - "superseded": Old fact that has been replaced.
    - "conflicted": Direct contradiction across sources.
    - "uncertain": Ambiguous, speculative, or unconfirmed ("maybe", "looks like", "around", "tentative").
@@ -349,6 +352,12 @@ CLAIM_EXTRACTION_PROMPT = FACT_EXTRACTION_PROMPT
 from services.llm_client import GeminiClient, LLMClient, llm_client
 
 
+
+
+FORBIDDEN_PRONOUNS = {
+    "mình", "bên mình", "em", "anh", "tôi", "bạn", "chúng tôi", "chúng mình",
+    "họ", "ai đó", "dạ", "alo", "nhé", "nha", "ạ"
+}
 
 
 # ==============================================================================
@@ -422,11 +431,12 @@ def parse_entities(
             continue
 
         name = str(item.get("name") or item.get("canonical_name", "")).strip()
-        if not name:
+        if not name or name.lower() in FORBIDDEN_PRONOUNS:
             continue
 
         ent_type = str(item.get("type") or item.get("entity_type", "project")).strip().lower()
-        aliases = [str(a).strip() for a in item.get("aliases", []) if str(a).strip()]
+        raw_aliases = [str(a).strip() for a in item.get("aliases", []) if str(a).strip()]
+        aliases = [a for a in raw_aliases if a.lower() not in FORBIDDEN_PRONOUNS]
         description = str(item.get("description", "")).strip()
         attributes = item.get("attributes", {})
         if not isinstance(attributes, dict):
@@ -436,7 +446,8 @@ def parse_entities(
         matched = find_matching_entity(name, aliases, existing)
         if matched:
             entity_id = matched.get("id") or matched.get("_id")
-            merged_aliases = list(dict.fromkeys(matched.get("aliases", []) + aliases))
+            existing_clean_aliases = [a for a in matched.get("aliases", []) if str(a).strip().lower() not in FORBIDDEN_PRONOUNS]
+            merged_aliases = list(dict.fromkeys(existing_clean_aliases + aliases))
             merged_sources = list(dict.fromkeys(matched.get("source_message_ids", []) + message_ids))
             merged_attrs = dict(matched.get("attributes", {}))
             merged_attrs.update(attributes)
@@ -614,11 +625,20 @@ def parse_facts(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
 ) -> List[Fact]:
-    """Parse JSON trả về từ LLM và chuyển đổi thành danh sách Fact."""
+    """Parse JSON trả về từ LLM và chuyển đổi thành danh sách Fact kèm thẩm quyền phát ngôn."""
     data = safe_parse_json_list(raw_response, fallback_type="Facts")
     if not data:
         return []
+
+    # Xác định vai trò của người phát ngôn (owner vs member)
+    speaker_role = "member"
+    if asserted_by:
+        if isinstance(asserted_by, dict):
+            speaker_role = str(asserted_by.get("role", "member")).lower()
+        else:
+            speaker_role = str(getattr(asserted_by, "role", "member")).lower()
 
     # Map tra cứu entity_id hợp lệ
     known_entity_ids = {e.get("id") or e.get("_id") for e in resolved_entities if (e.get("id") or e.get("_id"))}
@@ -665,16 +685,6 @@ def parse_facts(
             elif len(value) > 120:
                 value = value[:117] + "..."
 
-        # Status validation (current, superseded, conflicted, uncertain)
-        status_str = str(item.get("status", FactStatus.CURRENT.value)).strip().lower()
-        try:
-            fact_status = FactStatus(status_str)
-        except ValueError:
-            if status_str == "conflict":
-                fact_status = FactStatus.CONFLICTED
-            else:
-                fact_status = FactStatus.CURRENT
-
         # Source context
         source_snippet = str(item.get("source_snippet", item.get("source", ""))).strip()
         source_meta: Dict[str, Any] = {
@@ -683,7 +693,19 @@ def parse_facts(
             "sender": sender or "User",
         }
 
-        # Replaces tracking
+        # Status validation (current, proposed, superseded, conflicted, uncertain)
+        status_str = str(item.get("status", FactStatus.CURRENT.value)).strip().lower()
+        try:
+            fact_status = FactStatus(status_str)
+        except ValueError:
+            if status_str == "conflict":
+                fact_status = FactStatus.CONFLICTED
+            elif status_str == "proposed":
+                fact_status = FactStatus.PROPOSED
+            else:
+                fact_status = FactStatus.CURRENT
+
+        # Replaces tracking với SUPERSEDE SHIELD
         replaces_id = item.get("replaces") or item.get("supersedes")
         if replaces_id and str(replaces_id).strip().lower() in ("null", "none", ""):
             replaces_id = None
@@ -701,7 +723,29 @@ def parse_facts(
                     and old_dict.get("status") == FactStatus.CURRENT.value
                     and str(old_dict.get("value")) != str(value)
                 ):
+                    # [SUPERSEDE SHIELD]: Nhân sự (member) TUYỆT ĐỐI KHÔNG được ghi đè Fact do Owner chốt!
+                    old_asserted = old_dict.get("asserted_by") or {}
+                    old_role = (old_asserted.get("role") if isinstance(old_asserted, dict) else getattr(old_asserted, "role", "member")) if old_asserted else "member"
+                    if speaker_role == "member" and old_role == "owner":
+                        # Đề xuất của nhân sự đi ngược quyết định của Sếp -> Giữ nguyên trạng thái đề xuất, cấm ghi đè!
+                        fact_status = FactStatus.PROPOSED
+                        replaces_id = None
+                        break
+
                     replaces_id = old_dict.get("id") or old_dict.get("_id")
+                    break
+
+        # Nếu replaces_id do LLM tự điền, kiểm tra lại Supersede Shield đối với fact của Owner
+        if replaces_id and speaker_role == "member" and existing_facts:
+            for old_f in existing_facts:
+                old_dict = old_f.to_dict() if isinstance(old_f, Fact) else old_f
+                fid = old_dict.get("id") or old_dict.get("_id")
+                if fid == replaces_id:
+                    old_asserted = old_dict.get("asserted_by") or {}
+                    old_role = (old_asserted.get("role") if isinstance(old_asserted, dict) else getattr(old_asserted, "role", "member")) if old_asserted else "member"
+                    if old_role == "owner":
+                        fact_status = FactStatus.PROPOSED
+                        replaces_id = None
                     break
 
         new_fact = Fact(
@@ -710,6 +754,7 @@ def parse_facts(
             property=prop,
             value=value,
             status=fact_status,
+            asserted_by=asserted_by,
             source=source_meta,
             replaces=replaces_id,
             created_at=now_iso,
@@ -742,6 +787,7 @@ def extract_facts(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> Dict[str, Any]:
@@ -808,6 +854,7 @@ def extract_facts(
         existing_facts=existing_facts,
         source_message_id=source_message_id,
         sender=sender,
+        asserted_by=asserted_by,
     )
 
     # Cập nhật trạng thái superseded cho các fact cũ
@@ -845,6 +892,7 @@ async def extract_facts_async(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
 ) -> Dict[str, Any]:
@@ -902,6 +950,7 @@ async def extract_facts_async(
         existing_facts=existing_facts,
         source_message_id=source_message_id,
         sender=sender,
+        asserted_by=asserted_by,
     )
 
     superseded_facts: List[Dict[str, Any]] = []
@@ -995,6 +1044,7 @@ class LLMExtractor:
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
+        asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Bóc tách riêng Nhánh 2: Facts."""
         return extract_facts(
@@ -1003,6 +1053,7 @@ class LLMExtractor:
             existing_facts=existing_facts,
             source_message_id=source_message_id,
             sender=sender,
+            asserted_by=asserted_by,
             client=self.client,
         )
 
@@ -1016,6 +1067,7 @@ class LLMExtractor:
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
+        asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Bóc tách riêng Nhánh 2: Facts (Async)."""
         return await extract_facts_async(
@@ -1024,6 +1076,7 @@ class LLMExtractor:
             existing_facts=existing_facts,
             source_message_id=source_message_id,
             sender=sender,
+            asserted_by=asserted_by,
             client=self.client,
         )
 
@@ -1036,6 +1089,7 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
+        asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         # Legacy keyword compatibility
@@ -1066,6 +1120,7 @@ class LLMExtractor:
             existing_facts=current_existing_facts,
             source_message_id=source_message_id,
             sender=sender,
+            asserted_by=asserted_by,
         )
 
         new_facts = facts_result.get("facts", [])
@@ -1087,6 +1142,7 @@ class LLMExtractor:
         workspace_id: str = "default",
         source_message_id: Optional[str] = None,
         sender: Optional[str] = None,
+        asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         # Legacy keyword compatibility
@@ -1111,6 +1167,7 @@ class LLMExtractor:
             existing_facts=current_existing_facts,
             source_message_id=source_message_id,
             sender=sender,
+            asserted_by=asserted_by,
         )
 
         new_facts = facts_result.get("facts", [])
@@ -1136,6 +1193,7 @@ def extract(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
@@ -1148,6 +1206,7 @@ def extract(
         workspace_id=workspace_id,
         source_message_id=source_message_id,
         sender=sender,
+        asserted_by=asserted_by,
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         existing_claims=existing_claims,
@@ -1159,6 +1218,7 @@ async def extract_async(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     sender: Optional[str] = None,
+    asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
@@ -1171,6 +1231,7 @@ async def extract_async(
         workspace_id=workspace_id,
         source_message_id=source_message_id,
         sender=sender,
+        asserted_by=asserted_by,
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         existing_claims=existing_claims,

@@ -64,12 +64,13 @@ class NormalizedClaim:
     id: str
     property: str
     value: Any
-    status: str = "current"  # current, superseded, conflicted, uncertain
+    status: str = "current"  # current, proposed, superseded, conflicted, uncertain
     entity_id: Optional[str] = None
     entity_name: Optional[str] = None
     entity_type: Optional[str] = None
     replaces: Optional[str] = None
     source_snippet: Optional[str] = None
+    asserted_by: Optional[Dict[str, Any]] = None
     created_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -81,6 +82,7 @@ class NormalizedClaim:
             "entity_name": self.entity_name or "Chung",
             "replaces": self.replaces,
             "source_snippet": self.source_snippet,
+            "asserted_by": self.asserted_by,
         }
 
 
@@ -94,10 +96,11 @@ class ContextComposer:
     thành prompt context chuẩn cho LLM Grounded Generation.
     """
 
-    DEFAULT_CONFLICT_RULES = """NGUYÊN TẮC GIẢI QUYẾT XUNG ĐỘT (CONFLICT RESOLUTION):
-1. ĐỘ ƯU TIÊN CAO NHẤT: Thông tin [CURRENT] từ Mệnh đề cập nhật (Phần 2) LUÔN CÓ ĐỘ ƯU TIÊN CAO HƠN thông tin trong Tài liệu văn bản (Phần 1) vì đây là các quyết định, phê duyệt và trao đổi thời gian thực mới nhất.
-2. NÊU RÕ BIẾN ĐỘNG LỊCH SỬ: Nếu phát hiện mâu thuẫn giữa Tài liệu và Mệnh đề (ví dụ: tài liệu ghi giá trị A nhưng mệnh đề đã cập nhật giá trị B), hãy giải thích rõ: "Theo tài liệu gốc là A, tuy nhiên theo cập nhật thảo luận mới nhất đã được điều chỉnh thành B".
-3. TRÍCH DẪN RÕ RÀNG: Ghi rõ căn cứ từ tài liệu nào hoặc từ tin nhắn cập nhật của ai nếu có."""
+    DEFAULT_CONFLICT_RULES = """NGUYÊN TẮC GIẢI QUYẾT XUNG ĐỘT & THẨM QUYỀN TRI THỨC (AUTHORITY & CONFLICT RESOLUTION):
+1. THẨM QUYỀN TỐI CAO TỪ CEO / BAN ĐIỀU HÀNH: Các mệnh đề có tiền tố ⭐ [QUYẾT ĐỊNH CHÍNH THỨC TỪ CEO / BAN ĐIỀU HÀNH] hoặc [CURRENT] do Sếp/Owner chốt là chân lý thực tế cao nhất, có hiệu lực tuyệt đối và cao hơn mọi tài liệu văn bản tĩnh.
+2. PHÂN BIỆT RẠCH RÒI ĐỀ XUẤT VÀ QUYẾT ĐỊNH: Các mệnh đề có tiền tố 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT (PROPOSED)] chỉ là ý kiến, nguyện vọng hoặc câu hỏi xin phép của nhân viên, TUYỆT ĐỐI CHƯA PHẢI QUYẾT ĐỊNH. Khi trả lời, bot phải làm rõ: "Đây mới là đề xuất của bạn [X], hiện chưa được Sếp duyệt chính thức".
+3. KHÔNG GÁN GHÉP NHẦM LẪN NHÂN SỰ: Mỗi nhân sự có lộ trình và nhiệm vụ riêng. Người hỏi hỏi về ai thì chỉ trả lời đúng về người đó, tuyệt đối không lấy thông tin, vai trò hay lộ trình của nhân sự khác gán cho người hỏi.
+4. NÊU RÕ BIẾN ĐỘNG LỊCH SỬ: Nếu phát hiện mâu thuẫn giữa Tài liệu và Mệnh đề (ví dụ: tài liệu ghi giá trị A nhưng mệnh đề đã cập nhật giá trị B), hãy giải thích rõ: "Theo tài liệu gốc là A, tuy nhiên theo cập nhật thảo luận mới nhất đã được điều chỉnh thành B"."""
 
     def __init__(
         self,
@@ -319,14 +322,15 @@ class ContextComposer:
                     entity_type=etype,
                     replaces=f.get("replaces") or f.get("supersedes"),
                     source_snippet=snippet,
+                    asserted_by=f.get("asserted_by"),
                     created_at=f.get("created_at") or f.get("updated_at"),
                 )
             )
 
-        # Sắp xếp: CURRENT và UNCERTAIN ưu tiên trước SUPERSEDED
+        # Sắp xếp: CURRENT và PROPOSED ưu tiên trước SUPERSEDED
         def claim_sort_key(c: NormalizedClaim):
-            status_priority = {"current": 0, "uncertain": 1, "conflicted": 2, "superseded": 3}
-            return (status_priority.get(c.status, 4), c.entity_name or "")
+            status_priority = {"current": 0, "proposed": 1, "uncertain": 2, "conflicted": 3, "superseded": 4}
+            return (status_priority.get(c.status, 5), c.entity_name or "")
 
         claims.sort(key=claim_sort_key)
         return claims[: self.max_claims]
@@ -369,16 +373,37 @@ class ContextComposer:
         for ent_name, ent_claims in grouped.items():
             lines.append(f"📦 THỰC THỂ: {ent_name.upper()}")
 
-            # 1. Thuộc tính hiện hành (Active / Current)
+            # 1. Thuộc tính hiện hành / Quyết định chính thức (Active / Current)
             active = [c for c in ent_claims if c.status in ("current", "uncertain", "conflicted")]
             if active:
                 for c in active:
-                    st_badge = f"[{c.status.upper()}]"
-                    rep_note = f" (Thay thế cho: {c.replaces})" if c.replaces else ""
-                    src_note = f" | Nguồn: \"{c.source_snippet}\"" if c.source_snippet else ""
-                    lines.append(f"  • {st_badge} {c.property} = \"{c.value}\"{rep_note}{src_note}")
+                    asserted = c.asserted_by or {}
+                    speaker_role = asserted.get("role") if isinstance(asserted, dict) else getattr(asserted, "role", "member")
+                    speaker_name = asserted.get("user_name") if isinstance(asserted, dict) else getattr(asserted, "user_name", "")
 
-            # 2. Thuộc tính lịch sử (Superseded)
+                    if speaker_role == "owner":
+                        st_badge = "⭐ [QUYẾT ĐỊNH CHÍNH THỨC TỪ CEO / BAN ĐIỀU HÀNH]"
+                    else:
+                        st_badge = f"[{c.status.upper()}]"
+
+                    rep_note = f" (Thay thế cho: {c.replaces})" if c.replaces else ""
+                    speaker_note = f" (Chốt bởi: {speaker_name})" if speaker_name and speaker_role == "owner" else ""
+                    src_note = f" | Nguồn: \"{c.source_snippet}\"" if c.source_snippet else ""
+                    lines.append(f"  • {st_badge} {c.property} = \"{c.value}\"{speaker_note}{rep_note}{src_note}")
+
+            # 2. Đề xuất nhân sự / Chờ duyệt (Proposed)
+            proposed = [c for c in ent_claims if c.status == "proposed"]
+            if proposed:
+                for c in proposed:
+                    asserted = c.asserted_by or {}
+                    speaker_name = asserted.get("user_name") if isinstance(asserted, dict) else getattr(asserted, "user_name", "Nhân sự")
+                    src_note = f" | Lời đề xuất: \"{c.source_snippet}\"" if c.source_snippet else ""
+                    lines.append(
+                        f"  • 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT (PROPOSED)] {c.property} = \"{c.value}\" "
+                        f"(Đề xuất bởi: {speaker_name} - CHƯA ĐƯỢC DUYỆT CHÍNH THỨC){src_note}"
+                    )
+
+            # 3. Thuộc tính lịch sử (Superseded)
             superseded = [c for c in ent_claims if c.status == "superseded"]
             if superseded and self.include_superseded:
                 for c in superseded:
@@ -391,24 +416,29 @@ class ContextComposer:
 
     def align_claims_with_retriever(
         self,
-        chunks: List[RetrievedChunk],
-        claims: List[NormalizedClaim],
+        chunks: Optional[List[RetrievedChunk]] = None,
+        claims: Optional[List[NormalizedClaim]] = None,
         query: Optional[str] = None,
         entity_map: Optional[Dict[str, Any]] = None,
     ) -> List[NormalizedClaim]:
         """
-        Cơ chế So khớp Chéo Thực thể (Entity-Centric Alignment - Cách 1):
+        Cơ chế So khớp Chéo Thực thể (Entity-Centric Alignment):
         Chỉ giữ lại các Claims mà tên thực thể hoặc bí danh (aliases)
         có xuất hiện trong nội dung Chunks tài liệu WeKnora hoặc Câu hỏi người dùng.
         Tự động loại bỏ các Claims thuộc các dự án / thực thể hoàn toàn không liên quan.
         """
-        if not chunks or not claims:
+        if not claims:
+            return []
+        if not chunks and not query:
             return claims
 
         # Tạo văn bản nền neo đối chiếu: Chunks content + Doc Name + Query
-        anchor_text = " ".join([f"{c.content} {c.doc_name}" for c in chunks]).lower()
+        anchor_parts = []
+        if chunks:
+            anchor_parts.extend([f"{c.content} {c.doc_name}" for c in chunks])
         if query:
-            anchor_text += f" {query.lower()}"
+            anchor_parts.append(query)
+        anchor_text = " ".join(anchor_parts).lower()
 
         # Xây dựng danh sách từ khóa nhận diện của từng Entity (name + aliases)
         entity_keywords_map: Dict[str, Set[str]] = {}
@@ -428,24 +458,26 @@ class ContextComposer:
             c_name = (claim.entity_name or "").lower().strip()
             c_eid = str(claim.entity_id or "")
 
-            # 1. So khớp trực tiếp tên thực thể trong văn bản tài liệu/câu hỏi
-            is_matched = bool(c_name and len(c_name) >= 2 and c_name in anchor_text)
+            # 1. So khớp trực tiếp tên thực thể (Entity Name) với Word Boundary
+            is_matched = bool(
+                c_name
+                and len(c_name) >= 2
+                and re.search(rf"(?<!\w){re.escape(c_name)}(?!\w)", anchor_text)
+            )
 
-            # 2. So khớp qua aliases của thực thể trong entity_map
+            # 2. So khớp qua aliases của thực thể trong entity_map với Word Boundary
             if not is_matched and c_eid in entity_keywords_map:
-                is_matched = any(kw in anchor_text for kw in entity_keywords_map[c_eid])
-
-            # 3. So khớp qua trích đoạn nguồn / giá trị nếu có từ khóa đặc thù
-            if not is_matched and claim.source_snippet:
-                snip_words = [w for w in re.split(r"[\s,;?.!]+", claim.source_snippet.lower()) if len(w) >= 5]
-                if snip_words and any(w in anchor_text for w in snip_words):
-                    is_matched = True
+                is_matched = any(
+                    bool(re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", anchor_text))
+                    for kw in entity_keywords_map[c_eid]
+                )
 
             if is_matched:
                 matched_claims.append(claim)
 
-        # Fallback an toàn: Nếu sau khi lọc không còn claim nào, giữ lại claims ban đầu
-        return matched_claims if matched_claims else claims
+        # [FIX CRITICAL BUG]: Khi lọc không khớp thực thể nào, TRẢ VỀ RỖNG []
+        # Tuyệt đối KHÔNG fallback trả về toàn bộ claims của công ty (tránh nhầm lẫn nhân sự khác).
+        return matched_claims
 
     # -------------------------------------------------------------------------
     # 3. PHƯƠNG THỨC CHÍNH: COMPOSE
@@ -474,8 +506,8 @@ class ContextComposer:
         chunks = self.normalize_retriever_data(retriever_data)
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
 
-        # 2. Tự động so khớp chéo Thực thể (Cách 1) nếu bật auto_align
-        if auto_align and chunks and claims:
+        # 2. Tự động so khớp chéo Thực thể (Entity Alignment) nếu bật auto_align
+        if auto_align and claims and (chunks or query):
             claims = self.align_claims_with_retriever(
                 chunks=chunks,
                 claims=claims,

@@ -217,9 +217,80 @@ def test_cross_matching_filter():
     print("✔ TEST 4 PASSED: ĐÃ LỌC BỎ THÀNH CÔNG CLAIMS CỦA CRM RA KHỎI HILARK!")
 
 
+def test_composer_authority_and_no_fallback():
+    print("\n" + "=" * 60)
+    print("TEST 5: THẨM QUYỀN (CEO VS ĐỀ XUẤT NHÂN SỰ) & KHÔNG FALLBACK RÁC")
+    print("=" * 60)
+
+    claims = [
+        # Fact chốt của Sếp
+        {
+            "id": "fact_lead_official",
+            "entity_id": "ent_atlas",
+            "_entity_name": "Atlas",
+            "property": "lead",
+            "value": "Nguyên Trần",
+            "status": "current",
+            "asserted_by": {"user_id": "u_ceo", "user_name": "Nam CEO", "role": "owner"},
+            "source": {"snippet": "Sếp chốt giao Nguyên làm lead Atlas"},
+        },
+        # Đề xuất của nhân sự khác
+        {
+            "id": "fact_lead_proposal",
+            "entity_id": "ent_atlas",
+            "_entity_name": "Atlas",
+            "property": "lead",
+            "value": "Hoài Phước",
+            "status": "proposed",
+            "asserted_by": {"user_id": "u_phuoc", "user_name": "Hoài Phước", "role": "member"},
+            "source": {"snippet": "Cho em xin làm lead dự án này dc kh ạ?"},
+        },
+        # Fact của người hoàn toàn không liên quan (Trí AI)
+        {
+            "id": "fact_tri_role",
+            "entity_id": "ent_tri",
+            "_entity_name": "Trí",
+            "property": "role",
+            "value": "AI Engineer",
+            "status": "current",
+            "asserted_by": {"user_id": "u_tri", "user_name": "Trí", "role": "member"},
+            "source": {"snippet": "Trí làm AI Engineer"},
+        },
+    ]
+
+    composer = ContextComposer()
+
+    # Case 1: Hỏi về Atlas -> Phải thấy Fact của Sếp và Đề xuất của Hoài Phước, KHÔNG có Trí!
+    res_atlas = composer.compose(
+        claims_data=claims,
+        query="Ai làm lead dự án Atlas?",
+        auto_align=True,
+    )
+    context_text = res_atlas["context_text"]
+    print("\n[CONTEXT ATLAS]:\n", context_text)
+    assert "⭐ [QUYẾT ĐỊNH CHÍNH THỨC TỪ CEO / BAN ĐIỀU HÀNH]" in context_text
+    assert "Nguyên Trần" in context_text
+    assert "💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT (PROPOSED)]" in context_text
+    assert "Hoài Phước" in context_text
+    assert "Trí" not in context_text  # Trí bị loại bỏ hoàn toàn khỏi bối cảnh!
+
+    # Case 2: Hỏi về đối tượng hoàn toàn không có trong database -> Trả về rỗng, KHÔNG DUMP TẤT CẢ!
+    res_unknown = composer.compose(
+        claims_data=claims,
+        query="Tình hình dự án Blockchain XYZ thế nào?",
+        auto_align=True,
+    )
+    print("\n[CONTEXT UNKNOWN]:\n", res_unknown["context_text"])
+    assert res_unknown["metadata"]["num_claims"] == 0
+    assert "Nguyên Trần" not in res_unknown["context_text"]
+    assert "Trí" not in res_unknown["context_text"]
+    print("✔ TEST 5 PASSED: ĐÃ PHÂN BIỆT THẨM QUYỀN VÀ KHÔNG FALLBACK RÁC!")
+
+
 if __name__ == "__main__":
     test_composer_basic()
     test_composer_xml_format()
     test_functional_compose_context()
     test_cross_matching_filter()
+    test_composer_authority_and_no_fallback()
     print("\n🎉 TOÀN BỘ TESTS ĐÃ VƯỢT QUA THÀNH CÔNG!")
