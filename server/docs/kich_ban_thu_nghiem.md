@@ -276,4 +276,87 @@ Kịch bản được thiết kế để bạn copy/paste trực tiếp vào nh�
 * **Lệnh HỦY BỎ (`hủy digest` / `bỏ digest`):**
   - Gõ **`hủy digest`** -> Bản tổng hợp được đánh dấu `rejected`, không đẩy bất kỳ dữ liệu nào vào WeKnora.
 
+---
 
+## 🔒 PHẦN 6: PHÂN CẤP BẢO MẬT TỪ LARK BASE (MỨC ĐỘ BẢO MẬT)
+
+> **Mục đích**: 
+> Kiểm soát mức độ phát ngôn và rủi ro rò rỉ thông tin dựa trên cột **"Mức độ bảo mật"** cấu hình trên Lark Base (`Nội bộ`, `Tuyệt mật`).
+
+### Kịch bản 6.1: Nhóm Tuyệt Mật (Khóa Auto-Reply -> 100% Qua Sếp Duyệt)
+
+* **Thiết lập trên Lark Base**:
+  - Nhóm `[Project 3] LogiChain`: Cột `Mức độ bảo mật` chọn **`Tuyệt mật`**.
+* **Thành viên hỏi trong nhóm**:
+  > *"Kế hoạch thử nghiệm dự án LogiChain tiến hành thế nào anh?"*
+* **Hành vi của hệ thống**:
+  1. JEV phân loại câu hỏi là `REPLY_ONLY` (do có tài liệu và là câu hỏi dự án).
+  2. Hệ thống phát hiện nhóm ở mức **`Tuyệt mật` (Confidential)** $\rightarrow$ **Kích hoạt Zero Auto-reply**:
+     - Bot **TUYỆT ĐỐI IM LẶNG trong nhóm chat**, không tự trả lời.
+     - Tự động ép chuyển sang **`DRAFT_PENDING_APPROVAL`**.
+  3. Bot gửi thông báo soạn nháp riêng vào **DM của Sếp**:
+     ```text
+     📝 [SOẠN NHÁP CHỜ DUYỆT - DỰ ÁN TUYỆT MẬT]
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     👥 Nhóm chat : [Project 3] LogiChain
+     🛡️ Bảo mật   : TUYỆT MẬT (Khóa auto-reply)
+     👤 Người hỏi : Thành viên
+     💬 Câu hỏi   : "Kế hoạch thử nghiệm dự án LogiChain tiến hành thế nào anh?"
+
+     💡 Bản nháp AI soạn sẵn:
+     "Dự án LogiChain hiện đang hoàn thiện giai đoạn MVP..."
+
+     ⚠️ Lý do: Nhóm thuộc mức độ TUYỆT MẬT (Chính sách: 100% câu trả lời phải được Sếp duyệt trước khi gửi vào nhóm).
+     👉 Hành động chờ duyệt: Nhắn lại [Gửi] / [Sửa: <nội dung>] / [Bỏ]
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+     ```
+  4. Sếp xem xét trong DM:
+     - Nhắn `Gửi` $\rightarrow$ Câu trả lời mới xuất hiện trong nhóm dưới danh nghĩa Sếp.
+     - Nhắn `Sửa: ...` $\rightarrow$ Chỉnh sửa nội dung trước khi gửi.
+     - Nhắn `Bỏ` $\rightarrow$ Hủy bỏ, không gửi gì vào nhóm.
+
+---
+
+## 📚 PHẦN 7: TỔNG HỢP TRI THỨC ĐA LUỒNG (CLAIMS + DAILY DIGEST CHO WEKNORA WIKI)
+
+> **Mục đích**:
+> Tích hợp MongoDB Claims (Mệnh đề / Sự thật / Đề xuất) vào quá trình tổng hợp ngày, phân tách 2 bản dữ liệu:
+> 1. **Bản 1 (Lark DM)**: Gửi Sếp duyệt nhanh, **đính kèm các Đề xuất mới (Proposed Claims)** để Sếp không bị mù thông tin.
+> 2. **Bản 2 (WeKnora Wiki)**: Cấu trúc Entity-Centric, chứa quan hệ Nhóm chat thuộc Dự án nào, đẩy sang `wiki_dataset_id`.
+
+### Kịch bản 7.1: Duyệt Daily Digest Có Kèm Đề Xuất Của Nhân Sự
+* **Hoạt động trong ngày**:
+  - Thành viên Duy nhắn: *"Em đề xuất mình đổi cổng thanh toán sang VNPay Sandbox trước nhé."*
+  - Hệ thống trích xuất và lưu Claim: `entity='Fintech'`, `property='payment_gateway'`, `value='VNPay Sandbox'`, `status='proposed'`.
+* **Cuối ngày (Bản 1 gửi DM Sếp)**:
+  - Bot gửi tin nhắn xin duyệt có mục riêng:
+    ```text
+    📋 [YÊU CẦU DUYỆT DAILY DIGEST]
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    🏢 Nhóm chat     : Fintech Core Team
+    🎯 Dự án         : PayStream
+    📅 Ngày ghi nhận : 2026-10-17
+    ✉ Số tin nhắn   : 20 | 🧠 Số Claims: 1
+
+    🔍 TỔNG QUAN HÔM NAY:
+    Thảo luận tích hợp cổng thanh toán mới.
+
+    💡 ĐỀ XUẤT MỚI TỪ THÀNH VIÊN (PROPOSED CLAIMS):
+      - Duy đề xuất: payment_gateway = VNPay Sandbox
+
+    👉 Quyết định nổi bật: ...
+    👉 Cam kết deadline: ...
+    ```
+* **Khi Sếp duyệt (Bản 2 đẩy sang WeKnora Wiki)**:
+  - Bot đẩy văn bản Markdown chuẩn Entity-Centric sang `wiki_dataset_id`:
+    ```markdown
+    # WIKI KNOWLEDGE BASE: [[DỰ ÁN PAYSTREAM]]
+    **Nhóm trao đổi (Chat Group):** [[Fintech Core Team]] (ID: `oc_xxx`)
+    **Dự án trực thuộc (Parent Project):** [[PayStream]]
+    
+    ## 2. THỰC THỂ & MỆNH ĐỀ CẬP NHẬT (ENTITIES & CLAIMS)
+    ### 📌 Thực thể: [[Fintech]]
+    - **Thuộc nhóm chat:** [[Fintech Core Team]] | **Dự án:** [[PayStream]]
+      • `[PROPOSED]` **payment_gateway**: VNPay Sandbox
+        - *Khẳng định bởi:* Duy (member)
+    ```

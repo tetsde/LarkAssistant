@@ -12,6 +12,7 @@ class Settings:
     BASE_URL: str = os.getenv("base_url", "http://localhost/api/v1")
     JEV_API_KEY: str = os.getenv("jev_api", "")
     WEKNORA_DATASET_ID: str = os.getenv("dataset_id", "")
+    WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api", "")
 
     # Backward compatibility alias

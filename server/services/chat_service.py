@@ -524,6 +524,17 @@ async def process_chat_pipeline(
         )
         jev_action = "DRAFT_PENDING_APPROVAL"
 
+    # ── [CHỐT CHẶN BẢO MẬT: MỨC ĐỘ BẢO MẬT TUYỆT MẬT (ZERO AUTO-REPLY)] ──
+    # Nếu nhóm ở mức độ "Tuyệt mật" (Strict Confidential), CẤM hoàn toàn bot tự động reply vào nhóm.
+    # 100% câu hỏi trả lời bắt buộc chuyển thành DRAFT_PENDING_APPROVAL gửi về DM của Sếp duyệt!
+    is_confidential_group = bool(scope_record and scope_record.is_confidential)
+    if is_confidential_group and jev_action == "REPLY_ONLY":
+        logger.warning(
+            f"🔒 [SECURITY LEVEL - TUYỆT MẬT] Nhóm '{scope_record.chat_name}' ({chat_id}) được thiết lập 'Tuyệt mật'. "
+            f"Kích hoạt Zero Auto-reply: Ép chuyển REPLY_ONLY sang DRAFT_PENDING_APPROVAL."
+        )
+        jev_action = "DRAFT_PENDING_APPROVAL"
+
     # 3. Hợp nhất ngữ cảnh với ContextComposer
     scope_ctx_data = None
     if scope_record:
@@ -590,14 +601,23 @@ async def process_chat_pipeline(
         )
 
         if reply_to_lark:
+            header_title = "DỰ ÁN TUYỆT MẬT" if is_confidential_group else "CÂU HỎI CÓ RỦI RO"
+            reason_text = (
+                "Nhóm thuộc mức độ TUYỆT MẬT (Chính sách: 100% câu trả lời phải được Sếp duyệt trước khi gửi vào nhóm)."
+                if is_confidential_group
+                else "Câu hỏi có dữ liệu trong Knowledge Base nhưng thuộc nhóm rủi ro/nhạy cảm."
+            )
+            chat_title = scope_record.chat_name if scope_record else (chat_id or "Nhóm chat")
             draft_card_text = (
-                "📝 [SOẠN NHÁP CHỜ DUYỆT - CÂU HỎI CÓ RỦI RO]\n"
+                f"📝 [SOẠN NHÁP CHỜ DUYỆT - {header_title}]\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 Nhóm chat : {chat_title}\n"
+                f"🛡️ Bảo mật   : {'TUYỆT MẬT (Khóa auto-reply)' if is_confidential_group else (scope_record.security_level if scope_record else 'Tiêu chuẩn')}\n"
                 f"👤 Người hỏi : {user_name or 'bạn'}\n"
                 f"💬 Câu hỏi   : \"{clean_query}\"\n\n"
                 f"💡 Bản nháp AI soạn sẵn:\n"
                 f"\"{answer}\"\n\n"
-                f"⚠️ Lý do: Câu hỏi có dữ liệu trong Knowledge Base nhưng thuộc nhóm rủi ro/nhạy cảm.\n"
+                f"⚠️ Lý do: {reason_text}\n"
                 f"👉 Hành động chờ duyệt: Nhắn lại [Gửi] / [Sửa: <nội dung>] / [Bỏ]\n"
                 f"🆔 Message ID gốc: {message_id or 'N/A'}\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -24,8 +24,10 @@ class ChatScopeRecord(BaseModel):
     chat_name: str = Field(default="", description="Tên nhóm chat hiển thị trên Lark")
     dataset_id: str = Field(default="", description="ID Knowledge Base / Dataset trên WeKnora")
     dataset_name: str = Field(default="", description="Tên hiển thị của Knowledge Base trên WeKnora")
+    wiki_dataset_id: Optional[str] = Field(default="", description="ID Knowledge Base Wiki trên WeKnora")
     project_tag: Optional[str] = Field(default=None, description="Mã thẻ dự án (nếu có)")
     status: str = Field(default="Hoạt động", description="Trạng thái nhóm trên Lark Base: Hoạt động / Tạm dừng...")
+    security_level: str = Field(default="Nội bộ", description="Mức độ bảo mật: Nội bộ / Tuyệt mật")
     forbidden_labels: list[str] = Field(default_factory=list, description="Danh sách nhãn cấm xem (Ngân sách, Chi phí...)")
     allowed_labels: list[str] = Field(default_factory=list, description="Danh sách nhãn được phép xem")
     documents: list[Dict[str, Any]] = Field(default_factory=list, description="Danh sách tài liệu file đính kèm")
@@ -43,6 +45,19 @@ class ChatScopeRecord(BaseModel):
             return True
         st = self.status.strip().lower()
         return st in ("hoạt động", "active", "enable", "enabled", "true", "1")
+
+    @property
+    def is_confidential(self) -> bool:
+        """Kiểm tra nhóm có thuộc mức độ bảo mật Tuyệt mật (Strict Confidential) hay không."""
+        if not self.security_level:
+            return False
+        sec = self.security_level.strip().lower()
+        return sec in ("tuyệt mật", "tuyet mat", "confidential", "secret", "strict")
+
+    @property
+    def is_internal(self) -> bool:
+        """Kiểm tra nhóm có thuộc mức độ bảo mật Nội bộ hay không (Mặc định)."""
+        return not self.is_confidential
 
     def get_document_names(self) -> List[str]:
         """Trả về danh sách tên file tài liệu đính kèm của nhóm."""

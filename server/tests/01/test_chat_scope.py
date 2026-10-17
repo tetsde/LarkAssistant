@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from core.config import settings
 from models.chat_scope import ChatScopeRecord
+from services.lark import lark_service
 from services.scope_service import ScopeService
 
 
@@ -193,6 +194,86 @@ class TestChatScope(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rec.knowledge_ids, ["k_id_999"])
         self.assertEqual(len(rec.documents), 1)
         self.assertEqual(rec.documents[0]["knowledge_id"], "k_id_999")
+
+    def test_security_level_properties(self):
+        """Kiểm tra các thuộc tính phân loại mức độ bảo mật (Nội bộ vs Tuyệt mật)."""
+        rec_conf = ChatScopeRecord(chat_id="oc_conf", security_level="Tuyệt mật")
+        self.assertTrue(rec_conf.is_confidential)
+        self.assertFalse(rec_conf.is_internal)
+
+        rec_inter = ChatScopeRecord(chat_id="oc_inter", security_level="Nội bộ")
+        self.assertFalse(rec_conf := rec_inter.is_confidential)
+        self.assertTrue(rec_inter.is_internal)
+
+    @patch("services.scope_service.weknora_service.upload_file", new_callable=AsyncMock)
+    @patch("services.scope_service.get_chat_scopes_collection")
+    async def test_sync_group_extracts_security_level(self, mock_coll_getter, mock_upload):
+        mock_coll = AsyncMock()
+        mock_coll.find_one.return_value = None
+        mock_coll.update_one.return_value = AsyncMock(acknowledged=True)
+        mock_coll_getter.return_value = mock_coll
+
+        raw_record = {
+            "record_id": "rec_sec_01",
+            "fields": {
+                "ID Group": "oc_group_secret",
+                "Dự án / Nhóm": "Dự án LogiChain Tuyệt Mật",
+                "Mức độ bảo mật": "Tuyệt mật",
+                "Trạng thái": "Hoạt động",
+            },
+        }
+
+        rec = await self.service.sync_group_from_base_record(raw_record)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.security_level, "Tuyệt mật")
+        self.assertTrue(rec.is_confidential)
+
+    async def test_chat_pipeline_downgrades_reply_to_draft_on_confidential_group(self):
+        """Kiểm tra nhóm ở mức độ 'Tuyệt mật' thì 100% câu hỏi tự trả lời đều bị ép sang draft chờ duyệt."""
+        from services.chat_service import process_chat_pipeline
+
+        mock_scope = ChatScopeRecord(
+            chat_id="oc_group_secret",
+            chat_name="Dự án Tuyệt Mật",
+            security_level="Tuyệt mật",
+            status="Hoạt động",
+        )
+
+        with (
+            patch("services.chat_service.scope_service.get_scope_by_chat_id", new_callable=AsyncMock) as mock_get_scope,
+            patch("services.chat_service.jev_service.classify_message", new_callable=AsyncMock) as mock_classify,
+            patch("services.chat_service.get_mongo_facts", new_callable=AsyncMock) as mock_get_facts,
+            patch("services.chat_service.weknora_service.retrieve", new_callable=AsyncMock) as mock_retrieve,
+            patch("services.chat_service.ContextComposer") as mock_composer_cls,
+            patch("services.chat_service.generate_grounded_answer", new_callable=AsyncMock) as mock_gen_answer,
+            patch("services.chat_service.draft_store.create", new_callable=AsyncMock) as mock_create_draft,
+            patch("services.chat_service.lark_service.send_bot_dm_to_owner", new_callable=AsyncMock) as mock_send_dm,
+            patch("services.chat_service.lark_service.areply_text", new_callable=AsyncMock) as mock_areply,
+            patch.object(lark_service, "known_user_open_id", "ou_owner_123"),
+        ):
+            mock_get_scope.return_value = mock_scope
+            mock_classify.return_value = {"action": "REPLY_ONLY", "confidence": 0.99}
+            mock_get_facts.return_value = []
+            mock_retrieve.return_value = [{"content": "Tài liệu bí mật", "document_name": "NDA.pdf"}]
+            mock_composer_cls.return_value.compose.return_value = {"context_text": "Tài liệu bí mật"}
+            mock_gen_answer.return_value = "Câu trả lời đã soạn nháp."
+
+            res = await process_chat_pipeline(
+                query="Kế hoạch thử nghiệm dự án bí mật thế nào?",
+                sender="ou_member_99",
+                chat_id="oc_group_secret",
+                message_id="msg_secret_1",
+                reply_to_lark=True,
+                user_name="Thành viên bí mật",
+            )
+
+            # JEV ban đầu là REPLY_ONLY nhưng do nhóm là Tuyệt mật -> Ép sang DRAFT_PENDING_APPROVAL!
+            self.assertEqual(res["jev_action"], "DRAFT_PENDING_APPROVAL")
+            self.assertEqual(res["status"], "draft_pending_approval")
+            mock_create_draft.assert_awaited_once()
+            mock_send_dm.assert_awaited_once()
+            # TUYỆT ĐỐI không reply trực tiếp vào nhóm!
+            mock_areply.assert_not_awaited()
 
     async def test_sync_group_skip_empty_chat_id(self):
         raw_record = {

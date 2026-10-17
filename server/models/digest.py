@@ -140,6 +140,9 @@ class DailyDigestRecord(BaseModel):
     commitments: List[CommitmentItem] = Field(default_factory=list)
     status_changes: List[StatusChangeItem] = Field(default_factory=list)
 
+    # Claims / Mệnh đề & Sự thật bóc tách từ tin nhắn
+    claims: List[Dict[str, Any]] = Field(default_factory=list, description="Danh sách Claims/Facts đã bóc tách và xác thực trong ngày")
+
     # Metadata & Đồng bộ WeKnora
     message_count: int = Field(default=0, description="Tổng số tin nhắn staging đã tổng hợp")
     weknora_doc_id: Optional[str] = Field(default=None, description="ID tài liệu trên WeKnora")
@@ -149,25 +152,60 @@ class DailyDigestRecord(BaseModel):
     updated_at: str = Field(default_factory=get_vietnam_now_iso)
 
     def to_weknora_markdown(self) -> str:
-        """Render thành văn bản Markdown chuẩn để nạp vào WeKnora."""
-        title_name = self.chat_name.upper() if self.chat_name else "LARK CHAT"
+        """Render thành văn bản Markdown chuẩn Entity-Centric để nạp vào WeKnora Wiki Knowledge Base."""
+        project_name = self.project_tag or "Nội bộ"
+        group_display = self.chat_name or f"Nhóm {self.chat_id}"
+
         lines = [
-            f"# NHẬT KÝ TRAO ĐỔI LẬP TRÌNH & DỰ ÁN: {title_name}",
-            f"**Ngày ghi nhận:** {self.date} | **Dự án:** {self.project_tag or 'Nội bộ'}",
-            f"**Số lượng tin nhắn tổng hợp:** {self.message_count}",
+            f"# WIKI KNOWLEDGE BASE: [[DỰ ÁN {project_name.upper()}]]",
+            f"**Nhóm trao đổi (Chat Group):** [[{group_display}]] (ID: `{self.chat_id}`)",
+            f"**Dự án trực thuộc (Parent Project):** [[{project_name}]]",
+            f"**Ngày ghi nhận:** `{self.date}` | **Tin nhắn tổng hợp:** {self.message_count} | **Số lượng Claims:** {len(self.claims)}",
             "",
-            "## 1. TỔNG QUAN HÔM NAY",
-            self.overview_summary or "Hôm nay ghi nhận các trao đổi về quyết định, cam kết tiến độ và cập nhật trạng thái dự án.",
+            "## 1. TỔNG QUAN DIỄN BIẾN (EXECUTIVE OVERVIEW)",
+            self.overview_summary or "Ghi nhận các trao đổi về quyết định, cam kết tiến độ và cập nhật trạng thái trong ngày.",
             "",
             "---",
-            "## 2. CÁC QUYẾT ĐỊNH ĐÃ THỐNG NHẤT (DECISIONS)",
+            "## 2. THỰC THỂ & MỆNH ĐỀ CẬP NHẬT (ENTITIES & CLAIMS)",
         ]
+
+        # Nhóm claims theo Entity
+        if not self.claims:
+            lines.append("*(Không có claims bổ sung nào trong ngày)*")
+        else:
+            # Gom claims theo entity_id
+            claims_by_entity: Dict[str, List[Dict[str, Any]]] = {}
+            for cl in self.claims:
+                eid = cl.get("entity_id") or project_name
+                claims_by_entity.setdefault(eid, []).append(cl)
+
+            for eid, cl_list in claims_by_entity.items():
+                lines.append(f"\n### 📌 Thực thể: [[{eid}]]")
+                lines.append(f"- **Thuộc nhóm chat:** [[{group_display}]] | **Dự án:** [[{project_name}]]")
+                for c in cl_list:
+                    status = (c.get("status") or "current").upper()
+                    prop = c.get("property") or "info"
+                    val = c.get("value") or ""
+                    asserted = c.get("asserted_by") or {}
+                    speaker = asserted.get("user_name") or asserted.get("user_id") or "Thành viên"
+                    role = asserted.get("role") or "member"
+                    src = c.get("source") or ""
+                    lines.append(f"  • `[{status}]` **{prop}**: {val}")
+                    lines.append(f"    - *Khẳng định bởi:* {speaker} ({role})")
+                    if src:
+                        lines.append(f"    - *Bằng chứng:* > *\"{src}\"*")
+
+        lines.extend([
+            "",
+            "---",
+            "## 3. CÁC QUYẾT ĐỊNH ĐÃ THỐNG NHẤT (DECISIONS)",
+        ])
 
         if not self.decisions:
             lines.append("*Không có quyết định mới nào được chốt trong ngày.*")
         else:
             for i, d in enumerate(self.decisions, 1):
-                lines.append(f"### 2.{i}. {d.title}")
+                lines.append(f"### 3.{i}. {d.title}")
                 lines.append(f"- **Nội dung:** {d.content}")
                 if d.scope:
                     lines.append(f"- **Phạm vi áp dụng:** {d.scope}")
@@ -181,27 +219,23 @@ class DailyDigestRecord(BaseModel):
 
         lines.extend([
             "---",
-            "## 3. CAM KẾT VÀ HẠN CHÓT (COMMITMENTS & PROMISES)",
+            "## 4. MA TRẬN CAM KẾT & HẠN CHÓT (COMMITMENT MATRIX)",
         ])
         if not self.commitments:
             lines.append("*Không có cam kết nào phát sinh trong ngày.*")
         else:
-            for i, c in enumerate(self.commitments, 1):
-                lines.append(f"### 3.{i}. {c.promiser_name} cam kết: {c.task}")
-                lines.append(f"- **Hạn chót (Deadline):** `{c.deadline}`")
-                if c.recipient_name:
-                    lines.append(f"- **Cam kết với:** {c.recipient_name}")
-                lines.append(
-                    f"- **Truy vết:** **{c.source.speaker_name}** phát ngôn lúc `{c.source.timestamp}` | "
-                    f"[📎 Xem tin nhắn gốc]({c.source.message_link})"
-                )
-                if c.source.quote:
-                    lines.append(f"  > *\"{c.source.quote}\"*")
-                lines.append("")
+            lines.append("| Người cam kết | Nhiệm vụ | Hạn chót (Deadline) | Cam kết với | Nguồn tin |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            for c in self.commitments:
+                deadline = c.deadline or "Chưa rõ"
+                recipient = c.recipient_name or "Nhóm"
+                link_str = f"[{c.source.speaker_name}]({c.source.message_link})"
+                lines.append(f"| **{c.promiser_name}** | {c.task} | `{deadline}` | {recipient} | {link_str} |")
+            lines.append("")
 
         lines.extend([
             "---",
-            "## 4. THAY ĐỔI TRẠNG THÁI (TIẾN ĐỘ, MỐC, BLOCKER)",
+            "## 5. THAY ĐỔI TRẠNG THÁI & BLOCKERS (STATUS & BLOCKERS)",
         ])
         if not self.status_changes:
             lines.append("*Không có cập nhật trạng thái nào trong ngày.*")
@@ -212,7 +246,7 @@ class DailyDigestRecord(BaseModel):
                     if s.category == StatusCategory.BLOCKER
                     else ("🟢 MILESTONE" if s.category == StatusCategory.MILESTONE else "🔵 TIẾN ĐỘ")
                 )
-                lines.append(f"### 4.{i}. [{tag}] {s.target_object}: {s.summary}")
+                lines.append(f"### 5.{i}. [{tag}] {s.target_object}: {s.summary}")
                 lines.append(f"- **Trạng thái:** {s.previous_state or 'Ban đầu'} ➔ **{s.new_state}**")
                 if s.blocker_reason:
                     lines.append(f"- **Vướng mắc / Cần hỗ trợ:** {s.blocker_reason}")
@@ -283,12 +317,24 @@ class MasterDailyDigestRecord(BaseModel):
         else:
             for idx, gd in enumerate(self.group_digests, 1):
                 grp_title = gd.chat_name or gd.project_tag or gd.chat_id
+                proj_title = gd.project_tag or "Nội bộ"
                 lines.extend([
-                    f"\n### 📌 Nhóm {idx}: {grp_title}",
-                    f"💬 *Số tin nhắn:* {gd.message_count} | 🎯 *Dự án:* {gd.project_tag or 'Nội bộ'}",
+                    f"\n### 📌 Nhóm {idx}: [[{grp_title}]] (ID: `{gd.chat_id}`)",
+                    f"🏢 *Dự án trực thuộc:* [[{proj_title}]] | 💬 *Tin nhắn:* {gd.message_count} | 🧠 *Claims:* {len(gd.claims)}",
                 ])
                 if gd.overview_summary:
                     lines.append(f"📝 *Tóm tắt:* {gd.overview_summary}")
+
+                # 0. Mệnh đề / Đề xuất từ thành viên (Claims)
+                proposed_claims = [c for c in gd.claims if (c.get("status") or "").lower() == "proposed"]
+                if proposed_claims:
+                    lines.append("\n  💡 **Đề xuất từ thành viên (Proposed Claims):**")
+                    for p in proposed_claims[:3]:
+                        prop = p.get("property") or "idea"
+                        val = p.get("value") or ""
+                        asserted = p.get("asserted_by") or {}
+                        spk = asserted.get("user_name") or asserted.get("user_id") or "Thành viên"
+                        lines.append(f"    • {spk} đề xuất: **{prop}** = {val}")
 
                 # 1. Quyết định
                 if gd.decisions:

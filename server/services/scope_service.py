@@ -29,10 +29,12 @@ BASE_FIELD_MAP: Dict[str, List[str]] = {
     "chat_id": ["fldMa7EqDd", "ID Group", "chat_id"],
     "chat_name": ["fldQh1mqwW", "Dự án / Nhóm", "chat_name"],
     "status": ["fldbk4Upv9", "Trạng thái", "status"],
+    "security_level": ["fldY4BvFLK", "Mức độ bảo mật", "security_level", "confidentiality"],
     "forbidden_labels": ["fldsexGPII", "Nhãn cấm xem", "forbidden_labels"],
     "allowed_labels": ["fldAYjcC5W", "Nhãn cho phép xem", "allowed_labels"],
     "documents": ["fldHpn8M87", "Documents", "documents"],
     "dataset_id": ["fldKBId", "Knowledge Base ID", "dataset_id"],
+    "wiki_dataset_id": ["fldWikiKB", "Wiki KB", "wiki_dataset_id", "wiki_kb_id"],
 }
 
 
@@ -108,6 +110,21 @@ class ScopeService:
             default_id = default_id.split(",")[0].strip()
         return default_id, "Knowledge Base Mặc Định"
 
+    async def get_wiki_kb_for_chat(self, chat_id: Optional[str]) -> str:
+        """
+        Tra cứu Wiki Knowledge Base ID cho một nhóm chat để lưu trữ digest & diễn biến dự án.
+        Nếu nhóm chưa cấu hình riêng wiki_dataset_id, tự động fallback về WEKNORA_WIKI_DATASET_ID hoặc WEKNORA_DATASET_ID.
+        """
+        if chat_id:
+            scope = await self.get_scope_by_chat_id(chat_id)
+            if scope and scope.wiki_dataset_id:
+                return scope.wiki_dataset_id
+
+        default_wiki_id = settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID or ""
+        if "," in default_wiki_id:
+            default_wiki_id = default_wiki_id.split(",")[0].strip()
+        return default_wiki_id
+
     async def set_chat_kb(
         self,
         chat_id: str,
@@ -159,13 +176,17 @@ class ScopeService:
             existing = await coll.find_one({"chat_id": chat_id})
 
             created_at = existing.get("created_at", now_iso) if existing else now_iso
+            security_level = existing.get("security_level", "Nội bộ") if existing else "Nội bộ"
+            wiki_dataset_id = existing.get("wiki_dataset_id", "") if existing else ""
 
             scope_rec = ChatScopeRecord(
                 chat_id=chat_id,
                 chat_name=chat_name or (existing.get("chat_name", "") if existing else ""),
                 dataset_id=clean_dataset_id,
                 dataset_name=dataset_name,
+                wiki_dataset_id=wiki_dataset_id,
                 project_tag=project_tag or (existing.get("project_tag") if existing else None),
+                security_level=security_level,
                 updated_by=operator_open_id,
                 updated_by_name=operator_name or "Admin",
                 created_at=created_at,
@@ -262,17 +283,22 @@ class ScopeService:
         # 2. Trích xuất tên nhóm / dự án
         chat_name = _extract_text_field(_get_base_field(raw_fields, "chat_name")) or f"Nhóm {chat_id}"
 
-        # 3. Trích xuất trạng thái
+        # 3. Trích xuất trạng thái & mức độ bảo mật
         status = _extract_text_field(_get_base_field(raw_fields, "status")) or "Hoạt động"
+        raw_sec = _extract_text_field(_get_base_field(raw_fields, "security_level")) or "Nội bộ"
+        security_level = "Tuyệt mật" if raw_sec.strip().lower() in ("tuyệt mật", "tuyet mat", "confidential", "secret", "strict") else "Nội bộ"
 
         # 4. Trích xuất nhãn cấm xem & nhãn được phép xem
         forbidden_labels = _extract_labels(_get_base_field(raw_fields, "forbidden_labels"))
         allowed_labels = _extract_labels(_get_base_field(raw_fields, "allowed_labels"))
 
-        # 5. Xác định Dataset ID
+        # 5. Xác định Dataset ID & Wiki Dataset ID
         effective_dataset_id = target_dataset_id or settings.WEKNORA_DATASET_ID or ""
         if "," in effective_dataset_id:
             effective_dataset_id = effective_dataset_id.split(",")[0].strip()
+
+        raw_wiki = _extract_text_field(_get_base_field(raw_fields, "wiki_dataset_id"))
+        wiki_dataset_id = raw_wiki or settings.WEKNORA_WIKI_DATASET_ID or ""
 
         # 6. Đọc tài liệu đính kèm Documents
         docs_val = _get_base_field(raw_fields, "documents")
@@ -342,7 +368,9 @@ class ScopeService:
             chat_name=chat_name,
             dataset_id=effective_dataset_id,
             dataset_name=existing_scope.dataset_name if existing_scope else "Lark Base Knowledge Base",
+            wiki_dataset_id=wiki_dataset_id,
             status=status,
+            security_level=security_level,
             forbidden_labels=forbidden_labels,
             allowed_labels=allowed_labels,
             documents=synced_docs,

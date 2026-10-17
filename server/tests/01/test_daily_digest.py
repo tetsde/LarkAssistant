@@ -148,26 +148,25 @@ class TestDigestModelsAndUtils(unittest.TestCase):
 
         md = digest.to_weknora_markdown()
 
-        # Kiểm tra tiêu đề và metadata
-        self.assertIn("# NHẬT KÝ TRAO ĐỔI LẬP TRÌNH & DỰ ÁN: HILARK CORE TEAM", md)
-        self.assertIn("**Ngày ghi nhận:** 2026-10-12 | **Dự án:** HiLark-2026", md)
-        self.assertIn("**Số lượng tin nhắn tổng hợp:** 35", md)
+        # Kiểm tra tiêu đề Wiki và quan hệ Nhóm - Dự án
+        self.assertIn("# WIKI KNOWLEDGE BASE: [[DỰ ÁN HILARK-2026]]", md)
+        self.assertIn("**Nhóm trao đổi (Chat Group):** [[HiLark Core Team]] (ID: `oc_team_dev`)", md)
+        self.assertIn("**Dự án trực thuộc (Parent Project):** [[HiLark-2026]]", md)
+        self.assertIn("**Ngày ghi nhận:** `2026-10-12` | **Tin nhắn tổng hợp:** 35", md)
 
         # Kiểm tra mục Quyết định
-        self.assertIn("## 2. CÁC QUYẾT ĐỊNH ĐÃ THỐNG NHẤT (DECISIONS)", md)
-        self.assertIn("2.1. Chuẩn hóa API và Auth", md)
+        self.assertIn("## 3. CÁC QUYẾT ĐỊNH ĐÃ THỐNG NHẤT (DECISIONS)", md)
+        self.assertIn("3.1. Chuẩn hóa API và Auth", md)
         self.assertIn("Chốt bởi **Nam Lê** lúc `10:00 12/10/2026`", md)
         self.assertIn("[📎 Xem tin nhắn gốc](https://applink.larksuite.com/client/message/open?open_message_id=om_dec_1)", md)
 
-        # Kiểm tra mục Cam kết
-        self.assertIn("## 3. CAM KẾT VÀ HẠN CHÓT (COMMITMENTS & PROMISES)", md)
-        self.assertIn("Tuấn Dev cam kết: Hoàn thành bộ test case cho module Payment", md)
-        self.assertIn("`17:00 16/10/2026`", md)
-        self.assertIn("Cam kết với:** Tech Lead", md)
-        self.assertIn("[📎 Xem tin nhắn gốc](https://applink.larksuite.com/client/message/open?open_message_id=om_cmt_1)", md)
+        # Kiểm tra mục Ma trận Cam kết
+        self.assertIn("## 4. MA TRẬN CAM KẾT & HẠN CHÓT (COMMITMENT MATRIX)", md)
+        self.assertIn("| **Tuấn Dev** | Hoàn thành bộ test case cho module Payment | `17:00 16/10/2026` | Tech Lead |", md)
+        self.assertIn("[Tuấn Dev](https://applink.larksuite.com/client/message/open?open_message_id=om_cmt_1)", md)
 
-        # Kiểm tra mục Thay đổi trạng thái
-        self.assertIn("## 4. THAY ĐỔI TRẠNG THÁI (TIẾN ĐỘ, MỐC, BLOCKER)", md)
+        # Kiểm tra mục Thay đổi trạng thái & Blocker
+        self.assertIn("## 5. THAY ĐỔI TRẠNG THÁI & BLOCKERS (STATUS & BLOCKERS)", md)
         self.assertIn("[🔴 BLOCKER] Cổng thanh toán VietQR", md)
         self.assertIn("Vướng mắc / Cần hỗ trợ:** Chờ ngân hàng duyệt và gửi API Sandbox Key", md)
         self.assertIn("[📎 Xem tin nhắn gốc](https://applink.larksuite.com/client/message/open?open_message_id=om_stc_1)", md)
@@ -397,6 +396,113 @@ class TestDigestService(unittest.IsolatedAsyncioTestCase):
             self.assertIn("từ chối", msg)
             self.assertEqual(rec.sync_status, "rejected")
             mock_mongo_coll.update_one.assert_called_once()
+
+    def test_to_weknora_markdown_with_claims_and_wiki_structure(self):
+        """Kiểm tra render Markdown cho WeKnora Wiki: Gom theo thực thể, hiển thị Claims và quan hệ Nhóm - Dự án."""
+        claims = [
+            {
+                "id": "claim_01",
+                "entity_id": "LogiChain",
+                "property": "database",
+                "value": "PostgreSQL",
+                "status": "current",
+                "asserted_by": {"user_name": "Nam Tống", "role": "owner"},
+                "source": "Chốt đổi sang Postgres nhé",
+            },
+            {
+                "id": "claim_02",
+                "entity_id": "LogiChain",
+                "property": "queue",
+                "value": "RabbitMQ",
+                "status": "proposed",
+                "asserted_by": {"user_name": "Duy", "role": "member"},
+                "source": "Em đề xuất dùng RabbitMQ",
+            },
+        ]
+
+        digest = DailyDigestRecord(
+            id="digest_wiki_test",
+            date="2026-10-17",
+            chat_id="oc_group_logichain",
+            chat_name="[Project 3] LogiChain",
+            project_tag="LogiChain Tracking",
+            overview_summary="Hôm nay thảo luận kiến trúc DB và hàng đợi.",
+            claims=claims,
+            message_count=15,
+        )
+
+        md = digest.to_weknora_markdown()
+
+        # Tiêu đề và quan hệ Nhóm - Dự án
+        self.assertIn("# WIKI KNOWLEDGE BASE: [[DỰ ÁN LOGICHAIN TRACKING]]", md)
+        self.assertIn("**Nhóm trao đổi (Chat Group):** [[[Project 3] LogiChain]] (ID: `oc_group_logichain`)", md)
+        self.assertIn("**Dự án trực thuộc (Parent Project):** [[LogiChain Tracking]]", md)
+        self.assertIn("**Số lượng Claims:** 2", md)
+
+        # Mục Thực thể & Mệnh đề (Entity & Claims)
+        self.assertIn("## 2. THỰC THỂ & MỆNH ĐỀ CẬP NHẬT (ENTITIES & CLAIMS)", md)
+        self.assertIn("### 📌 Thực thể: [[LogiChain]]", md)
+        self.assertIn("- **Thuộc nhóm chat:** [[[Project 3] LogiChain]] | **Dự án:** [[LogiChain Tracking]]", md)
+        self.assertIn("`[CURRENT]` **database**: PostgreSQL", md)
+        self.assertIn("Khẳng định bởi:* Nam Tống (owner)", md)
+        self.assertIn("`[PROPOSED]` **queue**: RabbitMQ", md)
+        self.assertIn("Khẳng định bởi:* Duy (member)", md)
+
+    async def test_send_approval_request_displays_proposed_claims_and_project(self):
+        """Kiểm tra bản tin nhắn gửi Sếp duyệt (Bản 1) có hiển thị Dự án trực thuộc và Đề xuất mới từ thành viên."""
+        service = DigestService(gemini_api_key="mock_key")
+        claims = [
+            {
+                "id": "c1",
+                "entity_id": "Fintech",
+                "property": "payment_gateway",
+                "value": "VNPay Sandbox",
+                "status": "proposed",
+                "asserted_by": {"user_name": "Tuấn Dev", "role": "member"},
+            }
+        ]
+
+        digest = DailyDigestRecord(
+            id="digest_approval_test",
+            date="2026-10-17",
+            chat_id="oc_fintech",
+            chat_name="Fintech Core",
+            project_tag="PayStream",
+            overview_summary="Đề xuất tích hợp cổng thanh toán.",
+            claims=claims,
+            message_count=20,
+        )
+
+        with patch("services.lark.lark_service.send_bot_dm_to_owner", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = {"success": True}
+            ok = await service.send_approval_request(digest, approver_open_id="ou_approver_123")
+            self.assertTrue(ok)
+            mock_send.assert_awaited_once()
+
+            sent_text = mock_send.await_args[0][0]
+            self.assertIn("🎯 Dự án         : PayStream", sent_text)
+            self.assertIn("💡 ĐỀ XUẤT MỚI TỪ THÀNH VIÊN (PROPOSED CLAIMS):", sent_text)
+            self.assertIn("Tuấn Dev đề xuất: payment_gateway = VNPay Sandbox", sent_text)
+
+    async def test_get_claims_for_digest_from_mongo(self):
+        """Kiểm tra hàm get_claims_for_digest truy vấn đúng collection claims trong MongoDB."""
+        service = DigestService(gemini_api_key="mock_key")
+        mock_claims = [
+            {"id": "cl_1", "chat_id": "oc_test_chat", "property": "db", "value": "Postgres", "status": "current"},
+            {"id": "cl_2", "project_tag": "TestProject", "property": "auth", "value": "JWT", "status": "proposed"},
+        ]
+
+        mock_col = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.sort.return_value = mock_cursor
+        mock_cursor.to_list = AsyncMock(return_value=mock_claims)
+        mock_col.find.return_value = mock_cursor
+
+        with patch("database.db.get_claims_collection", return_value=mock_col):
+            claims = await service.get_claims_for_digest("oc_test_chat", project_tag="TestProject")
+            self.assertEqual(len(claims), 2)
+            self.assertEqual(claims[0]["property"], "db")
+            self.assertEqual(claims[1]["value"], "JWT")
 
 
 if __name__ == "__main__":

@@ -83,6 +83,7 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📖 Tên KB       : {scope.dataset_name or 'Chưa đặt tên'}\n"
                 f"🆔 Dataset ID   : {scope.dataset_id}\n"
+                f"🛡️ Mức bảo mật  : {scope.security_level or 'Nội bộ'}\n"
                 f"👤 Người cài đặt: {scope.updated_by_name or scope.updated_by}\n"
                 f"🕒 Cập nhật lúc : {scope.updated_at}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

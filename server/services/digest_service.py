@@ -211,6 +211,39 @@ class DigestService:
         )
 
 
+    async def get_claims_for_digest(
+        self,
+        chat_id: str,
+        date: Optional[str] = None,
+        project_tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Truy vấn các Claims / Mệnh đề trong MongoDB collection 'claims' liên quan đến nhóm:
+          - Lọc theo chat_id hoặc project_tag.
+          - Lấy cả các trạng thái 'current', 'proposed', 'conflicted', 'superseded'.
+        """
+        from database.db import get_claims_collection
+        try:
+            coll = get_claims_collection()
+            scope_or: List[Dict[str, Any]] = [{"chat_id": chat_id}]
+            if project_tag:
+                scope_or.append({"project_tag": project_tag})
+            query = {"$or": scope_or}
+
+            cursor = coll.find(query).sort("updated_at", -1)
+            raw_claims = await cursor.to_list(length=200)
+
+            clean_claims = []
+            for doc in raw_claims:
+                c = dict(doc)
+                c.pop("_id", None)
+                clean_claims.append(c)
+
+            return clean_claims
+        except Exception as e:
+            logger.error(f"Lỗi khi truy vấn claims cho digest {chat_id}: {e}", exc_info=True)
+            return []
+
     async def extract_digest_from_messages(
         self,
         messages: List[StagingMessage],
@@ -218,19 +251,25 @@ class DigestService:
         chat_name: str = "",
         date: Optional[str] = None,
         project_tag: Optional[str] = None,
+        claims: Optional[List[Dict[str, Any]]] = None,
     ) -> DailyDigestRecord:
-        """Dùng LLM đọc danh sách tin nhắn và trích xuất thành đối tượng DailyDigestRecord."""
+        """Dùng LLM đọc danh sách tin nhắn và Claims để trích xuất thành đối tượng DailyDigestRecord."""
         target_date = date or get_current_digest_date()
         digest_id = f"digest_{target_date.replace('-', '')}_{chat_id}"
 
-        if not messages:
+        # Nếu claims chưa được truyền vào, tự động lấy từ MongoDB
+        if claims is None:
+            claims = await self.get_claims_for_digest(chat_id=chat_id, date=target_date, project_tag=project_tag)
+
+        if not messages and not claims:
             return DailyDigestRecord(
                 id=digest_id,
                 date=target_date,
                 chat_id=chat_id,
                 chat_name=chat_name,
                 project_tag=project_tag,
-                overview_summary="Không có tin nhắn trao đổi nào trong ngày.",
+                overview_summary="Không có tin nhắn trao đổi hay cập nhật tri thức nào trong ngày.",
+                claims=[],
             )
 
         # Định dạng danh sách tin nhắn nạp vào LLM kèm message_id và timestamp
@@ -239,18 +278,33 @@ class DigestService:
             formatted_msgs.append(
                 f"[{idx}] (message_id: {m.message_id}) [{m.timestamp}] {m.speaker_name}: {m.text}"
             )
-        msgs_block = "\n".join(formatted_msgs)
+        msgs_block = "\n".join(formatted_msgs) if formatted_msgs else "(Không có tin nhắn hội thoại trực tiếp)"
+
+        # Định dạng danh sách Claims đã ghi nhận trong MongoDB nạp vào LLM
+        claims_block = ""
+        if claims:
+            formatted_claims = []
+            for idx, c in enumerate(claims, 1):
+                st = (c.get("status") or "current").upper()
+                prop = c.get("property") or ""
+                val = c.get("value") or ""
+                eid = c.get("entity_id") or ""
+                asserted = c.get("asserted_by") or {}
+                spk = asserted.get("user_name") or asserted.get("user_id") or "Thành viên"
+                formatted_claims.append(f"[{idx}] Entity='{eid}' | [{st}] {prop} = {val} (khẳng định bởi: {spk})")
+            claims_block = "\n\nDANH SÁCH MỆNH ĐỀ & SỰ THẬT ĐÃ BÓC TÁCH TRONG NGÀY (MONGODB CLAIMS):\n\"\"\"\n" + "\n".join(formatted_claims) + "\n\"\"\""
 
         user_prompt = f"""\
-HỘI THOẠI TRONG NGÀY ({target_date}) - NHÓM: {chat_name or chat_id}:
+HỘI THOẠI TRONG NGÀY ({target_date}) - NHÓM: {chat_name or chat_id} (Dự án: {project_tag or 'Nội bộ'}):
 \"\"\"
 {msgs_block}
-\"\"\"
+\"\"\"{claims_block}
 
-Hãy trích xuất:
-1. Quyết định (Decisions)
-2. Cam kết (Commitments: ai hứa gì, hạn nào)
-3. Thay đổi trạng thái (Status Changes: tiến độ, mốc, blocker)
+Hãy phân tích kết hợp cả tin nhắn hội thoại và danh sách Claims đã bóc tách ở trên để trích xuất:
+1. Quyết định (Decisions): Các phương án, chính sách đã được chốt/thống nhất.
+2. Cam kết (Commitments: ai hứa gì, hạn nào, với ai).
+3. Thay đổi trạng thái (Status Changes: tiến độ, mốc, blocker).
+4. ĐẶC BIỆT LƯU Ý: Không bỏ sót các Đề xuất mới từ thành viên (Proposed Claims) hoặc các mâu thuẫn tranh luận dở dang chưa duyệt.
 Đảm bảo mỗi mục đều gán đúng message_id, speaker_name, timestamp từ tin nhắn gốc!
 """
 
@@ -351,6 +405,7 @@ Hãy trích xuất:
             decisions=decisions,
             commitments=commitments,
             status_changes=status_changes,
+            claims=claims or [],
             message_count=len(messages),
         )
 
@@ -392,18 +447,18 @@ Hãy trích xuất:
         """
         from services.scope_service import scope_service
 
-        scoped_kb = await scope_service.get_kb_for_chat(digest.chat_id)
-        target_kb = dataset_id or digest.weknora_kb_id or scoped_kb or settings.WEKNORA_DATASET_ID
+        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(digest.chat_id)
+        target_kb = dataset_id or digest.weknora_kb_id or scoped_wiki_kb or settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID
         if target_kb and "," in target_kb:
             target_kb = target_kb.split(",")[0].strip()
 
         if not target_kb:
-            logger.warning("Không tìm thấy dataset_id để đồng bộ sang WeKnora.")
+            logger.warning("Không tìm thấy wiki_dataset_id để đồng bộ sang WeKnora.")
             digest.sync_status = "failed"
             return False
 
         md_content = digest.to_weknora_markdown()
-        doc_name = f"Daily_Digest_{digest.date}_{digest.chat_name or digest.chat_id}"
+        doc_name = f"Wiki_Digest_{digest.date}_{digest.chat_name or digest.chat_id}"
 
         try:
             resp = await weknora_service.save_to_kb(text=md_content, dataset_id=target_kb, name=doc_name)
@@ -472,8 +527,9 @@ Hãy trích xuất:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"📅 Ngày ghi nhận : {digest.date}",
             f"💬 Nhóm chat     : {digest.chat_name or digest.chat_id}",
+            f"🎯 Dự án         : {digest.project_tag or 'Nội bộ'}",
             f"🆔 Mã Digest     : {digest.id}",
-            f"✉ Số tin nhắn   : {digest.message_count}",
+            f"✉ Số tin nhắn   : {digest.message_count} | 🧠 Số Claims: {len(digest.claims)}",
             "",
             "🔍 TỔNG QUAN HÔM NAY:",
             f"{digest.overview_summary or 'Chưa có tóm tắt tổng quan.'}",
@@ -482,7 +538,19 @@ Hãy trích xuất:
             f"• Quyết định (Decisions) : {len(digest.decisions)} mục",
             f"• Cam kết (Commitments)  : {len(digest.commitments)} mục",
             f"• Trạng thái/Blocker     : {len(digest.status_changes)} mục",
+            f"• Mệnh đề/Claims         : {len(digest.claims)} mục",
         ]
+
+        # 0. Đề xuất mới từ thành viên (Proposed Claims)
+        proposed_claims = [c for c in digest.claims if (c.get("status") or "").lower() == "proposed"]
+        if proposed_claims:
+            summary_lines.append("\n💡 ĐỀ XUẤT MỚI TỪ THÀNH VIÊN (PROPOSED CLAIMS):")
+            for p in proposed_claims[:3]:
+                prop = p.get("property") or "đề xuất"
+                val = p.get("value") or ""
+                asserted = p.get("asserted_by") or {}
+                spk = asserted.get("user_name") or asserted.get("user_id") or "Thành viên"
+                summary_lines.append(f"  - {spk} đề xuất: {prop} = {val}")
 
         if digest.decisions:
             summary_lines.append("\n👉 Quyết định nổi bật:")
@@ -753,8 +821,8 @@ Yêu cầu:
                     date=target_date,
                     project_tag=ptag,
                 )
-                scoped_kb = await scope_service.get_kb_for_chat(cid)
-                digest.weknora_kb_id = scoped_kb
+                scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(cid)
+                digest.weknora_kb_id = scoped_wiki_kb
                 digest.sync_status = "pending_approval"
                 # Lưu từng digest vào MongoDB và đánh dấu staging đã xử lý
                 await self.save_digest_to_mongo(digest)
@@ -930,8 +998,8 @@ Yêu cầu:
 
         from services.scope_service import scope_service
 
-        scoped_kb = await scope_service.get_kb_for_chat(chat_id)
-        digest.weknora_kb_id = weknora_kb_id or scoped_kb
+        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(chat_id)
+        digest.weknora_kb_id = weknora_kb_id or scoped_wiki_kb
 
         if needs_approval:
             digest.sync_status = "pending_approval"
