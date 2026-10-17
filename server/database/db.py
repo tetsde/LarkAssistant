@@ -80,6 +80,12 @@ def get_daily_digests_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_DIGEST_COLLECTION]
 
 
+def get_master_daily_digests_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Bản tổng hợp ngày Cấp Điều Hành (Master Daily Digests)."""
+    db = get_async_db()
+    return db[settings.MONGO_MASTER_DIGEST_COLLECTION]
+
+
 def get_chat_scopes_collection() -> AsyncIOMotorCollection:
     """Collection lưu trữ Ánh xạ phân quyền dữ liệu nhóm chat (Chat Scopes / KB Mappings)."""
     db = get_async_db()

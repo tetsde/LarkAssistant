@@ -22,6 +22,7 @@ from models.digest import (
     StatusChangeItem,
     StagingMessage,
     DailyDigestRecord,
+    MasterDailyDigestRecord,
 )
 from models.chat_scope import ChatScopeRecord
 from models.larkbase import (
@@ -59,6 +60,7 @@ __all__ = [
     "StatusChangeItem",
     "StagingMessage",
     "DailyDigestRecord",
+    "MasterDailyDigestRecord",
     "ChatScopeRecord",
     "BITABLE_FIELD_TYPE_MAP",
     "LarkBaseField",

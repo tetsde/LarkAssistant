@@ -228,3 +228,105 @@ class DailyDigestRecord(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
+
+
+# ==============================================================================
+# BẢN GHI MASTER DAILY DIGEST (CẤP ĐIỀU HÀNH TOÀN CÔNG TY)
+# ==============================================================================
+
+class MasterDailyDigestRecord(BaseModel):
+    """
+    Bản ghi Tổng hợp Ngày Cấp Điều Hành (Master Executive Daily Digest):
+      - Gom toàn bộ group digests trong ngày thành 1 báo cáo duy nhất gửi DM cho Chủ nhân.
+      - Phần 1: TỔNG QUAN ĐIỀU HÀNH (High-level Executive Summary).
+      - Phần 2: CHI TIẾT TỪNG NHÓM / DỰ ÁN (Mỗi nhóm có: Quyết định, Cam kết & Hạn chót, Thay đổi trạng thái/Blocker).
+      - Lưu trong collection 'master_daily_digests' trên MongoDB.
+      - Khi Chủ nhân duyệt: Tự động phân tách và nạp từng group digest vào đúng KB WeKnora của nhóm tương ứng.
+    """
+    id: str = Field(..., description="Mã master digest: master_digest_YYYYMMDD")
+    date: str = Field(..., description="Ngày ghi nhận: YYYY-MM-DD")
+    executive_summary: str = Field(default="", description="Bức tranh toàn cảnh cấp điều hành về tất cả các dự án trong ngày")
+    group_digests: List[DailyDigestRecord] = Field(default_factory=list, description="Danh sách digest chi tiết của từng nhóm chat")
+    total_messages: int = Field(default=0, description="Tổng số tin nhắn staging đã xử lý trên toàn bộ các nhóm")
+    total_groups: int = Field(default=0, description="Số lượng nhóm chat có hoạt động trong ngày")
+    status: str = Field(default="pending_approval", description="pending_approval / approved / rejected / synced")
+    approved_by: Optional[str] = Field(default=None, description="Lark open_id của chủ nhân khi duyệt")
+    approved_at: Optional[str] = Field(default=None, description="Thời điểm duyệt")
+    created_at: str = Field(default_factory=get_vietnam_now_iso)
+    updated_at: str = Field(default_factory=get_vietnam_now_iso)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+    def to_executive_dm_text(self) -> str:
+        """
+        Render tin nhắn DM gửi cho Chủ nhân theo định dạng trực quan, phân cấp:
+        - Header ngày & số nhóm
+        - Bức tranh toàn cảnh (Executive Summary)
+        - Chi tiết từng nhóm: Quyết định, Cam kết & Hạn chót, Trạng thái & Blocker
+        - Lời nhắc lệnh duyệt/hủy
+        """
+        lines = [
+            f"📊 **BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM (DAILY MASTER DIGEST)**",
+            f"📅 **Ngày:** {self.date} | 👥 **Số nhóm hoạt động:** {self.total_groups} | 💬 **Tổng tin nhắn:** {self.total_messages}",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "🏢 **I. TỔNG QUAN ĐIỀU HÀNH (EXECUTIVE OVERVIEW)**",
+            self.executive_summary or "Hôm nay ghi nhận hoạt động trao đổi và cập nhật tiến độ trên các nhóm dự án.",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📂 **II. CHI TIẾT TỪNG NHÓM DỰ ÁN**",
+        ]
+
+        if not self.group_digests:
+            lines.append("*(Không có nhóm nào phát sinh dữ liệu trao đổi quan trọng trong ngày)*")
+        else:
+            for idx, gd in enumerate(self.group_digests, 1):
+                grp_title = gd.chat_name or gd.project_tag or gd.chat_id
+                lines.extend([
+                    f"\n### 📌 Nhóm {idx}: {grp_title}",
+                    f"💬 *Số tin nhắn:* {gd.message_count} | 🎯 *Dự án:* {gd.project_tag or 'Nội bộ'}",
+                ])
+                if gd.overview_summary:
+                    lines.append(f"📝 *Tóm tắt:* {gd.overview_summary}")
+
+                # 1. Quyết định
+                if gd.decisions:
+                    lines.append("\n  🔹 **Quyết định đã thống nhất:**")
+                    for d in gd.decisions:
+                        lines.append(f"    • **{d.title}**: {d.content} *(Chốt bởi {d.source.speaker_name})*")
+                else:
+                    lines.append("  🔹 **Quyết định:** *(Không có)*")
+
+                # 2. Cam kết & Hạn chót
+                if gd.commitments:
+                    lines.append("  ⏰ **Cam kết & Hạn chót:**")
+                    for c in gd.commitments:
+                        deadline_str = f" [Hạn: {c.deadline}]" if c.deadline else ""
+                        lines.append(f"    • **{c.promiser_name}**: {c.task}{deadline_str}")
+                else:
+                    lines.append("  ⏰ **Cam kết:** *(Không có)*")
+
+                # 3. Thay đổi trạng thái & Blocker
+                if gd.status_changes:
+                    lines.append("  🔄 **Trạng thái & Tiến độ:**")
+                    for s in gd.status_changes:
+                        prefix = (
+                            "🔴 [BLOCKER]"
+                            if s.category == StatusCategory.BLOCKER
+                            else ("🟢 [MILESTONE]" if s.category == StatusCategory.MILESTONE else "🔵 [TIẾN ĐỘ]")
+                        )
+                        reason = f" - *Lý do:* {s.blocker_reason}" if s.blocker_reason else ""
+                        lines.append(f"    • {prefix} **{s.target_object}**: {s.new_state} ({s.summary}){reason}")
+                else:
+                    lines.append("  🔄 **Trạng thái:** *(Không có thay đổi đặc biệt)*")
+
+        lines.extend([
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "💡 **HƯỚNG DẪN THAO TÁC:**",
+            "👉 Nhắn tin **\"duyệt digest\"** để phê duyệt và đồng bộ tri thức của từng nhóm vào đúng Knowledge Base WeKnora tương ứng.",
+            "👉 Nhắn tin **\"hủy digest\"** nếu không muốn lưu trữ bản tổng hợp này.",
+        ])
+
+        return "\n".join(lines)

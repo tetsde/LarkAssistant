@@ -171,3 +171,109 @@ Kịch bản được thiết kế để bạn copy/paste trực tiếp vào nh�
   - Bot xác nhận trong DM: *"🗑 ĐÃ HỦY BỎ BẢN NHÁP THÀNH CÔNG! Không có tin nhắn nào được gửi vào nhóm."*
   - Trong nhóm chat, hoàn toàn không có bất kỳ tin nhắn phản hồi nào. An toàn tuyệt đối!
 
+---
+
+## 🔒 PHẦN 4: CÔ LẬP TRI THỨC VÀ CLAIMS GIỮA CÁC DỰ ÁN (CLAIMS SCOPE ISOLATION)
+
+> **Mục đích**: 
+> Kiểm chứng tri thức (ngân sách, hạn chót, quyết định nội bộ) trích xuất từ Nhóm Dự án Alpha **tuyệt đối không bị rò rỉ** sang Nhóm Dự án Beta khi thành viên ở nhóm khác đặt câu hỏi.
+
+### Kịch bản 4.1: Kiểm tra cô lập dữ liệu facts giữa 2 nhóm
+
+* **Bước 1 (Chủ nhân công bố ngân sách trong Nhóm Dự án Alpha - `oc_alpha`):**
+  > *"Ngân sách chạy quảng cáo tháng này cho dự án Alpha chốt là 80 triệu nhé cả team."*
+  - **Hệ thống xử lý:** Bot bóc tách Fact: `budget = 80 triệu`, gán metadata: `chat_id = "oc_alpha"`, `project_tag = "Alpha"`, `scope_type = "chat"`.
+  - Bot **im lặng 100% trong nhóm** (Owner Shield).
+
+* **Bước 2 (Chủ nhân công bố ngân sách trong Nhóm Dự án Beta - `oc_beta`):**
+  > *"Ngân sách chạy quảng cáo tháng này cho dự án Beta chốt là 200 triệu."*
+  - **Hệ thống xử lý:** Bot bóc tách Fact: `budget = 200 triệu`, gán metadata: `chat_id = "oc_beta"`, `project_tag = "Beta"`, `scope_type = "chat"`.
+  - Bot **im lặng 100% trong nhóm** (Owner Shield).
+
+* **Bước 3 (Thành viên hỏi ngân sách trong Nhóm Alpha):**
+  > *"Anh Nam ơi ngân sách quảng cáo tháng này của nhóm mình là bao nhiêu ạ?"*
+  - **Kết quả mong đợi:** Bot chỉ đọc facts có `chat_id = "oc_alpha"` hoặc `project_tag = "Alpha"`.
+  - Bot trả lời: *"Ngân sách chạy quảng cáo tháng này của dự án Alpha đã được chốt là 80 triệu."* (TUYỆT ĐỐI không nhắc tới con số 200 triệu của nhóm Beta).
+
+* **Bước 4 (Thành viên hỏi ngân sách trong Nhóm Beta):**
+  > *"Anh Nam ơi cho em hỏi ngân sách quảng cáo của nhóm mình chốt bao nhiêu vậy ạ?"*
+  - **Kết quả mong đợi:** Bot trả lời: *"Ngân sách chạy quảng cáo của dự án Beta là 200 triệu."* (TUYỆT ĐỐI không nhắc tới 80 triệu của nhóm Alpha).
+
+---
+
+## 📊 PHẦN 5: MASTER DAILY DIGEST (BÁO CÁO ĐIỀU HÀNH TỔNG HỢP TOÀN CÔNG TY)
+
+> **Mục đích**: 
+> Gom toàn bộ hoạt động trao đổi, quyết định, cam kết và điểm nghẽn từ **tất cả các nhóm chat trong ngày** thành **1 báo cáo điều hành duy nhất** gửi vào DM riêng của Chủ nhân.
+> Chủ nhân duyệt 1 lệnh (`Duyệt digest`), hệ thống tự động bóc tách và nạp tri thức của từng nhóm vào đúng Knowledge Base WeKnora tương ứng.
+
+### Kịch bản 5.1: Nhận và xem Báo cáo Master Daily Digest cuối ngày
+
+* **Bước 1 (Hoạt động trong ngày):**
+  - Nhóm Alpha trao đổi về chốt backend FastAPI và gặp điểm nghẽn (Blocker) thiếu API key ngân hàng.
+  - Nhóm Beta trao đổi về nghiệm thu Sprint 2 mobile app.
+* **Bước 2 (Đến 23:00 hoặc kích hoạt thủ công qua API):**
+  - Hệ thống tự động tổng hợp tất cả nhóm và gửi **DUY NHẤT 1 tin nhắn DM** tới Chủ nhân:
+    ```text
+    📊 BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM (DAILY MASTER DIGEST)
+    📅 Ngày: 2026-10-16 | 👥 Số nhóm hoạt động: 2 | 💬 Tổng tin nhắn: 40
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    🏢 I. TỔNG QUAN ĐIỀU HÀNH (EXECUTIVE OVERVIEW)
+    Dự án Alpha đã thống nhất kiến trúc backend nhưng đang bị nghẽn do chờ cấp API sandbox từ đối tác ngân hàng. Dự án Beta đã hoàn thành nghiệm thu Sprint 2 đúng hạn.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    📂 II. CHI TIẾT TỪNG NHÓM DỰ ÁN
+
+    ### 📌 Nhóm 1: Nhóm Dự Án Alpha
+    💬 Số tin nhắn: 15 | 🎯 Dự án: Alpha
+    📝 Tóm tắt: Nhóm Alpha đã chốt kiến trúc API và kế hoạch release.
+
+      🔹 Quyết định đã thống nhất:
+        • Chuyển sang FastAPI: Đồng ý chuyển toàn bộ backend sang FastAPI (Chốt bởi Nguyễn Văn A)
+      ⏰ Cam kết & Hạn chót:
+        • Nguyễn Văn A: Hoàn thiện router Payment [Hạn: 17:00 ngày 20/10/2026]
+      🔄 Trạng thái & Tiến độ:
+        • 🔴 [BLOCKER] Cổng thanh toán: Đang tắc nghẽn (Thiếu API key sandbox) - Lý do: Cần PM liên hệ đối tác cấp key
+
+    ### 📌 Nhóm 2: Nhóm Dự Án Beta
+    💬 Số tin nhắn: 25 | 🎯 Dự án: Beta
+    📝 Tóm tắt: Nhóm Beta hoàn thành kiểm thử giao diện người dùng.
+
+      🔹 Quyết định: (Không có)
+      ⏰ Cam kết & Hạn chót:
+        • Trần Thị B: Fix lỗi hiển thị dark mode trên iOS [Hạn: Thứ 6 tuần này]
+      🔄 Trạng thái & Tiến độ:
+        • 🟢 [MILESTONE] UI/UX Sprint 2: Hoàn thành (Đã nghiệm thu thiết kế mobile app)
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    💡 HƯỚNG DẪN THAO TÁC:
+    👉 Nhắn tin "duyệt digest" để phê duyệt và đồng bộ tri thức của từng nhóm vào đúng Knowledge Base WeKnora tương ứng.
+    👉 Nhắn tin "hủy digest" nếu không muốn lưu trữ bản tổng hợp này.
+    ```
+
+### Kịch bản 5.2: Thao tác Duyệt hoặc Hủy Master Daily Digest trong DM
+
+* **Lệnh DUYỆT (`duyệt digest` / `ok digest`):**
+  - Trong DM 1-1 với Bot, Chủ nhân gõ: **`duyệt digest`**
+  - **Kết quả:**
+    - Bot tự động đẩy phần Digest của Nhóm Alpha vào KB của Nhóm Alpha trên WeKnora.
+    - Bot tự động đẩy phần Digest của Nhóm Beta vào KB của Nhóm Beta trên WeKnora.
+    - Bot phản hồi DM cho Chủ nhân:
+      ```text
+      ✔ ĐÃ DUYỆT VÀ ĐỒNG BỘ TOÀN BỘ MASTER DAILY DIGEST THÀNH CÔNG!
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      📅 Ngày ghi nhận : 2026-10-16
+      🆔 Mã Master     : master_digest_20261016
+      👥 Số nhóm duyệt : 2 nhóm (40 tin nhắn)
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      Tri thức của từng nhóm đã được phân phối nạp chính xác vào đúng Knowledge Base WeKnora tương ứng!
+      ```
+
+* **Lệnh XEM LẠI (`xem digest`):**
+  - Gõ **`xem digest`** để đọc lại toàn bộ nội dung bản Master Daily Digest đang chờ duyệt.
+
+* **Lệnh HỦY BỎ (`hủy digest` / `bỏ digest`):**
+  - Gõ **`hủy digest`** -> Bản tổng hợp được đánh dấu `rejected`, không đẩy bất kỳ dữ liệu nào vào WeKnora.
+
+

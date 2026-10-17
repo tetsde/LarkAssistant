@@ -3,10 +3,20 @@ HiLark - Daily Digest Router
 ============================
 Vị trí: server/routers/digest.py
 
-Cung cấp các endpoint REST API:
-  - Xem chi tiết bản ghi digest theo ID hoặc bản gần nhất
-  - Phê duyệt / Từ chối bản ghi Daily Digest
-  - Kích hoạt tổng hợp ngày cho tất cả nhóm chat hoặc 1 nhóm chat
+📌 GHI CHÚ QUAN TRỌNG (DÀNH CHO DEVELOPER / TÍCH HỢP):
+------------------------------------------------------
+1. LUỒNG CHÍNH (User-Facing):
+   - Người dùng cuối (Chủ nhân / Quản trị viên) thao tác DUYỆT / HỦY / XEM Daily Digest 
+     hoàn toàn trực tiếp qua tin nhắn Lark DM 1-1 với Bot (Lệnh: "duyệt digest", "hủy digest").
+   - KHÔNG bắt buộc và KHÔNG cần phải gọi các REST API này trong luồng vận hành thực tế hàng ngày.
+
+2. MỤC ĐÍCH CỦA CÁC ENDPOINT REST API DƯỚI ĐÂY:
+   - Developer Testing: Test nhanh luồng trích xuất, xem trước hoặc kích hoạt tổng hợp bằng 
+     Postman / cURL / Swagger Docs (/docs) mà không cần đợi tới 23:00 đêm.
+   - External Triggers / Cronjobs: Cho phép các hệ thống lập lịch bên ngoài (Linux Crontab, 
+     Cloud Scheduler, GitHub Actions, Airflow) gọi kích hoạt tổng hợp ngày nếu cần.
+   - Web Dashboard / Admin UI: Dành sẵn cho việc xây dựng cổng thông tin quản trị Web UI 
+     trong tương lai (xem danh sách báo cáo, nhấn nút Duyệt/Từ chối trên web).
 """
 
 from typing import Any, Dict, Optional
@@ -15,7 +25,10 @@ from pydantic import BaseModel, Field
 
 from services.digest_service import digest_service
 
-router = APIRouter(prefix="/api/digests", tags=["Daily Digest"])
+router = APIRouter(
+    prefix="/api/digests",
+    tags=["Daily Digest (Admin / Dev Tools / External Cron)"],
+)
 
 
 class ProcessDailyRequest(BaseModel):
@@ -26,6 +39,70 @@ class ProcessDailyRequest(BaseModel):
     weknora_kb_id: Optional[str] = Field(default=None, description="WeKnora Knowledge Base ID đích")
     require_approval: Optional[bool] = Field(default=None, description="Gửi tin nhắn xin duyệt trước khi nạp KB hay không")
 
+
+# ==============================================================================
+# MASTER DAILY DIGEST ENDPOINTS (TOÀN BỘ CÁC NHÓM)
+# ==============================================================================
+
+@router.get("/master/pending/latest")
+async def get_latest_master_pending():
+    """Lấy bản ghi Master Daily Digest gần nhất đang chờ phê duyệt."""
+    record = await digest_service.get_latest_pending_master_digest()
+    if not record:
+        return {"code": 0, "data": None, "message": "Không có master digest nào đang chờ duyệt."}
+    return {"code": 0, "data": record.to_dict()}
+
+
+@router.get("/master/{master_id}")
+async def get_master_digest(master_id: str):
+    """Lấy chi tiết một bản ghi Master Daily Digest từ MongoDB."""
+    record = await digest_service.get_master_digest_by_id(master_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy master digest với id: {master_id}")
+    return {"code": 0, "data": record.to_dict()}
+
+
+@router.post("/master/{master_id}/approve")
+async def approve_master_digest_endpoint(
+    master_id: str,
+    approver_id: Optional[str] = Query(None, description="Lark open_id người duyệt"),
+):
+    """Duyệt Master Daily Digest: Đẩy từng group digest vào đúng Knowledge Base WeKnora của nhóm đó."""
+    ok, msg, rec = await digest_service.approve_and_sync_master_digest(master_id, approver_open_id=approver_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"code": 0, "message": msg, "data": rec.to_dict() if rec else None}
+
+
+@router.post("/master/{master_id}/reject")
+async def reject_master_digest_endpoint(master_id: str):
+    """Từ chối Master Daily Digest: Đánh dấu rejected và không nạp vào WeKnora."""
+    ok, msg, rec = await digest_service.reject_master_digest(master_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"code": 0, "message": msg, "data": rec.to_dict() if rec else None}
+
+
+@router.post("/master/generate")
+async def generate_master_digest_endpoint(
+    date: Optional[str] = Query(None, description="Ngày cần chạy (YYYY-MM-DD)"),
+    require_approval: Optional[bool] = Query(None, description="Có gửi tin duyệt trước không"),
+):
+    """Kích hoạt tạo Master Daily Digest gom toàn bộ nhóm chat."""
+    record = await digest_service.generate_master_daily_digest(
+        date=date,
+        require_approval=require_approval,
+    )
+    return {
+        "code": 0,
+        "message": f"Đã tạo Master Daily Digest cho {record.total_groups} nhóm chat ({record.total_messages} tin nhắn).",
+        "data": record.to_dict(),
+    }
+
+
+# ==============================================================================
+# SINGLE GROUP DIGEST ENDPOINTS (TỪNG NHÓM RIÊNG LẺ)
+# ==============================================================================
 
 @router.get("/pending/latest")
 async def get_latest_pending():
@@ -71,15 +148,15 @@ async def run_scheduled_digests_endpoint(
     date: Optional[str] = Query(None, description="Ngày cần chạy (YYYY-MM-DD)"),
     require_approval: Optional[bool] = Query(None, description="Có gửi tin duyệt trước không"),
 ):
-    """Kích hoạt thủ công luồng chạy định kỳ cuối ngày cho tất cả các nhóm chat hoạt động."""
-    records = await digest_service.run_scheduled_daily_digests(
+    """Kích hoạt thủ công luồng chạy định kỳ cuối ngày: tạo Master Daily Digest gom toàn bộ nhóm."""
+    record = await digest_service.run_scheduled_daily_digests(
         date=date,
         require_approval=require_approval,
     )
     return {
         "code": 0,
-        "message": f"Đã chạy tổng hợp cho {len(records)} nhóm chat.",
-        "data": [r.to_dict() for r in records],
+        "message": f"Đã chạy tổng hợp Master Daily Digest cho {record.total_groups} nhóm chat ({record.total_messages} tin nhắn).",
+        "data": record.to_dict(),
     }
 
 

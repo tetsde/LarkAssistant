@@ -185,13 +185,20 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
     )
     if is_owner and msg.chat_type == "p2p":
-        # Đây là chủ nhân đang chat/ra lệnh trực tiếp cho Bot trong DM 1-1 (Duyệt digest, Gửi/Sửa/Bỏ nháp...)
+        # [LUỒNG CHÍNH - USER FACING] Chủ nhân chat/ra lệnh trực tiếp cho Bot trong DM 1-1 trên Lark:
+        # Không cần dùng REST API: duyệt bằng cách nhắn "duyệt digest", "hủy digest", hoặc duyệt nháp "Gửi", "Sửa", "Bỏ".
         clean_text = msg.text.strip()
         text_lower = clean_text.lower()
         print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
 
-        # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST ---
+        # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST (MASTER DIGEST HOẶC ĐƠN LẺ) ---
         if "xem digest" in text_lower or "chi tiết digest" in text_lower:
+            latest_master = await digest_service.get_latest_pending_master_digest()
+            if latest_master:
+                dm_text = latest_master.to_executive_dm_text()
+                await lark_service.send_bot_dm_to_owner(dm_text)
+                return
+
             latest_pending = await digest_service.get_latest_pending_approval_digest()
             if not latest_pending:
                 await lark_service.send_bot_dm_to_owner("ℹ️ Hiện không có bản Daily Digest nào đang chờ duyệt.")
@@ -210,9 +217,28 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         digest_approve_keywords = ("duyệt digest", "duyet digest", "ok digest", "duyệt kb", "duyet kb", "ok kb", "approve digest")
         if any(kw in text_lower for kw in digest_approve_keywords):
             parts = clean_text.split()
-            target_id = parts[2] if len(parts) >= 3 and parts[2].startswith("digest_") else None
+            target_id = parts[2] if len(parts) >= 3 and (parts[2].startswith("digest_") or parts[2].startswith("master_digest_")) else None
 
-            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Daily Digest ({target_id or 'bản gần nhất'})...")
+            # Ưu tiên duyệt Master Daily Digest nếu có hoặc nếu chỉ định ID master
+            if (target_id and target_id.startswith("master_digest_")) or (not target_id and await digest_service.get_latest_pending_master_digest()):
+                print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Master Daily Digest ({target_id or 'bản gần nhất'})...")
+                ok, msg_reply, mrec = await digest_service.approve_and_sync_master_digest(target_id, approver_open_id=msg.sender_id)
+                if ok and mrec:
+                    reply_confirm = (
+                        "✔ ĐÃ DUYỆT VÀ ĐỒNG BỘ TOÀN BỘ MASTER DAILY DIGEST THÀNH CÔNG!\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📅 Ngày ghi nhận : {mrec.date}\n"
+                        f"🆔 Mã Master     : {mrec.id}\n"
+                        f"👥 Số nhóm duyệt : {mrec.total_groups} nhóm ({mrec.total_messages} tin nhắn)\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "Tri thức của từng nhóm đã được phân phối nạp chính xác vào đúng Knowledge Base WeKnora tương ứng!"
+                    )
+                    await lark_service.send_bot_dm_to_owner(reply_confirm)
+                else:
+                    await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
+                return
+
+            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Daily Digest đơn lẻ ({target_id or 'bản gần nhất'})...")
             ok, msg_reply, rec = await digest_service.approve_and_sync_digest(target_id)
             if ok and rec:
                 reply_confirm = (
@@ -233,9 +259,25 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         digest_reject_keywords = ("hủy digest", "huy digest", "bỏ digest", "bo digest", "reject digest")
         if any(kw in text_lower for kw in digest_reject_keywords):
             parts = clean_text.split()
-            target_id = parts[2] if len(parts) >= 3 and parts[2].startswith("digest_") else None
+            target_id = parts[2] if len(parts) >= 3 and (parts[2].startswith("digest_") or parts[2].startswith("master_digest_")) else None
 
-            print(f"🗑 [DM APPROVAL] Tiến hành HỦY Daily Digest ({target_id or 'bản gần nhất'})...")
+            if (target_id and target_id.startswith("master_digest_")) or (not target_id and await digest_service.get_latest_pending_master_digest()):
+                print(f"🗑 [DM APPROVAL] Tiến hành HỦY Master Daily Digest ({target_id or 'bản gần nhất'})...")
+                ok, msg_reply, mrec = await digest_service.reject_master_digest(target_id)
+                if ok and mrec:
+                    reply_confirm = (
+                        "🗑 ĐÃ TỪ CHỐI BẢN MASTER DAILY DIGEST!\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🆔 Mã Master : {mrec.id}\n"
+                        f"📅 Ngày      : {mrec.date}\n"
+                        "Trạng thái đã chuyển sang 'rejected'. Toàn bộ dữ liệu các nhóm KHÔNG được nạp vào WeKnora."
+                    )
+                    await lark_service.send_bot_dm_to_owner(reply_confirm)
+                else:
+                    await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
+                return
+
+            print(f"🗑 [DM APPROVAL] Tiến hành HỦY Daily Digest đơn lẻ ({target_id or 'bản gần nhất'})...")
             ok, msg_reply, rec = await digest_service.reject_digest(target_id)
             if ok and rec:
                 reply_confirm = (
@@ -482,14 +524,14 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        digests = loop.run_until_complete(
+                        master_digest = loop.run_until_complete(
                             digest_service.run_scheduled_daily_digests(
                                 date=today_str,
                                 require_approval=settings.DIGEST_REQUIRE_APPROVAL,
                             )
                         )
-                        if digests:
-                            print(f"✔ [DIGEST SCHEDULER] Hoàn tất trích xuất Daily Digest cho {len(digests)} nhóm vào MongoDB.")
+                        if master_digest and master_digest.total_groups > 0:
+                            print(f"✔ [DIGEST SCHEDULER] Hoàn tất Master Daily Digest ({master_digest.id}) cho {master_digest.total_groups} nhóm ({master_digest.total_messages} tin nhắn).")
                         else:
                             print(f"ℹ️ [DIGEST SCHEDULER] Không có nhóm chat nào có tin nhắn hoạt động ngày {today_str}.")
                     finally:

@@ -26,11 +26,16 @@ import httpx
 
 from core.config import settings
 from services.llm_client import LLMClient, llm_client
-from database.db import get_staging_collection, get_daily_digests_collection
+from database.db import (
+    get_staging_collection,
+    get_daily_digests_collection,
+    get_master_daily_digests_collection,
+)
 from models.digest import (
     CommitmentItem,
     DailyDigestRecord,
     DecisionItem,
+    MasterDailyDigestRecord,
     SourceReference,
     StagingMessage,
     StatusCategory,
@@ -600,32 +605,289 @@ Hãy trích xuất:
             logger.error(f"Lỗi khi lấy active chat_ids: {e}", exc_info=True)
             return []
 
+    async def _generate_executive_overview(
+        self,
+        group_digests: List[DailyDigestRecord],
+        target_date: str,
+    ) -> str:
+        """Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành từ tóm tắt của các nhóm."""
+        if not group_digests:
+            return "Hôm nay không có hoạt động trao đổi đáng chú ý nào trên các nhóm dự án."
+
+        lines = []
+        for gd in group_digests:
+            grp_name = gd.chat_name or gd.project_tag or gd.chat_id
+            summary = gd.overview_summary or "Có trao đổi thông tin"
+            dec_cnt = len(gd.decisions)
+            cmt_cnt = len(gd.commitments)
+            blockers = [s.summary for s in gd.status_changes if s.category == StatusCategory.BLOCKER]
+            blocker_str = f", {len(blockers)} blocker: {'; '.join(blockers)}" if blockers else ""
+            lines.append(f"- Nhóm '{grp_name}': {summary} ({dec_cnt} quyết định, {cmt_cnt} cam kết{blocker_str})")
+
+        prompt = f"""Bạn là Giám đốc Điều hành (COO / Project Director). Hãy viết 1 đoạn văn ngắn (2-3 câu, tối đa 80 từ) tóm tắt bức tranh toàn cảnh cấp điều hành cho ngày {target_date} dựa trên báo cáo từ các nhóm sau:
+{chr(10).join(lines)}
+
+Yêu cầu:
+- Nêu bật tiến độ chung, các cam kết/mốc quan trọng và các điểm nghẽn (blocker) cần ban lãnh đạo chú ý (nếu có).
+- Ngắn gọn, súc tích, mang tính chỉ đạo điều hành, không liệt kê máy móc.
+- Trả về văn bản thuần túy không dấu ngoặc kép hay markdown header."""
+        try:
+            res = await self._call_gemini(prompt)
+            clean_res = res.strip()
+            if clean_res.startswith("```"):
+                clean_res = re.sub(r"^```[a-zA-Z]*\s*", "", clean_res)
+                clean_res = re.sub(r"\s*```$", "", clean_res)
+            return clean_res.strip()
+        except Exception as e:
+            logger.warning(f"Lỗi khi gọi LLM sinh executive overview: {e}")
+            return f"Tổng hợp trao đổi và tiến độ công việc trên {len(group_digests)} nhóm dự án ngày {target_date}."
+
+    async def save_master_digest_to_mongo(self, master_digest: MasterDailyDigestRecord) -> None:
+        """Lưu hoặc cập nhật bản MasterDailyDigestRecord vào MongoDB."""
+        try:
+            coll = get_master_daily_digests_collection()
+            await coll.update_one(
+                {"id": master_digest.id},
+                {"$set": master_digest.to_dict()},
+                upsert=True,
+            )
+            logger.info(f"Đã lưu MasterDailyDigest vào MongoDB: {master_digest.id}")
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu MasterDailyDigest vào MongoDB: {e}", exc_info=True)
+
+    async def get_master_digest_by_id(self, master_digest_id: str) -> Optional[MasterDailyDigestRecord]:
+        """Truy vấn 1 bản ghi MasterDailyDigestRecord từ MongoDB theo ID."""
+        try:
+            coll = get_master_daily_digests_collection()
+            doc = await coll.find_one({"id": master_digest_id})
+            if doc:
+                return MasterDailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi tìm MasterDailyDigest {master_digest_id}: {e}", exc_info=True)
+            return None
+
+    async def get_latest_pending_master_digest(self) -> Optional[MasterDailyDigestRecord]:
+        """Lấy bản ghi MasterDailyDigest gần nhất đang ở trạng thái chờ duyệt."""
+        try:
+            coll = get_master_daily_digests_collection()
+            doc = await coll.find_one(
+                {"status": "pending_approval"},
+                sort=[("created_at", -1)],
+            )
+            if doc:
+                return MasterDailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.error(f"Lỗi khi tìm master digest pending approval: {e}", exc_info=True)
+            return None
+
+    async def send_master_approval_request(
+        self,
+        master_digest: MasterDailyDigestRecord,
+        approver_open_id: Optional[str] = None,
+    ) -> bool:
+        """Gửi duy nhất 1 tin nhắn DM chứa toàn bộ Master Daily Digest tới Chủ nhân."""
+        from services.lark import lark_service
+
+        target_approver = (
+            approver_open_id
+            or settings.DIGEST_APPROVER_ID
+            or lark_service.owner_open_id
+        )
+        dm_text = master_digest.to_executive_dm_text()
+        try:
+            if target_approver:
+                res = await lark_service.send_bot_dm_to_owner(dm_text, target_open_id=target_approver)
+                if not res.get("success"):
+                    logger.error(
+                        f"❌ [MASTER DIGEST APPROVAL] Thất bại khi gửi tin duyệt: {res.get('msg') or res.get('error')}"
+                    )
+                    return False
+                logger.info(f"✔ [MASTER DIGEST APPROVAL] Đã gửi tin duyệt Master Digest tới {target_approver}")
+                return True
+            logger.warning("⚠️ [MASTER DIGEST APPROVAL] Không có target_approver!")
+            return False
+        except Exception as e:
+            logger.error(f"❌ [MASTER DIGEST APPROVAL] Lỗi gửi DM: {e}", exc_info=True)
+            return False
+
+    async def generate_master_daily_digest(
+        self,
+        date: Optional[str] = None,
+        require_approval: Optional[bool] = None,
+    ) -> MasterDailyDigestRecord:
+        """
+        Tổng hợp báo cáo ngày cấp điều hành (Master Daily Digest):
+          1. Lấy tất cả active chat_ids trong ngày từ staging.
+          2. Bóc tách DailyDigestRecord cho từng nhóm chat (Quyết định, Cam kết, Trạng thái/Blocker).
+          3. Lưu từng DailyDigestRecord vào MongoDB (đánh dấu staging đã xử lý).
+          4. Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành (Executive Summary) từ tất cả các nhóm.
+          5. Tạo bản ghi MasterDailyDigestRecord, lưu vào MongoDB collection 'master_daily_digests'.
+          6. Nếu require_approval=True: Gửi DUY NHẤT 1 tin nhắn DM tới Chủ nhân kèm hướng dẫn duyệt.
+          7. Nếu require_approval=False: Tự động duyệt và phân phối đẩy từng group digest vào đúng KB WeKnora tương ứng.
+        """
+        target_date = date or get_current_digest_date()
+        chat_ids = await self.get_active_chat_ids_today(target_date)
+        logger.info(f"🏛️ [MASTER DIGEST] Bắt đầu tổng hợp Master Digest cho ngày {target_date} ({len(chat_ids)} nhóm)")
+
+        from services.scope_service import scope_service
+
+        group_digests: List[DailyDigestRecord] = []
+        total_msgs = 0
+
+        for cid in chat_ids:
+            try:
+                messages = await self.get_staging_messages(chat_id=cid, date=target_date)
+                if not messages:
+                    continue
+                total_msgs += len(messages)
+                scope = await scope_service.get_scope_by_chat_id(cid)
+                cname = scope.chat_name if scope else (messages[0].chat_name if messages else cid)
+                ptag = scope.project_tag if scope else None
+
+                digest = await self.extract_digest_from_messages(
+                    messages=messages,
+                    chat_id=cid,
+                    chat_name=cname,
+                    date=target_date,
+                    project_tag=ptag,
+                )
+                scoped_kb = await scope_service.get_kb_for_chat(cid)
+                digest.weknora_kb_id = scoped_kb
+                digest.sync_status = "pending_approval"
+                # Lưu từng digest vào MongoDB và đánh dấu staging đã xử lý
+                await self.save_digest_to_mongo(digest)
+                group_digests.append(digest)
+            except Exception as e:
+                logger.error(f"Lỗi khi tổng hợp digest cho nhóm {cid}: {e}", exc_info=True)
+
+        exec_summary = await self._generate_executive_overview(group_digests, target_date)
+        master_id = f"master_digest_{target_date.replace('-', '')}"
+
+        needs_approval = (
+            require_approval
+            if require_approval is not None
+            else settings.DIGEST_REQUIRE_APPROVAL
+        )
+
+        master_digest = MasterDailyDigestRecord(
+            id=master_id,
+            date=target_date,
+            executive_summary=exec_summary,
+            group_digests=group_digests,
+            total_messages=total_msgs,
+            total_groups=len(group_digests),
+            status="pending_approval" if needs_approval else "approved",
+        )
+
+        # Lưu Master Digest vào MongoDB
+        await self.save_master_digest_to_mongo(master_digest)
+
+        if needs_approval:
+            sent_ok = await self.send_master_approval_request(master_digest)
+            if sent_ok:
+                print(f"✔ [MASTER DIGEST APPROVAL] Đã gửi báo cáo Master Digest ngày {target_date} tới Chủ nhân thành công!")
+            else:
+                print(f"⚠️ [MASTER DIGEST APPROVAL] Đã lưu Master Digest nhưng không thể gửi DM cho Chủ nhân.")
+        else:
+            await self.approve_and_sync_master_digest(master_digest.id)
+
+        return master_digest
+
+    async def approve_and_sync_master_digest(
+        self,
+        master_digest_id: Optional[str] = None,
+        approver_open_id: Optional[str] = None,
+    ) -> tuple[bool, str, Optional[MasterDailyDigestRecord]]:
+        """
+        Phê duyệt Master Daily Digest:
+          1. Lấy bản ghi MasterDailyDigestRecord từ MongoDB.
+          2. Lặp qua từng group digest trong group_digests:
+             - Đẩy bản markdown của nhóm vào đúng Knowledge Base WeKnora của nhóm đó.
+          3. Cập nhật status='synced', approved_by, approved_at trong MongoDB.
+        """
+        coll = get_master_daily_digests_collection()
+        if master_digest_id:
+            doc = await coll.find_one({"id": master_digest_id})
+        else:
+            doc = await coll.find_one(
+                {"status": "pending_approval"},
+                sort=[("created_at", -1)],
+            )
+
+        if not doc:
+            return False, "Không tìm thấy bản ghi Master Daily Digest nào đang chờ duyệt.", None
+
+        master_digest = MasterDailyDigestRecord(**doc)
+
+        synced_count = 0
+        failed_count = 0
+        for gd in master_digest.group_digests:
+            ok = await self.sync_digest_to_weknora(gd)
+            if ok:
+                synced_count += 1
+            else:
+                failed_count += 1
+
+        now_iso = get_vietnam_now_iso()
+        master_digest.status = "synced"
+        master_digest.approved_by = approver_open_id or settings.DIGEST_APPROVER_ID
+        master_digest.approved_at = now_iso
+        master_digest.updated_at = now_iso
+
+        await coll.update_one(
+            {"id": master_digest.id},
+            {"$set": master_digest.to_dict()},
+        )
+
+        msg = f"Đã duyệt và đồng bộ thành công Master Daily Digest ngày {master_digest.date} ({synced_count}/{len(master_digest.group_digests)} nhóm đã nạp vào WeKnora)."
+        if failed_count > 0:
+            msg += f" (Có {failed_count} nhóm đồng bộ WeKnora thất bại do thiếu dataset_id hoặc lỗi mạng)."
+
+        return True, msg, master_digest
+
+    async def reject_master_digest(
+        self,
+        master_digest_id: Optional[str] = None,
+    ) -> tuple[bool, str, Optional[MasterDailyDigestRecord]]:
+        """Từ chối Master Daily Digest."""
+        coll = get_master_daily_digests_collection()
+        if master_digest_id:
+            doc = await coll.find_one({"id": master_digest_id})
+        else:
+            doc = await coll.find_one(
+                {"status": "pending_approval"},
+                sort=[("created_at", -1)],
+            )
+
+        if not doc:
+            return False, "Không tìm thấy bản ghi Master Daily Digest nào đang chờ duyệt.", None
+
+        master_digest = MasterDailyDigestRecord(**doc)
+        now_iso = get_vietnam_now_iso()
+        master_digest.status = "rejected"
+        master_digest.updated_at = now_iso
+
+        await coll.update_one(
+            {"id": master_digest.id},
+            {"$set": {"status": "rejected", "updated_at": now_iso}},
+        )
+        return True, f"Đã từ chối Master Daily Digest ({master_digest.id}). Dữ liệu không được nạp vào WeKnora.", master_digest
+
     async def run_scheduled_daily_digests(
         self,
         date: Optional[str] = None,
         require_approval: Optional[bool] = None,
-    ) -> List[DailyDigestRecord]:
+    ) -> MasterDailyDigestRecord:
         """
-        Chạy tổng hợp tự động cho tất cả các nhóm chat hoạt động trong ngày.
-        Nếu require_approval = True: sẽ gửi tin nhắn chờ duyệt cho approver trước khi nạp KB.
+        Chạy tổng hợp tự động cho tất cả các nhóm chat hoạt động trong ngày:
+        Tạo 1 bản Master Executive Daily Digest duy nhất gom toàn bộ nhóm chat.
         """
-        target_date = date or get_current_digest_date()
-        chat_ids = await self.get_active_chat_ids_today(target_date)
-        logger.info(f"[Scheduled Digest] Phát hiện {len(chat_ids)} nhóm chat hoạt động ngày {target_date}")
-
-        results: List[DailyDigestRecord] = []
-        for cid in chat_ids:
-            try:
-                rec = await self.process_and_sync_daily_digest(
-                    chat_id=cid,
-                    date=target_date,
-                    require_approval=require_approval,
-                )
-                results.append(rec)
-            except Exception as e:
-                logger.error(f"Lỗi khi xử lý scheduled digest cho chat {cid}: {e}", exc_info=True)
-
-        return results
+        return await self.generate_master_daily_digest(
+            date=date,
+            require_approval=require_approval,
+        )
 
     async def process_and_sync_daily_digest(
         self,

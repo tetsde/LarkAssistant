@@ -293,6 +293,14 @@ async def process_chat_pipeline(
         except Exception as e:
             logger.warning(f"Lỗi khi tra cứu scope_record cho chat_id={chat_id}: {e}")
 
+    proj_context_name = None
+    if scope_record:
+        proj_context_name = (
+            scope_record.get_project_name()
+            if hasattr(scope_record, "get_project_name")
+            else (scope_record.project_tag or scope_record.chat_name or "")
+        )
+
     # ── [CHỐT CHẶN 1: KIỂM TRA TRẠNG THÁI NHÓM] (Active vs Inactive) ──
     if scope_record and not scope_record.is_active:
         logger.info(
@@ -398,13 +406,16 @@ async def process_chat_pipeline(
         "role": speaker_role,
     }
 
-    # Bước 3: Lưu memory cho các intent cần ghi nhớ.
+    # Bước 3: Lưu memory cho các intent cần ghi nhớ theo scope nhóm
     extraction_data = None
     if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
         extraction_data = await process_memory_extraction(
             query_text=clean_query,
             sender=sender,
             asserted_by=asserted_by,
+            chat_id=chat_id,
+            project_tag=proj_context_name,
+            scope_type="chat" if chat_id else "global",
         )
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
@@ -420,10 +431,13 @@ async def process_chat_pipeline(
         }
 
     # REPLY_ONLY và MEMORY_AND_DRAFT đều cần tạo nội dung từ context.
-    # 1. Lấy active claims (gồm cả Current và Proposed) từ MongoDB
+    # 1. Lấy active claims (gồm cả Current và Proposed) từ MongoDB theo scope nhóm
     all_facts = []
     try:
-        all_facts = await get_mongo_facts()
+        all_facts = await get_mongo_facts(
+            chat_id=chat_id,
+            project_tag=proj_context_name,
+        )
     except Exception as e:
         logger.warning(f"Lỗi khi đọc facts từ MongoDB: {e}")
     active_claims = [f for f in all_facts if f.get("status", "current") in ("current", "proposed")]
@@ -451,16 +465,9 @@ async def process_chat_pipeline(
         # Mọi câu hỏi chuyên môn trong nhóm dự án mặc định hướng về dự án đó.
         # Nếu câu hỏi chưa nhắc đến tên dự án, tự động bổ sung tên bối cảnh dự án vào query WeKnora.
         retrieval_query = clean_query
-        proj_context_name = None
-        if scope_record:
-            proj_context_name = (
-                scope_record.get_project_name()
-                if hasattr(scope_record, "get_project_name")
-                else (scope_record.project_tag or scope_record.chat_name or "")
-            )
-            if proj_context_name and proj_context_name.lower() not in clean_query.lower():
-                retrieval_query = f"{clean_query} {proj_context_name}"
-                logger.info(f"🔍 [RAG Scope Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
+        if proj_context_name and proj_context_name.lower() not in clean_query.lower():
+            retrieval_query = f"{clean_query} {proj_context_name}"
+            logger.info(f"🔍 [RAG Scope Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
 
         chunks = await weknora_service.retrieve(
             query=retrieval_query,
