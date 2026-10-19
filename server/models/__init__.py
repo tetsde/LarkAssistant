@@ -32,7 +32,10 @@ from models.larkbase import (
     LarkBaseQueryResult,
 )
 
+from models.chat_queue import ChatQueueItem
+
 __all__ = [
+    "ChatQueueItem",
     "ChatRequest",
     "UserChatRequest",
     "ApproveDraftRequest",

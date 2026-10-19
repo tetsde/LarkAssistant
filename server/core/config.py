@@ -67,6 +67,11 @@ class Settings:
     def KEYWORD_THRESHOLD(self) -> float:
         return self.keyword_threshold
 
+    # Rate Limiting, Message Debounce & Concurrency
+    DEBOUNCE_DELAY_SECONDS: float = float(os.getenv("DEBOUNCE_DELAY_SECONDS", "1.75"))
+    USER_COOLDOWN_SECONDS: float = float(os.getenv("USER_COOLDOWN_SECONDS", "4.0"))
+    MAX_CONCURRENT_CHAT_PIPELINES: int = int(os.getenv("MAX_CONCURRENT_CHAT_PIPELINES", "3"))
+
 settings = Settings()
 
 

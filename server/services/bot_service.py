@@ -47,9 +47,8 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     """
     Dispatcher xử lý mọi tin nhắn đến từ Lark (cả WebSocket lẫn Webhook):
       1. Bỏ qua tin nhắn từ Bot / App
-      2. Quản lý phân quyền Knowledge Base (get-kb, set-kb, reset-kb)
-      3. Điều phối tin nhắn của Chủ nhân (Owner) trong Group (Staging) hoặc DM (Duyệt Draft / Digest)
-      4. Xử lý tin nhắn của Thành viên qua Chat Pipeline (JEV Routing -> Grounded QA -> Reply)
+      2. Điều phối tin nhắn của Chủ nhân (Owner) trong Group (Staging) hoặc DM (Duyệt Draft / Digest)
+      3. Xử lý tin nhắn của Thành viên qua Chat Pipeline (JEV Routing -> Grounded QA -> Reply)
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -69,117 +68,7 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         return
 
     # -------------------------------------------------------------------------
-    # 2. XỬ LÝ LỆNH PHÂN QUYỀN KNOWLEDGE BASE (SET-KB / GET-KB / RESET-KB)
-    # -------------------------------------------------------------------------
-    raw_cmd = re.sub(r"@\S+", "", msg.text or "").strip()
-    cmd_lower = raw_cmd.lower()
-
-    # A. Xem Knowledge Base hiện tại của nhóm: get-kb / xem kb
-    if cmd_lower in ("get-kb", "get_kb", "xem kb", "kb info", "check kb") or cmd_lower.startswith(("get-kb", "get_kb", "xem kb")):
-        scope = await scope_service.get_scope_by_chat_id(msg.chat_id)
-        if scope and scope.dataset_id:
-            reply_text = (
-                f"📚 [KNOWLEDGE BASE CỦA NHÓM NÀY]\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📖 Tên KB       : {scope.dataset_name or 'Chưa đặt tên'}\n"
-                f"🆔 Dataset ID   : {scope.dataset_id}\n"
-                f"🛡️ Mức bảo mật  : {scope.security_level or 'Nội bộ'}\n"
-                f"👤 Người cài đặt: {scope.updated_by_name or scope.updated_by}\n"
-                f"🕒 Cập nhật lúc : {scope.updated_at}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-        else:
-            default_id, default_name = await scope_service.get_kb_info_for_chat(None)
-            reply_text = (
-                f"ℹ️ Nhóm chat này chưa được cài đặt Knowledge Base riêng.\n"
-                f"Hiện đang sử dụng Knowledge Base mặc định: '{default_name}' (ID: {default_id}).\n\n"
-                f"👉 Admin có thể dùng lệnh 'set-kb <dataset_id>' để liên kết Knowledge Base riêng cho nhóm."
-            )
-
-        if msg.chat_type == "group":
-            await lark_service.areply_text(message_id=msg.message_id, text=reply_text, as_user=True)
-        else:
-            await lark_service.send_bot_dm_to_owner(reply_text)
-        return
-
-    # B. Gỡ bỏ liên kết Knowledge Base: reset-kb / hủy kb
-    if cmd_lower in ("reset-kb", "reset_kb", "hủy kb", "huy kb", "xóa kb", "xoa kb"):
-        if not scope_service.is_admin_user(msg.sender_id):
-            deny_msg = "⛔ [TỪ CHỐI] Bạn không có quyền quản trị! Chỉ Admin mới được phép gỡ bỏ Knowledge Base của nhóm."
-            if msg.chat_type == "group":
-                await lark_service.areply_text(message_id=msg.message_id, text=deny_msg, as_user=True)
-            else:
-                await lark_service.send_bot_dm_to_owner(deny_msg)
-            await lark_service.send_bot_dm_to_owner(
-                f"⚠️ [CẢNH BÁO BẢO MẬT] Người dùng ({msg.sender_id}) vừa cố tình gõ lệnh reset-kb trong nhóm {msg.chat_id} nhưng đã bị chặn!"
-            )
-            return
-
-        ok, reset_msg = await scope_service.reset_chat_kb(chat_id=msg.chat_id, operator_open_id=msg.sender_id)
-        if msg.chat_type == "group":
-            await lark_service.areply_text(message_id=msg.message_id, text=reset_msg, as_user=True)
-        else:
-            await lark_service.send_bot_dm_to_owner(reset_msg)
-        return
-
-    # C. Cài đặt Knowledge Base cho nhóm: set-kb <dataset_id>
-    if cmd_lower.startswith(("set-kb", "set_kb", "cài kb", "cai kb", "gán kb", "gan kb")):
-        parts = raw_cmd.split()
-        if len(parts) < 2:
-            guide_msg = "⚠️ Vui lòng nhập Dataset ID cần liên kết. Ví dụ:\nset-kb bca87123-973d-46e4-97aa-290d7d769aef"
-            if msg.chat_type == "group":
-                await lark_service.areply_text(message_id=msg.message_id, text=guide_msg, as_user=True)
-            else:
-                await lark_service.send_bot_dm_to_owner(guide_msg)
-            return
-
-        target_dataset_id = parts[1].strip()
-
-        if not scope_service.is_admin_user(msg.sender_id):
-            deny_msg = "⛔ [TỪ CHỐI] Bạn không có quyền quản trị! Chỉ Admin mới được phép thay đổi Knowledge Base của nhóm chat này."
-            if msg.chat_type == "group":
-                await lark_service.areply_text(message_id=msg.message_id, text=deny_msg, as_user=True)
-            else:
-                await lark_service.send_bot_dm_to_owner(deny_msg)
-            await lark_service.send_bot_dm_to_owner(
-                f"⚠️ [CẢNH BÁO BẢO MẬT] Người dùng ({msg.sender_id}) vừa cố tình đổi KB của nhóm {msg.chat_id} sang ID '{target_dataset_id}' nhưng đã bị chặn!"
-            )
-            return
-
-        sender_name = lark_service.get_user_name(msg.sender_id) or "Admin"
-        ok, res_msg, rec = await scope_service.set_chat_kb(
-            chat_id=msg.chat_id,
-            dataset_id=target_dataset_id,
-            operator_open_id=msg.sender_id,
-            operator_name=sender_name,
-        )
-
-        if ok and rec:
-            confirm_text = (
-                f"✔ ĐÃ LIÊN KẾT NHÓM THÀNH CÔNG VỚI KNOWLEDGE BASE!\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📚 Tên KB       : {rec.dataset_name}\n"
-                f"🆔 Dataset ID   : {rec.dataset_id}\n"
-                f"💬 Nhóm chat    : {msg.chat_id}\n"
-                f"👤 Người cài đặt: {rec.updated_by_name}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Tất cả tổng hợp Daily Digest và truy vấn RAG của nhóm sẽ tự động liên kết với Knowledge Base này!"
-            )
-            print(f"✔ Đã liên kết nhóm {msg.chat_id} thành công với Knowledge Base '{rec.dataset_name}' (ID: {rec.dataset_id})")
-            if msg.chat_type == "group":
-                await lark_service.areply_text(message_id=msg.message_id, text=confirm_text, as_user=True)
-            else:
-                await lark_service.send_bot_dm_to_owner(confirm_text)
-        else:
-            err_text = f"❌ {res_msg}"
-            if msg.chat_type == "group":
-                await lark_service.areply_text(message_id=msg.message_id, text=err_text, as_user=True)
-            else:
-                await lark_service.send_bot_dm_to_owner(err_text)
-        return
-
-    # -------------------------------------------------------------------------
-    # 3. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
+    # 2. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
     # -------------------------------------------------------------------------
     is_owner = bool(
         msg.is_self

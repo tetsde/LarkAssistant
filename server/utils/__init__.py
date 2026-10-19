@@ -59,6 +59,12 @@ from utils.rule_engine import (
     rule_engine,
     sanitize,
 )
+from utils.chat_queue import (
+    MessageDebouncer,
+    ThrottledChatQueue,
+    ChatQueueService,
+    chat_queue_service,
+)
 
 __all__ = [
     "clean_field_value",
@@ -113,5 +119,10 @@ __all__ = [
     "SanitizeResult",
     "rule_engine",
     "sanitize",
+    # Chat Queue & Debounce
+    "MessageDebouncer",
+    "ThrottledChatQueue",
+    "ChatQueueService",
+    "chat_queue_service",
 ]
 
