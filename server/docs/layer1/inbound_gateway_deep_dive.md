@@ -1,249 +1,154 @@
-# 🏛️ TÀI LIỆU KỸ THUẬT CHUYÊN SÂU: LAYER 1 - INBOUND GATEWAY LAYER
-> **Hệ thống HiLark Server - Kiến trúc Tiếp nhận & Điều phối Thời gian thực**  
-> Phiên bản: 1.0.0 | Module: Inbound Gateway & Event Infrastructure
+# 📘 TÀI LIỆU GIẢI THÍCH LỚP 1: CỬA NGÕ TIẾP NHẬN & ĐIỀU TIẾT TIN NHẮN (LAYER 1)
+> **Dự án HiLark Server**  
+> Tài liệu viết theo phong cách kỹ thuật thực tế, dễ hiểu, ưu tiên tiếng Việt và không dùng từ ngữ bóng bẩy.
 
 ---
 
-## 📌 1. TỔNG QUAN VỊ TRÍ & VAI TRÒ CỦA LAYER 1
+## 🧭 1. LỚP 1 ĐỂ LÀM GÌ?
 
-![Sơ đồ phân rã kỹ thuật Lớp 1: Cửa ngõ tiếp nhận & Điều tiết lưu lượng](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/phan_ra_lop_1_1792398699257.jpg)
+Hãy hình dung Lớp 1 giống như **"Bàn lễ tân và phòng chờ"** của toàn bộ hệ thống:
+- Khi một người nhắn tin trên Lark, tin nhắn sẽ bay tới máy chủ HiLark đầu tiên ở Lớp 1.
+- Nhiệm vụ của Lớp 1 là: **Nhận tin nhắn an toàn $\rightarrow$ Gom các câu gõ dở $\rightarrow$ Lưu tạm để tối làm báo cáo $\rightarrow$ Xếp hàng trật tự rồi mới gửi tiếp sang cho Lớp 2 (Bộ phận kiểm duyệt và phân loại)**.
 
-Trong kiến trúc tổng thể 5 lớp của **HiLark Server**, **Layer 1 (Inbound Gateway Layer)** đóng vai trò là "cửa ngõ tiền tuyến" (Front Door), chịu trách nhiệm:
+Nếu không có Lớp 1, người dùng gõ ngắt dòng liên tục hoặc nhiều người cùng hỏi dồn dập sẽ khiến hệ thống bị quá tải, trí tuệ nhân tạo (Gemini AI) bị khóa tài khoản do gọi quá số lần cho phép trong một giây.
 
+---
+
+## 🖼️ SƠ ĐỒ HOẠT ĐỘNG TỔNG QUAN
+
+![Sơ đồ phân rã kỹ thuật Lớp 1](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/phan_ra_lop_1_1792398699257.jpg)
+
+### Quy trình 6 bước tuần tự:
 ```mermaid
 flowchart TD
-    subgraph Multi_Protocols [ĐA GIAO THỨC ĐẦU VÀO]
-        WS[Lark WebSocket Persistent Connection<br/><i>ws.Client daemon thread</i>]
-        Webhook[FastAPI POST /api/lark/events<br/><i>Signature & URL Challenge</i>]
-        REST[FastAPI POST /api/chat<br/><i>Direct REST / Benchmark</i>]
-        Poll[DM Poller Worker<br/><i>User Token Polling</i>]
-    end
-
-    subgraph Layer1_Pipeline [LAYER 1: XỬ LÝ SỰ KIỆN & LÀM MƯỢT TỐC ĐỘ]
-        Dedup[1. Idempotency & Anti-loop Cache<br/><i>LRU OrderedDict: 1000 items / 600s</i>]
-        Staging[(2. MongoDB Staging Buffer<br/><i>conversation_staging</i>)]
-        Debounce[3. Smart Message Debouncer<br/><i>asyncio.call_later: 1.75s per user/chat</i>]
-        Queue[4. Throttled Chat Queue<br/><i>Silent Cooldown: 4.0s / Owner Bypass</i>]
-        Sem[5. Concurrency Semaphore<br/><i>max_concurrent: 3</i>]
-    end
-
-    subgraph Layer2_Handoff [CHUYỂN GIAO SANG LAYER 2]
-        Pipeline[process_chat_pipeline<br/><i>JEV Gatekeeper & Sanitizer</i>]
-    end
-
-    WS --> Dedup
-    Webhook --> Dedup
-    Poll --> Dedup
-    REST --> Sem
-
-    Dedup --> Staging
-    Dedup --> Debounce
-    Debounce --> Queue
-    Queue --> Sem
-    Sem --> Pipeline
+    A["1. Tiếp nhận tin nhắn<br/>(WebSocket, Webhook, REST, Hộp thư riêng)"] --> B["2. Bộ lọc chống trùng & Chống lặp<br/>(Bỏ qua tin nhắn từ Bot, tin gửi lại, tin của chính mình)"]
+    B --> C[("3. Lưu tạm vào MongoDB<br/>(Bảng conversation_staging phục vụ báo cáo 23:00)")]
+    B --> D["4. Bộ gom tin nhắn ngắt dòng<br/>(Chờ 1.75 giây để ghép các dòng gõ liên tiếp)"]
+    D --> E["5. Hàng đợi điều tiết thời gian<br/>(Giãn cách 4 giây giữa các câu hỏi, Sếp được ưu tiên 0 giây)"]
+    E --> F["6. Kiểm soát số lượng chạy cùng lúc<br/>(Tối đa 3 tác vụ chạy đồng thời để bảo vệ AI)"]
+    F --> G["Chuyển giao sang Lớp 2: Kiểm duyệt bảo mật & Phân loại ý định"]
 ```
 
-### Mục tiêu thiết kế cốt lõi:
-1. **Đa giao thức đồng nhất (Protocol Agnostic):** Tiếp nhận sự kiện từ WebSocket, Webhook, REST API và DM Poller, chuẩn hóa về cấu trúc duy nhất `LarkMessage`.
-2. **Tuyệt đối chống trùng lặp (Strict Idempotency):** Khử trùng lặp do Lark gửi lại (retry timeout 3s) và triệt tiêu vòng lặp phản hồi (anti-echo loop).
-3. **Bảo tồn toàn vẹn dữ liệu cho Daily Digest:** Ghi nhận tức thì tin nhắn vào MongoDB `conversation_staging` trước khi xử lý logic hội thoại.
-4. **Mô phỏng hành vi tự nhiên (Human-like Typing Debounce):** Gom các tin nhắn gõ ngắt dòng liên tiếp (1.75s) của người dùng thành một câu hỏi hoàn chỉnh.
-5. **Điều tiết tải im lặng (Silent Throttling):** Giãn cách 4.0s giữa các câu hỏi của cùng một user mà không gửi tin nhắn rác cảnh báo vào nhóm; đặc quyền ưu tiên (bypass) cho Chủ nhân.
-6. **Bảo vệ hạn ngạch tài nguyên (Concurrency Shield):** Giới hạn tối đa 3 tác vụ LLM chạy song song, loại bỏ triệt để lỗi HTTP 429 và cạn kiệt tài nguyên hệ thống.
+---
+
+## 🔍 2. CHI TIẾT 6 BƯỚC XỬ LÝ TRONG MÃ NGUỒN
+
+### Bước 1: Tiếp nhận tin nhắn qua nhiều cổng (Protocol Adapters)
+Hệ thống hỗ trợ 4 cách để nhận tin nhắn từ Lark về máy chủ:
+
+1. **Kết nối WebSocket trực tiếp** ([`server/services/lark.py:L974`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L974)):
+   - **Cách chạy:** Mở một đường truyền trực tiếp liên tục với máy chủ của Lark bằng luồng chạy ngầm riêng (`LarkWebSocketThread`).
+   - **Ưu điểm:** Nhận tin nhắn ngay tức thì (dưới 0.1 giây), không tốn hạn ngạch API và khi lập trình thử nghiệm trên máy cá nhân không cần phải cài ngrok hay mua tên miền công khai.
+   - **Điểm lưu ý trong mã nguồn:** Hệ thống tự tạo một vòng lặp sự kiện (`event loop`) riêng biệt cho luồng này để không bị xung đột với máy chủ web FastAPI.
+
+2. **Cổng Webhook** ([`server/routers/lark.py:L17`](file:///Users/hoainam/Desktop/HiLark/server/routers/lark.py#L17)):
+   - Dùng khi đưa lên máy chủ chính thức (Production).
+   - Tự động nhận diện và trả lời mã xác thực đường dẫn (`challenge`) của Lark trong vòng dưới 3 giây. Nếu quá 3 giây, Lark sẽ coi như máy chủ bị lỗi và ngắt kết nối.
+
+3. **Cổng REST API** ([`server/routers/chat.py:L30`](file:///Users/hoainam/Desktop/HiLark/server/routers/chat.py#L30)):
+   - Đường dẫn `POST /api/chat`, dùng để lập trình viên tự kiểm thử hoặc cho các phần mềm khác gọi vào kiểm tra.
+
+4. **Bộ quét hộp thư riêng (DM Polling)** ([`server/services/lark.py:L1191`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L1191)):
+   - Chế độ dự phòng quét tin nhắn trong hộp thư 1-1 theo chu kỳ (mặc định 60 giây).
+
+*Tất cả 4 cổng này khi nhận được dữ liệu đều chuyển đổi về một định dạng thống nhất duy nhất là `LarkMessage` (chứa mã tin, mã nhóm, tên người gửi, nội dung chữ).*
 
 ---
 
-## 🧱 2. CHI TIẾT CÁC MODULE VÀ SERVICES THÀNH PHẦN
+### Bước 2: Chống tin nhắn rác, tin trùng và chống vòng lặp tự nói
+- **Vị trí trong mã nguồn:** [`server/services/lark.py:L375-415`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L375-L415)
 
-### Module 1.1: Adapter Tiếp Nhận Sự Kiện Đa Kênh
-
-| Cổng giao tiếp | File mã nguồn | Công nghệ | Mục đích sử dụng |
-| :--- | :--- | :--- | :--- |
-| **WebSocket Client** | [`server/services/lark.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L974) | Lark SDK `ws.Client` | Nhận sự kiện thời gian thực 0-delay, không cần Public IP/Domain (rất tối ưu cho Local Dev). |
-| **FastAPI Webhook** | [`server/routers/lark.py`](file:///Users/hoainam/Desktop/HiLark/server/routers/lark.py#L17) | FastAPI `POST /api/lark/events` | Nhận webhook từ Lark Open Platform trên server production có domain công khai. |
-| **REST Chat API** | [`server/routers/chat.py`](file:///Users/hoainam/Desktop/HiLark/server/routers/chat.py#L30) | FastAPI `POST /api/chat` | Endpoint cho tích hợp bên thứ ba, test kịch bản tự động và đo lường benchmark RAG. |
-| **DM Polling Fallback** | [`server/services/lark.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L1191) | `client.im.v1.message.list` | Quét tin nhắn riêng 1-1 bằng User Access Token (`ENABLE_DM_POLLING=True`). |
-
-#### Ghi chú mã nguồn đặc biệt:
-- **Tách biệt Event Loop trong WebSocket Background Thread:**  
-  Trong [`server/services/lark.py:L989-992`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L989-L992), background thread khởi tạo một asyncio event loop hoàn toàn độc lập (`new_loop = asyncio.new_event_loop()`), gán tường minh vào `lark_oapi.ws.client.loop` để ngăn ngừa triệt để lỗi `RuntimeError: This event loop is already running` do xung đột với Uvicorn.
-- **Tự động xử lý URL Challenge & Fallback an toàn:**  
-  Webhook router tự động nhận diện và phản hồi mã `challenge` trong vòng <3s. Khi gặp lỗi xác thực chữ ký phức tạp, hàm fallback `_do_without_validation` được kích hoạt để đảm bảo luôn trả về HTTP 200, ngăn chặn việc Lark khóa webhook hoặc gửi lại hàng loạt.
+Trước khi đem tin nhắn đi xử lý, hệ thống kiểm tra 3 điều kiện:
+1. **Có phải tin nhắn do Bot phát ra không?**  
+   Nếu là bot hoặc ứng dụng tự gửi thì bỏ qua ngay (`if lark_msg.is_bot: return`). Tránh việc 2 con bot nói chuyện qua lại với nhau không dứt.
+2. **Có phải tin nhắn do chính hệ thống vừa gửi không?**  
+   Vì bot phản hồi nhân danh tài khoản cá nhân, nên khi bot vừa gửi tin nhắn xong, máy chủ Lark sẽ phát ngược lại sự kiện tin nhắn mới. Bộ lọc kiểm tra nếu mã tin nhắn nằm trong danh sách vừa gửi đi (`_sent_message_ids`) thì hủy ngay, tránh việc bot tự trả lời câu nói của chính mình.
+3. **Có phải tin nhắn bị gửi lặp không?**  
+   Nếu mạng chập chờn, Lark sẽ tự động gửi lại tin nhắn đó lần thứ 2. Hệ thống lưu một bảng ghi nhớ 1.000 mã tin nhắn gần nhất trong vòng 10 phút (600 giây). Nếu thấy mã tin nhắn này đã xuất hiện rồi thì bỏ qua.
 
 ---
 
-### Module 1.2: Bộ Đệm Chống Trùng Lặp & Vòng Lặp Phản Hồi (Deduplication & Anti-loop)
+### Bước 3: Lưu tạm tin nhắn vào cơ sở dữ liệu (MongoDB Staging)
+- **Vị trí trong mã nguồn:** [`server/services/digest_service.py:L137`](file:///Users/hoainam/Desktop/HiLark/server/services/digest_service.py#L137) và [`server/services/bot_service.py:L295`](file:///Users/hoainam/Desktop/HiLark/server/services/bot_service.py#L295)
+- **Bảng lưu trữ:** `conversation_staging` trong MongoDB.
 
-- **Vị trí mã nguồn:** [`server/services/lark.py:L375-390`](file:///Users/hoainam/Desktop/HiLark/server/services/lark.py#L375-L390)
-- **Cấu trúc dữ liệu:** `OrderedDict[str, float]` với cơ chế Sliding Window LRU.
-- **Thông số kỹ thuật:**
-  - `TTL = 600.0s` (10 phút).
-  - `Max Capacity = 1000` items.
-
-```python
-def _is_duplicate_message(self, message_id: str) -> bool:
-    if not message_id:
-        return False
-    now = time.time()
-    # 1. Thu hồi các entry quá 600s từ đỉnh OrderedDict
-    while self._processed_msg_ids and (now - next(iter(self._processed_msg_ids.values())) > 600):
-        self._processed_msg_ids.popitem(last=False)
-    # 2. Kiểm tra trùng
-    if message_id in self._processed_msg_ids:
-        return True
-    # 3. Ghi nhận mới & khống chế kích thước tối đa 1000
-    self._processed_msg_ids[message_id] = now
-    if len(self._processed_msg_ids) > 1000:
-        self._processed_msg_ids.popitem(last=False)
-    return False
-```
-
-#### 3 chốt chặn lọc tin nhắn rác & vòng lặp trong `_internal_on_message_event`:
-1. **Lọc tin nhắn từ Bot (`msg.is_bot`):** Bỏ qua mọi tin nhắn do Bot/App phát ra để tránh Bot tự nói chuyện với nhau.
-2. **Lọc tin nhắn do chính Server phát ngôn (`_sent_message_ids`):** Khi HiLark gửi câu trả lời nhân danh User (`as_user=True`), Lark sẽ bắn ngược lại sự kiện tin nhắn mới. Bộ lọc kiểm tra nếu `message_id` nằm trong `_sent_message_ids` thì hủy bỏ ngay lập tức.
-3. **Lọc tin trùng lặp (`_is_duplicate_message`):** Hủy các gói tin gửi lại do sự cố mạng giữa Lark Cloud và Server.
+**Cách hoạt động:**
+- Cứ có tin nhắn trao đổi trong nhóm chat công việc, hệ thống sẽ lưu ngay một bản sao vào bảng dữ liệu tạm thời này.
+- **Mục đích:** Để phục vụ tiến trình tự động chạy vào lúc **23:00 mỗi đêm**. Lúc đó, AI sẽ đọc lại toàn bộ các tin nhắn đã diễn ra trong ngày để tổng hợp: Hôm nay ai hứa làm gì? Đã chốt quyết định nào? Có vướng mắc gì không?
 
 ---
 
-### Module 1.3: Vùng Đệm Staging Tin Nhắn MongoDB (Data Staging Buffer)
+### Bước 4: Gom các tin nhắn gõ ngắt dòng (Smart Message Debouncer)
+- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L27-120`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L27-L120)
+- **Thời gian chờ:** Mặc định **1.75 giây** (`DEBOUNCE_DELAY_SECONDS = 1.75`).
 
-- **Vị trí mã nguồn:** [`server/services/digest_service.py:L137-174`](file:///Users/hoainam/Desktop/HiLark/server/services/digest_service.py#L137-L174) & [`server/services/bot_service.py:L295-309`](file:///Users/hoainam/Desktop/HiLark/server/services/bot_service.py#L295-L309)
-- **Collection MongoDB:** `conversation_staging`
-- **Data Model:** `StagingMessage`
-
-```python
-class StagingMessage(BaseModel):
-    id: str = Field(default_factory=lambda: f"stg_{uuid.uuid4().hex[:12]}")
-    message_id: str
-    chat_id: str
-    chat_name: str
-    speaker_name: str
-    speaker_id: str
-    text: str
-    timestamp: str  # ISO-8601 UTC+7
-    message_link: Optional[str] = None
-    project_tag: Optional[str] = None
-    processed: bool = False
-```
-
-#### Logic thực thi:
-- Mọi tin nhắn trong nhóm (`chat_type == "group"`) có nội dung văn bản đều được lưu vào Staging ngay lập tức bằng lệnh `update_one({"message_id": message_id}, {"$set": staging_item.to_dict()}, upsert=True)`.
-- **Mục đích chiến lược:** Đảm bảo 100% hội thoại được lưu vết độc lập với việc tin nhắn đó có được AI trả lời hay không. Dữ liệu này là đầu vào của daemon tổng hợp `DailyDigestScheduler` chạy vào **23:00 hàng ngày** để trích xuất Quyết định & Cam kết nạp vào WeKnora Wiki.
-
----
-
-### Module 1.4: Smart Message Debouncer (Gom tin nhắn gõ ngắt dòng)
-
-- **Vị trí mã nguồn:** [`server/utils/chat_queue.py:L27-120`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L27-L120)
-- **Cấu hình:** `settings.DEBOUNCE_DELAY_SECONDS = 1.75s`
-- **Khóa định danh gom tin:** `key = (msg.chat_id, msg.sender_id)`
-
-#### Vấn đề giải quyết:
-Người dùng có thói quen gõ ngắt dòng liên tiếp:
+**Vấn đề thực tế:**  
+Mọi người khi chat thường có thói quen gõ từng câu ngắn rồi bấm Enter liên tiếp:
 > *Dòng 1:* "Alo anh Nam" *(Enter)*  
-> *Dòng 2:* "Dự án HiLark khi nào test xong" *(Enter)*  
-> *Dòng 3:* "để em báo khách ạ?" *(Enter)*
+> *Dòng 2:* "Dự án HiLark" *(Enter)*  
+> *Dòng 3:* "Bao giờ xong để em báo khách ạ?" *(Enter)*
 
-Nếu không có Debouncer, hệ thống sẽ kích hoạt 3 pipeline song song, tiêu tốn 3 lần quota LLM và trả lời cụt lủn.
+Nếu không gom lại, máy chủ sẽ kích hoạt AI trả lời 3 lần riêng biệt: câu 1 bot chào lại, câu 2 bot không hiểu, câu 3 bot trả lời thiếu chữ.
 
-#### Nguyên lý vận hành:
-1. Mỗi khi có tin nhắn từ user trong nhóm, gọi `debouncer.push(msg, ...)`.
-2. Hủy bỏ timer cũ nếu còn đang đếm (`old_timer.cancel()`).
-3. Thêm `LarkMessage` vào bộ nhớ đệm `_buffers[key]`.
-4. Thiết lập timer mới: `loop.call_later(1.75, _flush)`.
-5. Khi hết 1.75s không có thêm tin nhắn mới: hàm `_flush` lấy ra toàn bộ danh sách, ghép các dòng bằng dấu `\n`, chọn `anchor_message_id` là tin nhắn cuối cùng để reply trích dẫn, và đóng gói thành `ChatQueueItem`.
-
----
-
-### Module 1.5: Throttled Chat Queue (Hàng đợi điều phối & Silent Cooldown)
-
-- **Vị trí mã nguồn:** [`server/utils/chat_queue.py:L121-207`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L121-L207)
-- **Cấu hình:** `settings.USER_COOLDOWN_SECONDS = 4.0s`
-- **Cơ chế:** Worker loop tiêu thụ bất đồng bộ (`asyncio.Queue[ChatQueueItem]`).
-
-#### Cơ chế Silent Throttling (Điều tiết im lặng):
-- Lưu vết mốc thời gian xử lý gần nhất của từng user: `_last_user_processed: Dict[str, float]`.
-- Khi lấy một item ra khỏi hàng đợi:
-  ```python
-  elapsed = now - last_time
-  if elapsed < self.cooldown_seconds and not item.is_owner:
-      delay = self.cooldown_seconds - elapsed
-      print(f"⏳ [QUEUE COOLDOWN] Giãn cách {delay:.1f}s cho user '{item.user_name}'...")
-      await asyncio.sleep(delay)
-  ```
-- **Điểm ưu việt:** Không bắn tin nhắn cảnh báo rác (*"Bạn chat quá nhanh, vui lòng chờ..."*) gây phiền toái cho nhóm chat doanh nghiệp. Hệ thống chỉ âm thầm trì hoãn xử lý trong hàng đợi.
-
-#### Cơ chế VIP Bypass cho Chủ nhân (Owner Privilege):
-- Nếu `item.is_owner == True` (Chủ nhân/Sếp ra lệnh): Điều kiện `and not item.is_owner` trả về `False`.
-- Tin nhắn của Chủ nhân được xử lý **ngay lập tức**, độ trễ cooldown bằng `0.0s`.
+**Cách giải quyết của HiLark:**
+- Hệ thống gom tin nhắn theo từng người trong từng nhóm chat riêng biệt `(mã nhóm, mã người gửi)`.
+- Khi người đó gửi dòng 1, hệ thống bật đồng hồ đếm ngược 1.75 giây.
+- Nếu trước khi hết 1.75 giây người đó gõ tiếp dòng 2, đồng hồ sẽ được đếm lại từ đầu.
+- Khi người đó dừng gõ quá 1.75 giây, hệ thống ghép 3 dòng lại thành một câu duy nhất:  
+  *"Alo anh Nam \n Dự án HiLark \n Bao giờ xong để em báo khách ạ?"*  
+  và chuyển sang hàng đợi.
 
 ---
 
-### Module 1.6: Giới Hạn Tải Song Song (Concurrency Control Semaphore)
+### Bước 5: Hàng đợi điều tiết thời gian (Throttled Chat Queue)
+- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L121-207`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L121-L207)
+- **Thời gian giãn cách:** Mặc định **4.0 giây** (`USER_COOLDOWN_SECONDS = 4.0`).
 
-- **Vị trí mã nguồn:**  
-  - Trong Queue: [`server/utils/chat_queue.py:L136, L196-206`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L136)
-  - Trong Chat Service: [`server/services/chat_service.py:L44`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L44)
-- **Cấu hình:** `settings.MAX_CONCURRENT_CHAT_PIPELINES = 3`
-- **Công nghệ:** `asyncio.Semaphore(3)`
-
-```python
-async def _process_with_semaphore(self, item: ChatQueueItem) -> None:
-    async with self.semaphore:
-        if self.pipeline_executor:
-            await self.pipeline_executor(item)
-```
-
-#### Giá trị kỹ thuật:
-Dù trong giờ cao điểm có hàng chục thành viên hỏi bài cùng lúc trên nhiều nhóm khác nhau:
-- Tối đa chỉ có **3 pipeline LLM/RAG** chạy song song.
-- Các yêu cầu còn lại kiên nhẫn xếp hàng trong `asyncio.Queue`.
-- Ngăn ngừa triệt để lỗi chạm trần Rate Limit (HTTP 429) của Gemini API và WeKnora Vector Database.
+**Cách hoạt động:**
+- Sau khi tin nhắn được gom xong, nó được xếp vào hàng đợi xử lý tuần tự.
+- **Giãn cách im lặng:** Nếu cùng một người vừa hỏi xong lại hỏi tiếp câu khác trong vòng dưới 4 giây, hệ thống sẽ âm thầm giữ câu hỏi đó lại, chờ đủ 4 giây mới cho chạy tiếp.
+- **Không làm phiền phòng chat:** Hệ thống **tuyệt đối không gửi tin nhắn cảnh báo rác** (như *"Bạn chat quá nhanh, vui lòng chờ 4s"*), mà xử lý hoàn toàn tự nhiên và êm ái.
+- **Đặc quyền của Sếp (Chủ nhân):** Nếu người gửi là Sếp/Chủ nhân máy chủ, thời gian chờ sẽ bằng **0 giây** (được ưu tiên trả lời ngay tức khắc mà không phải xếp hàng chờ giãn cách).
 
 ---
 
-### Module 1.7: Bot Service Orchestrator & Fast Lifespan
+### Bước 6: Giới hạn số lượng tác vụ chạy cùng lúc (Concurrency Semaphore)
+- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L136`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L136) và [`server/services/chat_service.py:L44`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L44)
+- **Số lượng tối đa:** **3 tác vụ** chạy cùng lúc (`MAX_CONCURRENT_CHAT_PIPELINES = 3`).
 
-- **Vị trí mã nguồn:** [`server/services/bot_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/bot_service.py)
-- **Tích hợp:** [`server/main.py:L14-21`](file:///Users/hoainam/Desktop/HiLark/server/main.py#L14-L21) (`lifespan`)
+**Mục đích bảo vệ:**
+- Trong giờ cao điểm, nếu có 10 hay 20 người cùng đặt câu hỏi trên nhiều nhóm chat khác nhau:
+  - Máy chủ chỉ cho phép tối đa 3 câu hỏi được xử lý cùng một lúc.
+  - Các câu hỏi còn lại kiên nhẫn xếp hàng chờ ở hàng đợi.
+- Việc này giúp máy chủ không bị cạn kiệt bộ nhớ và quan trọng nhất là **không bị Google Gemini khóa tài khoản vì lỗi gọi quá nhiều lệnh cùng một giây (lỗi HTTP 429)**.
 
-#### Chu trình khởi động (`start_bot_service`):
-1. **Đăng ký Event Handler:** Gán `handle_lark_incoming_message` làm bộ phân phối chính.
-2. **Kích hoạt Queue Worker:** Khởi động worker ngầm của `chat_queue_service`.
-3. **Kích hoạt Daily Digest Daemon:** Tạo thread daemon canh giờ hẹn **23:00** (`DIGEST_SCHEDULE_TIME`).
-4. **Kiểm tra Token an toàn:** Gọi `check_and_warn_token()` xác thực hạn dùng User Access Token.
-5. **Khởi động WebSocket Client:** Khởi tạo thread lắng nghe kết nối với Lark Open Platform.
-6. **Đồng bộ Lark Base (Bitable):** Đăng ký theo dõi sự kiện bảng Base và đồng bộ cấu hình nhóm chat.
-
-#### Chu trình dừng an toàn (`stop_bot_service`):
-- Gửi tín hiệu dừng `_scheduler_stop_event`.
-- Dừng hàng đợi `chat_queue_service.stop()`.
-- Dừng worker quét Lark Base.
-- Bảo toàn dữ liệu đang ghi dở dang.
+*Sau khi bước 6 hoàn tất, câu hỏi hoàn chỉnh sẽ được bàn giao sang **Lớp 2: Kiểm duyệt bảo mật & Phân loại ý định**.*
 
 ---
 
-## 🔬 3. KIỂM THỬ TỰ ĐỘNG & BẢNG THÔNG SỐ CẤU HÌNH
+## ⚙️ 3. BẢNG CẤU HÌNH THAM SỐ (FILE .env / config.py)
 
-Hệ thống Layer 1 đã được bao phủ bởi bộ unit test toàn diện tại [`server/tests/01/test_chat_queue.py`](file:///Users/hoainam/Desktop/HiLark/server/tests/01/test_chat_queue.py):
+Tất cả các con số điều khiển Lớp 1 đều có thể chỉnh sửa dễ dàng trong file `.env`:
 
-| Test Case | Mục đích kiểm tra | Kết quả kiểm chứng |
-| :--- | :--- | :---: |
-| `test_debouncer_aggregates_rapid_messages` | Gom 3 tin nhắn gõ liên tiếp thành 1 text hoàn chỉnh | `PASS` |
-| `test_debouncer_separates_different_users_and_chats` | Cô lập tuyệt đối giữa các user và các phòng chat | `PASS` |
-| `test_throttled_queue_enforces_cooldown_for_members` | Giãn cách cooldown $\ge 0.25s$ giữa các câu hỏi thành viên | `PASS` |
-| `test_throttled_queue_bypasses_cooldown_for_owner` | Miễn trừ cooldown cho Chủ nhân, phản hồi ngay lập tức | `PASS` |
-| `test_concurrency_semaphore_limits_parallel_executions` | Đẩy 4 câu hỏi cùng lúc, đỉnh song song đo được chính xác bằng 2 | `PASS` |
-| `test_chat_queue_service_push_and_lifecycle` | Kiểm tra chu trình khởi động, push tin và shutdown an toàn | `PASS` |
-
-### Bảng tra cứu tham số môi trường (.env / config.py):
-
-| Tên biến cấu hình | Giá trị mặc định | Giải thích chức năng trong Layer 1 |
+| Tên biến cấu hình | Giá trị mặc định | Giải thích dễ hiểu |
 | :--- | :---: | :--- |
-| `DEBOUNCE_DELAY_SECONDS` | `1.75` (giây) | Cửa sổ thời gian gom tin nhắn gõ ngắt dòng của 1 user. |
-| `USER_COOLDOWN_SECONDS` | `4.0` (giây) | Thời gian giãn cách tối thiểu giữa 2 câu hỏi của 1 thành viên. |
-| `MAX_CONCURRENT_CHAT_PIPELINES` | `3` (tác vụ) | Số lượng pipeline RAG/LLM tối đa được chạy đồng thời. |
-| `ENABLE_DM_POLLING` | `false` | Bật/tắt chế độ Hybrid Runner quét DM 1-1 bằng User Token. |
-| `DM_POLL_INTERVAL` | `60.0` (giây) | Chu kỳ polling kiểm tra tin nhắn DM 1-1 mới. |
-| `DIGEST_SCHEDULE_TIME` | `23:00` | Giờ cố định trong ngày kích hoạt Daemon tổng hợp Staging. |
-| `MONGO_STAGING_COLLECTION` | `conversation_staging` | Tên collection MongoDB lưu trữ tin nhắn chờ tổng hợp. |
+| `DEBOUNCE_DELAY_SECONDS` | `1.75` | Số giây chờ để gom các dòng gõ ngắt quãng của một người. |
+| `USER_COOLDOWN_SECONDS` | `4.0` | Số giây giãn cách tối thiểu giữa 2 lần hỏi của cùng một thành viên. |
+| `MAX_CONCURRENT_CHAT_PIPELINES` | `3` | Số câu hỏi tối đa được xử lý cùng một lúc trên toàn bộ máy chủ. |
+| `DIGEST_SCHEDULE_TIME` | `23:00` | Giờ cố định mỗi đêm để gom tin nhắn làm báo cáo ngày. |
+| `ENABLE_DM_POLLING` | `false` | Có bật chế độ tự động quét hộp thư riêng định kỳ hay không. |
+| `DM_POLL_INTERVAL` | `60.0` | Chu kỳ quét hộp thư riêng (tính bằng giây). |
+
+---
+
+## ❓ 4. GIẢI ĐÁP CÁC CÂU HỎI KỸ THUẬT THƯỜNG GẶP
+
+### Câu hỏi 1: Tại sao ở Lớp 1 chưa gọi JEV để lọc tin nhắn?
+> **Trả lời:**  
+> Lớp 1 là lớp **hạ tầng mạng và làm mượt dữ liệu**. Nếu gọi JEV ngay từ Lớp 1, khi người dùng gõ ngắt quãng ("Alo anh" rồi Enter), JEV sẽ nhận từng câu rời rạc và đoán sai ý nghĩa, đồng thời làm tốn tài nguyên gọi JEV gấp nhiều lần.  
+> Do đó, Lớp 1 phải làm nhiệm vụ gom đủ câu, lọc sạch tin trùng và xếp hàng xong xuôi thì mới chuyển sang Lớp 2 cho JEV phân tích.
+
+### Câu hỏi 2: Lưu tất cả tin nhắn nhóm vào MongoDB để làm báo cáo cuối ngày thì có bị rác dữ liệu không?
+> **Trả lời:**  
+> - **Tri thức không bị rác:** Khi đọc dữ liệu lúc 23:00, AI được chỉ thị rất nghiêm ngặt: chỉ nhặt ra Quyết định, Cam kết tiến độ và Người chịu trách nhiệm. Mọi câu chào hỏi, đùa cợt đều bị AI bỏ qua. Sau đó, bản báo cáo còn phải gửi cho Sếp duyệt thì mới được lưu vào kho tri thức.  
+> - **Dữ liệu trong máy chủ:** Để database không bị nặng sau nhiều tháng hoạt động, hệ thống khuyến nghị cài đặt tự động xóa tin nhắn tạm sau 7 ngày (vì báo cáo ngày đã tổng hợp xong thì không cần giữ tin nhắn thô nữa).
