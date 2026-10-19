@@ -140,13 +140,18 @@ class ThrottledChatQueue:
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
 
-    def start(self) -> None:
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Khởi động worker ngầm xử lý hàng đợi."""
-        if self._running:
+        if self._running and self._worker_task and not self._worker_task.done():
             return
         self._running = True
-        self._worker_task = asyncio.create_task(self._worker_loop(), name="ThrottledChatQueueWorker")
-        logger.info("🚀 ThrottledChatQueue Worker đã khởi động.")
+        try:
+            target_loop = loop or asyncio.get_running_loop()
+            self._worker_task = target_loop.create_task(self._worker_loop(), name="ThrottledChatQueueWorker")
+            logger.info("🚀 ThrottledChatQueue Worker đã khởi động.")
+        except RuntimeError:
+            # Chưa có loop chạy ở thread hiện tại, sẽ lazy-start khi enqueue
+            pass
 
     def stop(self) -> None:
         """Dừng worker an toàn."""
@@ -157,6 +162,8 @@ class ThrottledChatQueue:
 
     async def enqueue(self, item: ChatQueueItem) -> None:
         """Đưa một mục chat đã gom vào hàng đợi."""
+        if not self._worker_task or self._worker_task.done():
+            self.start()
         await self._queue.put(item)
 
     async def _worker_loop(self) -> None:
@@ -212,9 +219,9 @@ class ChatQueueService:
             pipeline_executor=self._execute_pipeline,
         )
 
-    def start(self) -> None:
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Khởi động dịch vụ hàng đợi."""
-        self.queue.start()
+        self.queue.start(loop=loop)
 
     def stop(self) -> None:
         """Dừng dịch vụ hàng đợi."""
@@ -258,6 +265,32 @@ class ChatQueueService:
             confidence = result.get("jev_confidence", 0.0)
             status = result.get("status", "")
             print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f}) | Trạng thái: {status}")
+
+            if status == "forbidden_query":
+                chk = result.get("forbidden_check") or {}
+                matched = chk.get("matched_label") or "Chủ đề bị cấm"
+                print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
+            elif status == "group_inactive":
+                print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
+            elif jev_action == "IGNORE":
+                print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
+            elif jev_action == "MEMORY_ONLY":
+                ext = result.get("extraction") or {}
+                print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB ({len(ext.get('facts', []))} facts).")
+            elif jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
+                draft_ans = result.get("draft_answer") or result.get("answer", "")
+                print(f"📝 [{jev_action}] SOẠN NHÁP CHỜ DUYỆT:")
+                print(f"   • Bản nháp: \"{draft_ans[:150]}{'...' if len(draft_ans) > 150 else ''}\"")
+                print(f"   (Đã gửi thông báo riêng tới DM của chủ nhân, KHÔNG phát ngôn vào nhóm)")
+            elif jev_action == "REPLY_ONLY":
+                answer = result.get("answer", "")
+                print(f"💬 [TRẢ LỜI] Câu trả lời đã tạo ({len(answer)} ký tự):")
+                print(f"   \"{answer[:150]}{'...' if len(answer) > 150 else ''}\"")
+                lark_res = result.get("lark_response") or {}
+                if lark_res.get("success"):
+                    print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {(item.responder_name or 'User').upper()}!")
+                else:
+                    print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")
         except Exception as e:
             logger.error(f"Lỗi khi thực thi pipeline từ Queue: {e}", exc_info=True)
 

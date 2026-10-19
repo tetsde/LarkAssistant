@@ -28,6 +28,7 @@ from services.draft_service import draft_service
 from services.lark import lark_service
 from services.larkbase import lark_base_service
 from services.scope_service import scope_service
+from utils.chat_queue import chat_queue_service
 from utils.digest import get_current_digest_date
 
 logger = logging.getLogger("hilark.bot")
@@ -309,76 +310,57 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     # Chuyển vào Unified Chat Pipeline
     if is_owner:
         print(f"👑 [LARK GROUP CHỦ NHÂN] Tin nhắn của chủ nhân -> Chat Pipeline (chế độ chỉ ghi nhớ/ignore, cấm reply)...")
-    else:
-        print(f"⚙️ Đang xử lý qua Chat Pipeline (đích danh: '{target_user_name}' -> JEV Routing)...")
+        try:
+            result = await process_chat_pipeline(
+                query=msg.text,
+                sender=msg.sender_id,
+                channel=f"lark_{msg.chat_type}",
+                message_id=msg.message_id,
+                chat_id=msg.chat_id,
+                reply_to_lark=False,
+                user_name=target_user_name,
+                responder_name=responder_name,
+                role=settings.LARK_USER_ROLE or None,
+                is_owner=True,
+            )
+        except Exception as e:
+            print(f"❌ Lỗi khi thực thi pipeline: {e}")
+            logger.error(f"Lỗi pipeline: {e}", exc_info=True)
+            return
 
-    try:
-        result = await process_chat_pipeline(
-            query=msg.text,
-            sender=msg.sender_id,
-            channel=f"lark_{msg.chat_type}",
-            message_id=msg.message_id,
-            chat_id=msg.chat_id,
-            reply_to_lark=not is_owner,
+        # Hiển thị kết quả định tuyến của JEV cho chủ nhân
+        jev_action = result.get("jev_action", "IGNORE")
+        confidence = result.get("jev_confidence", 0.0)
+        status = result.get("status", "")
+
+        print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
+        print(f"📊 Trạng thái     : {status}")
+
+        if status == "forbidden_query":
+            chk = result.get("forbidden_check") or {}
+            matched = chk.get("matched_label") or "Chủ đề bị cấm"
+            print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
+        elif status == "group_inactive":
+            print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
+        elif jev_action == "IGNORE":
+            print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
+        elif jev_action == "MEMORY_ONLY":
+            ext = result.get("extraction") or {}
+            num_ent = len(ext.get("entities", []))
+            num_facts = len(ext.get("facts", []))
+            print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB.")
+            print(f"   • Thực thể mới : {num_ent}")
+            print(f"   • Facts mới    : {num_facts}")
+        print("=" * 65 + "\n")
+    else:
+        # Thành viên trong nhóm: đưa vào Smart Debouncer (1.75s) và Throttled Queue
+        print(f"📥 [DEBOUNCE BUFFER] Đưa tin nhắn của '{target_user_name}' vào bộ đệm gom 1.75s...")
+        await chat_queue_service.push_incoming_message(
+            msg=msg,
             user_name=target_user_name,
             responder_name=responder_name,
             role=settings.LARK_USER_ROLE or None,
-            is_owner=is_owner,
         )
-    except Exception as e:
-        print(f"❌ Lỗi khi thực thi pipeline: {e}")
-        logger.error(f"Lỗi pipeline: {e}", exc_info=True)
-        return
-
-    # Hiển thị kết quả định tuyến của JEV
-    jev_action = result.get("jev_action", "IGNORE")
-    confidence = result.get("jev_confidence", 0.0)
-    status = result.get("status", "")
-
-    print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
-    print(f"📊 Trạng thái     : {status}")
-
-    if status == "forbidden_query":
-        chk = result.get("forbidden_check") or {}
-        matched = chk.get("matched_label") or "Chủ đề bị cấm"
-        print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
-
-    elif status == "group_inactive":
-        print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
-
-    elif jev_action == "IGNORE":
-        print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
-
-    elif jev_action == "MEMORY_ONLY":
-        ext = result.get("extraction") or {}
-        num_ent = len(ext.get("entities", []))
-        num_facts = len(ext.get("facts", []))
-        print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB.")
-        print(f"   • Thực thể mới : {num_ent}")
-        print(f"   • Facts mới    : {num_facts}")
-
-    elif jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
-        draft_ans = result.get("draft_answer") or result.get("answer", "")
-        print(f"📝 [{jev_action}] SOẠN NHÁP CHỜ DUYỆT:")
-        if jev_action == "MEMORY_AND_DRAFT":
-            ext = result.get("extraction") or {}
-            print(f"💾 Đã lưu memory vào MongoDB ({len(ext.get('facts', []))} facts).")
-        print(f"   • Bản nháp: \"{draft_ans[:150]}{'...' if len(draft_ans) > 150 else ''}\"")
-        print(f"   • Tùy chọn: [Gửi] / [Sửa] / [Bỏ]")
-        print(f"   (Đã gửi thông báo riêng tới DM của {responder_name}, KHÔNG phát ngôn vào nhóm)")
-
-    elif jev_action == "REPLY_ONLY":
-        answer = result.get("answer", "")
-        print(f"💬 [TRẢ LỜI] Câu trả lời đã tạo ({len(answer)} ký tự):")
-        print(f"   \"{answer[:150]}{'...' if len(answer) > 150 else ''}\"")
-
-        lark_res = result.get("lark_response") or {}
-        if lark_res.get("success"):
-            print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {responder_label.upper()}!")
-        else:
-            print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")
-
-    print("=" * 65 + "\n")
 
 
 # =============================================================================
@@ -463,6 +445,9 @@ def start_bot_service() -> None:
     # 1. Đăng ký Message Handler vào Lark Service
     lark_service.register_handler(handle_lark_incoming_message)
 
+    # 1.1 Khởi động Throttled Chat Queue Service (Debouncer & Cooldown Worker)
+    chat_queue_service.start()
+
     # 2. Khởi động Digest Scheduler
     start_digest_scheduler_daemon()
 
@@ -542,6 +527,12 @@ def stop_bot_service() -> None:
     global _bot_started, _scheduler_stop_event
     logger.info("Đang dừng Lark Bot Service...")
     _scheduler_stop_event.set()
+
+    # Dừng worker của Chat Queue Service
+    try:
+        chat_queue_service.stop()
+    except Exception as e:
+        logger.debug(f"Lỗi khi dừng Chat Queue worker: {e}")
 
     # Dừng worker đồng bộ nền của Lark Base
     try:

@@ -16,6 +16,7 @@ Chịu trách nhiệm toàn bộ logic nghiệp vụ hội thoại:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,9 @@ from utils.rule_engine import rule_engine
 from utils.text_filter import text_filter
 
 logger = logging.getLogger("hilark.chat_service")
+
+# Giới hạn số lượng tác vụ gọi LLM đồng thời trên toàn server
+GLOBAL_LLM_SEMAPHORE = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_CHAT_PIPELINES", 3))
 
 
 # =============================================================================
@@ -218,11 +222,12 @@ async def generate_grounded_answer(
 
     client = LLMClient(api_key=api_key) if api_key else llm_client
     try:
-        ans = await client.generate_text_async(
-            prompt=prompt,
-            model_name=model_name,
-            max_output_tokens=max_output_tokens,
-        )
+        async with GLOBAL_LLM_SEMAPHORE:
+            ans = await client.generate_text_async(
+                prompt=prompt,
+                model_name=model_name,
+                max_output_tokens=max_output_tokens,
+            )
         return ans.strip()
     except Exception as e:
         logger.warning(f"Lỗi khi gọi LLM generate_text_async: {e}")
