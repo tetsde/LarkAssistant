@@ -14,9 +14,9 @@ Nếu không có Lớp 1, người dùng gõ ngắt dòng liên tục hoặc nhi
 
 ---
 
-## 🖼️ SƠ ĐỒ HOẠT ĐỘNG TỔNG QUAN
+## 🖼️ SƠ ĐỒ PHÂN RÃ THÀNH PHẦN LỚP 1
 
-![Sơ đồ luồng hoạt động Layer 1](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/layer1_flow_diagram_1792400839886.jpg)
+![Sơ đồ phân rã thành phần Lớp 1 thuần Việt](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/phan_ra_thanh_phan_lop_1_1792402814061.jpg)
 
 ### Quy trình 6 bước tuần tự:
 ```mermaid
@@ -80,6 +80,7 @@ Trước khi đem tin nhắn đi xử lý, hệ thống kiểm tra 3 điều ki�
 
 ### Bước 4: Gom các tin nhắn gõ ngắt dòng (Smart Message Debouncer)
 - **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L27-120`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L27-L120)
+- **Tài liệu bóc tách kỹ thuật:** 👉 Xem [`ultis_docs/chat_queue.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer1/ultis_docs/chat_queue.md) và tổng quan quan hệ Parent-Child tại [`ultis_docs/README.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer1/ultis_docs/README.md).
 - **Thời gian chờ:** Mặc định **1.75 giây** (`DEBOUNCE_DELAY_SECONDS = 1.75`).
 
 **Vấn đề thực tế:**  

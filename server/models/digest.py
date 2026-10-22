@@ -12,6 +12,7 @@ Chứa các cấu trúc dữ liệu phục vụ:
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -294,85 +295,71 @@ class MasterDailyDigestRecord(BaseModel):
 
     def to_executive_dm_text(self) -> str:
         """
-        Render tin nhắn DM gửi cho Chủ nhân theo định dạng trực quan, phân cấp:
-        - Header ngày & số nhóm
-        - Bức tranh toàn cảnh (Executive Summary)
-        - Chi tiết từng nhóm: Quyết định, Cam kết & Hạn chót, Trạng thái & Blocker
-        - Lời nhắc lệnh duyệt/hủy
+        Render tin nhắn DM gửi cho Chủ nhân theo định dạng thuần văn bản trực quan, dễ đọc trên Lark:
+        - Không dùng cú pháp markdown thô (** hay ###) để tránh lỗi hiển thị trên Lark
+        - Loại bỏ các dòng trống vô nghĩa (Không có)
+        - Làm sạch tên nhóm, dự án (bỏ ngoặc vuông lặp)
+        - Phân chia bố cục rõ ràng, súc tích cho cấp điều hành
         """
         lines = [
-            f"📊 **BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM (DAILY MASTER DIGEST)**",
-            f"📅 **Ngày:** {self.date} | 👥 **Số nhóm hoạt động:** {self.total_groups} | 💬 **Tổng tin nhắn:** {self.total_messages}",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "📊 BÁO CÁO NGÀY CẤP ĐIỀU HÀNH (DAILY MASTER DIGEST)",
+            f"📅 Ngày: {self.date}  |  👥 Số nhóm: {self.total_groups}  |  💬 Tổng tin nhắn: {self.total_messages}",
+            "────────────────────────────────────────",
             "",
-            "🏢 **I. TỔNG QUAN ĐIỀU HÀNH (EXECUTIVE OVERVIEW)**",
+            "🏢 I. TỔNG QUAN ĐIỀU HÀNH",
             self.executive_summary or "Hôm nay ghi nhận hoạt động trao đổi và cập nhật tiến độ trên các nhóm dự án.",
             "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "📂 **II. CHI TIẾT TỪNG NHÓM DỰ ÁN**",
+            "────────────────────────────────────────",
+            "📂 II. TIẾN ĐỘ CHI TIẾT TỪNG DỰ ÁN",
         ]
 
         if not self.group_digests:
-            lines.append("*(Không có nhóm nào phát sinh dữ liệu trao đổi quan trọng trong ngày)*")
+            lines.append("(Không có nhóm nào phát sinh dữ liệu trao đổi quan trọng trong ngày)")
         else:
             for idx, gd in enumerate(self.group_digests, 1):
-                grp_title = gd.chat_name or gd.project_tag or gd.chat_id
-                proj_title = gd.project_tag or "Nội bộ"
-                lines.extend([
-                    f"\n### 📌 Nhóm {idx}: [[{grp_title}]] (ID: `{gd.chat_id}`)",
-                    f"🏢 *Dự án trực thuộc:* [[{proj_title}]] | 💬 *Tin nhắn:* {gd.message_count} | 🧠 *Claims:* {len(gd.claims)}",
-                ])
+                # Làm sạch tên nhóm và dự án (chuyển [Project 1] Fintech thành Project 1 - Fintech)
+                raw_name = gd.chat_name or gd.project_tag or gd.chat_id
+                m = re.match(r"^\[(.*?)\]\s*(.*)$", (raw_name or "").strip())
+                if m:
+                    p1, p2 = m.group(1).strip(), m.group(2).strip()
+                    clean_name = f"{p1} - {p2}" if p2 else p1
+                else:
+                    clean_name = raw_name.replace("[", "").replace("]", "").strip()
+
+                proj_title = (gd.project_tag or "Nội bộ").replace("[", "").replace("]", "").strip()
+
+                lines.append(f"\n📌 {idx}. Dự án: {clean_name}")
+                lines.append(f"   • Phân loại: {proj_title} | Tin nhắn: {gd.message_count}")
                 if gd.overview_summary:
-                    lines.append(f"📝 *Tóm tắt:* {gd.overview_summary}")
+                    lines.append(f"   • Diễn biến: {gd.overview_summary.strip()}")
 
-                # 0. Mệnh đề / Đề xuất từ thành viên (Claims)
-                proposed_claims = [c for c in gd.claims if (c.get("status") or "").lower() == "proposed"]
-                if proposed_claims:
-                    lines.append("\n  💡 **Đề xuất từ thành viên (Proposed Claims):**")
-                    for p in proposed_claims[:3]:
-                        prop = p.get("property") or "idea"
-                        val = p.get("value") or ""
-                        asserted = p.get("asserted_by") or {}
-                        spk = asserted.get("user_name") or asserted.get("user_id") or "Thành viên"
-                        lines.append(f"    • {spk} đề xuất: **{prop}** = {val}")
-
-                # 1. Quyết định
+                # 1. Quyết định (chỉ in khi có dữ liệu)
                 if gd.decisions:
-                    lines.append("\n  🔹 **Quyết định đã thống nhất:**")
+                    lines.append("   • Quyết định:")
                     for d in gd.decisions:
-                        lines.append(f"    • **{d.title}**: {d.content} *(Chốt bởi {d.source.speaker_name})*")
-                else:
-                    lines.append("  🔹 **Quyết định:** *(Không có)*")
+                        lines.append(f"     ✔ {d.title}: {d.content} (Chốt bởi: {d.source.speaker_name})")
 
-                # 2. Cam kết & Hạn chót
+                # 2. Cam kết & Hạn chót (chỉ in khi có dữ liệu)
                 if gd.commitments:
-                    lines.append("  ⏰ **Cam kết & Hạn chót:**")
+                    lines.append("   • Cam kết:")
                     for c in gd.commitments:
-                        deadline_str = f" [Hạn: {c.deadline}]" if c.deadline else ""
-                        lines.append(f"    • **{c.promiser_name}**: {c.task}{deadline_str}")
-                else:
-                    lines.append("  ⏰ **Cam kết:** *(Không có)*")
+                        dl = f" [Hạn: {c.deadline}]" if c.deadline else ""
+                        lines.append(f"     ⏰ {c.promiser_name}: {c.task}{dl}")
 
-                # 3. Thay đổi trạng thái & Blocker
+                # 3. Blocker & Mốc quan trọng (chỉ in khi có dữ liệu)
                 if gd.status_changes:
-                    lines.append("  🔄 **Trạng thái & Tiến độ:**")
+                    lines.append("   • Điểm nghẽn & Cột mốc:")
                     for s in gd.status_changes:
-                        prefix = (
-                            "🔴 [BLOCKER]"
-                            if s.category == StatusCategory.BLOCKER
-                            else ("🟢 [MILESTONE]" if s.category == StatusCategory.MILESTONE else "🔵 [TIẾN ĐỘ]")
-                        )
-                        reason = f" - *Lý do:* {s.blocker_reason}" if s.blocker_reason else ""
-                        lines.append(f"    • {prefix} **{s.target_object}**: {s.new_state} ({s.summary}){reason}")
-                else:
-                    lines.append("  🔄 **Trạng thái:** *(Không có thay đổi đặc biệt)*")
+                        prefix = "🔴 [BLOCKER]" if s.category == StatusCategory.BLOCKER else ("🟢 [MỐC]" if s.category == StatusCategory.MILESTONE else "🔵 [TIẾN ĐỘ]")
+                        reason = f" (Lý do: {s.blocker_reason})" if s.blocker_reason else ""
+                        lines.append(f"     {prefix} {s.target_object}: {s.new_state} - {s.summary}{reason}")
 
         lines.extend([
             "",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            "💡 **HƯỚNG DẪN THAO TÁC:**",
-            "👉 Nhắn tin **\"duyệt digest\"** để phê duyệt và đồng bộ tri thức của từng nhóm vào đúng Knowledge Base WeKnora tương ứng.",
-            "👉 Nhắn tin **\"hủy digest\"** nếu không muốn lưu trữ bản tổng hợp này.",
+            "────────────────────────────────────────",
+            "💡 HƯỚNG DẪN THAO TÁC:",
+            "👉 Nhắn \"duyệt digest\" để phê duyệt và lưu vào Knowledge Base WeKnora.",
+            "👉 Nhắn \"hủy digest\" nếu không muốn lưu bản tổng hợp này.",
         ])
 
         return "\n".join(lines)

@@ -503,9 +503,6 @@ def start_bot_service() -> None:
             if items:
                 print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
 
-            # C. Khởi động worker chạy ngầm quét định kỳ
-            lark_base_service.start_background_sync(interval=30.0)
-
             # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
             lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
 
@@ -533,12 +530,6 @@ def stop_bot_service() -> None:
         chat_queue_service.stop()
     except Exception as e:
         logger.debug(f"Lỗi khi dừng Chat Queue worker: {e}")
-
-    # Dừng worker đồng bộ nền của Lark Base
-    try:
-        lark_base_service.stop_background_sync()
-    except Exception as e:
-        logger.debug(f"Lỗi khi dừng Lark Base worker: {e}")
 
     _bot_started = False
     logger.info("✔ Đã dừng Lark Bot Service thành công.")

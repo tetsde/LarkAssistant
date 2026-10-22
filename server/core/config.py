@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # config.py nằm ở: HiLark/server/core/config.py
 # Nên lùi 3 cấp để về HiLark
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
-load_dotenv(dotenv_path=env_path)
+load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
     WEKNORA_API_KEY: str = os.getenv("api_weknora", "")

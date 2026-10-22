@@ -35,6 +35,7 @@ BASE_FIELD_MAP: Dict[str, List[str]] = {
     "documents": ["fldHpn8M87", "Documents", "documents"],
     "dataset_id": ["fldKBId", "Knowledge Base ID", "dataset_id"],
     "wiki_dataset_id": ["fldWikiKB", "Wiki KB", "wiki_dataset_id", "wiki_kb_id"],
+    "project_tag": ["fldProjTag", "Mã dự án", "Project Tag", "project_tag"],
 }
 
 
@@ -282,6 +283,7 @@ class ScopeService:
 
         # 2. Trích xuất tên nhóm / dự án
         chat_name = _extract_text_field(_get_base_field(raw_fields, "chat_name")) or f"Nhóm {chat_id}"
+        raw_project_tag = _extract_text_field(_get_base_field(raw_fields, "project_tag"))
 
         # 3. Trích xuất trạng thái & mức độ bảo mật
         status = _extract_text_field(_get_base_field(raw_fields, "status")) or "Hoạt động"
@@ -362,6 +364,7 @@ class ScopeService:
         now_iso = get_vietnam_now_iso()
         coll = get_chat_scopes_collection()
         created_at = existing_scope.created_at if existing_scope else now_iso
+        effective_project_tag = raw_project_tag or (existing_scope.project_tag if existing_scope else None)
 
         scope_rec = ChatScopeRecord(
             chat_id=chat_id,
@@ -369,6 +372,7 @@ class ScopeService:
             dataset_id=effective_dataset_id,
             dataset_name=existing_scope.dataset_name if existing_scope else "Lark Base Knowledge Base",
             wiki_dataset_id=wiki_dataset_id,
+            project_tag=effective_project_tag,
             status=status,
             security_level=security_level,
             forbidden_labels=forbidden_labels,

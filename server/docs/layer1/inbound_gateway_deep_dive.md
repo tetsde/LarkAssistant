@@ -19,8 +19,12 @@ Hãy hình dung Layer 1 như **"Bàn tiếp tân và phòng chờ có trật t�
 
 ---
 
-## 🖼️ SƠ ĐỒ LUỒNG HOẠT ĐỘNG
+## 🖼️ SƠ ĐỒ PHÂN RÃ THÀNH PHẦN & LUỒNG HOẠT ĐỘNG
 
+### 1. Phân rã thành phần Lớp 1 (Thuần Việt)
+![Sơ đồ phân rã thành phần Lớp 1 thuần Việt](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/phan_ra_thanh_phan_lop_1_1792402814061.jpg)
+
+### 2. Luồng thực thi mã nguồn
 ![Sơ đồ luồng Layer 1](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/layer1_flow_diagram_1792400839886.jpg)
 
 ```
@@ -92,7 +96,7 @@ Lark Platform
 | :--- | :--- | :--- |
 | **Lọc DM chủ nhân** | Tin nhắn 1-1 tới chủ nhân → xử lý lệnh điều khiển (Duyệt/Sửa/Hủy digest) riêng | `L200-260` |
 | **Tra cứu tên người gửi** | Gọi `lark_service.get_user_name()` để log đẹp hơn | `L270-292` |
-| **Lưu staging** | Mỗi tin nhắn group → `digest_service.add_staging_message()` → MongoDB `conversation_staging` | `L295-308` |
+| **Lưu staging** | Mỗi tin nhắn group → `digest_service.add_staging_message()` → MongoDB `conversation_staging`. (Điểm ghi duy nhất: `chat_service.py` bỏ qua `channel == "lark_group"` để triệt tiêu I/O trùng lặp) | `L295-308` |
 | **Phân luồng Chủ nhân** | `is_owner=True` → gọi `process_chat_pipeline()` **trực tiếp**, `reply_to_lark=False` (không được phát ngôn vào nhóm) | `L311-354` |
 | **Phân luồng Thành viên** | `is_owner=False` → `chat_queue_service.push_incoming_message()` → vào Debouncer + Queue | `L355-363` |
 
@@ -102,6 +106,7 @@ Lark Platform
 ---
 
 ### MODULE 3 — `utils/chat_queue.py` (Gom & Điều tiết)
+> 💡 **Tài liệu bóc tách chi tiết:** Xem tại [`ultis_docs/chat_queue.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer1/ultis_docs/chat_queue.md) và tổng quan quan hệ Parent-Child tại [`ultis_docs/README.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer1/ultis_docs/README.md).
 
 #### A. `MessageDebouncer` — Bộ gom tin gõ ngắt dòng
 
@@ -214,8 +219,10 @@ LAYER 2 — JEV FILTER & INTENT ROUTING (ra ngoài phạm vi Layer 1)
 ### Tại sao Chủ nhân đi thẳng, không qua Queue?
 > Chủ nhân không bao giờ được bot reply vào nhóm (`reply_to_lark=False`). Mục đích duy nhất là ghi nhớ ngầm và debug log JEV. Không có lý do gì phải chờ cooldown hay gom tin.
 
-### Lưu tất cả tin nhắn nhóm vào staging có bị rác không?
-> Không. Lúc 23:00 AI chỉ nhặt ra Quyết định, Cam kết, Người phụ trách. Câu chào hỏi, đùa cợt bị AI bỏ qua. Bản báo cáo còn phải Chủ nhân duyệt trước khi vào kho tri thức WeKnora. Ngoài ra, dữ liệu tạm nên đặt TTL 7 ngày trong MongoDB để tự xóa sau khi báo cáo đã xử lý xong.
+### Lưu tất cả tin nhắn nhóm vào staging có bị rác hoặc ghi đúp không?
+> Không. 
+> 1. **Về rác:** Lúc 23:00 AI chỉ nhặt ra Quyết định, Cam kết, Người phụ trách. Câu chào hỏi, đùa cợt bị AI bỏ qua. Bản báo cáo còn phải Chủ nhân duyệt trước khi vào kho tri thức WeKnora. Ngoài ra, dữ liệu tạm nên đặt TTL 7 ngày trong MongoDB để tự xóa sau khi báo cáo đã xử lý xong.
+> 2. **Về chống ghi đúp:** Gateway `bot_service.py` là điểm ghi staging duy nhất cho nhóm Lark. Tại `chat_service.py`, lệnh ghi staging được bảo vệ bởi điều kiện `channel != "lark_group"`, triệt tiêu 100% nguy cơ ghi đúp I/O vào cơ sở dữ liệu.
 
 ### Nếu user gửi cùng lúc ở 2 nhóm khác nhau thì sao?
 > Debouncer gom theo `(chat_id, sender_id)` — hai nhóm khác nhau là hai key riêng biệt, xử lý hoàn toàn độc lập. Semaphore `max=3` kiểm soát tổng tải trên toàn server.

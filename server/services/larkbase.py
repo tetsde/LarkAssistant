@@ -648,41 +648,6 @@ class LarkBaseService:
             logger.warning(f"Không thể gọi API subscribe Base: {e}")
             return False
 
-    def start_background_sync(self, interval: float = 30.0) -> None:
-        """Khởi động daemon thread định kỳ quét và đồng bộ nhóm chat bot vào Lark Base."""
-        if hasattr(self, "_sync_thread") and self._sync_thread and self._sync_thread.is_alive():
-            logger.info("ℹ️ Background sync worker của Lark Base đã đang chạy.")
-            return
-
-        self._stop_sync_event = threading.Event()
-
-        def _worker():
-            logger.info(f"🚀 Lark Base Background Sync Worker đã khởi động (chu kỳ {interval}s).")
-            while not self._stop_sync_event.is_set():
-                time.sleep(interval)
-                if self._stop_sync_event.is_set():
-                    break
-                try:
-                    res = self.sync_bot_chats()
-                    items = res.get("added", []) + res.get("updated", [])
-                    if items:
-                        print("\n" + "=" * 65)
-                        print("🔄 [LARK BASE SYNC] TỰ ĐỘNG ĐỒNG BỘ NHÓM CHAT MỚI VÀO BASE:")
-                        print("-" * 65)
-                        for item in items:
-                            print(f"✔ Đã lưu vào Base: {item.get('name')} ({item.get('chat_id')}) -> Record: {item.get('record_id')}")
-                        print("=" * 65 + "\n")
-                except Exception as e:
-                    logger.debug(f"Lỗi khi tự động sync nhóm chat vào Base: {e}")
-
-        self._sync_thread = threading.Thread(target=_worker, daemon=True, name="LarkBaseSyncWorker")
-        self._sync_thread.start()
-
-    def stop_background_sync(self) -> None:
-        """Dừng an toàn background sync worker."""
-        if hasattr(self, "_stop_sync_event") and self._stop_sync_event:
-            self._stop_sync_event.set()
-        logger.info("🛑 Đã dừng Lark Base Background Sync Worker.")
 
     # =========================================================================
     # 2. ASYNCHRONOUS WRAPPER METHODS (DÙNG CHO FASTAPI ROUTES & LIFECYCLE)
@@ -912,41 +877,15 @@ def start_bitable_ws_listener(service: LarkBaseService) -> None:
     else:
         print("ℹ️ Đang kết nối trực tiếp với Lark WebSocket...")
 
-    # Khởi động thread chạy ngầm định kỳ quét và đồng bộ nhóm chat bot (kể cả khi không có webhook event)
-    stop_sync_event = threading.Event()
-
-    def _background_sync_worker():
-        while not stop_sync_event.is_set():
-            time.sleep(15)
-            if stop_sync_event.is_set():
-                break
-            try:
-                res = service.sync_bot_chats()
-                items = res.get("added", []) + res.get("updated", [])
-                if items:
-                    print("\n" + "=" * 65)
-                    print("🔄 [TỰ ĐỘNG ĐỒNG BỘ] PHÁT HIỆN VÀ ĐỒNG BỘ NHÓM CHAT MỚI VÀO BASE:")
-                    print("-" * 65)
-                    for item in items:
-                        print(f"✔ Đã lưu vào Base: {item.get('name')} ({item.get('chat_id')}) -> Record: {item.get('record_id')}")
-                    print("=" * 65 + "\n")
-            except Exception as e:
-                logger.debug(f"Lỗi khi tự động sync nền: {e}")
-
-    sync_thread = threading.Thread(target=_background_sync_worker, daemon=True, name="HiLark-SyncWorker")
-    sync_thread.start()
-
     print("👉 Hãy thử mở Lark Base trên trình duyệt, thêm dòng hoặc sửa 1 ô bất kỳ...")
     print("-" * 70)
 
     try:
         ws_client.start()
     except (KeyboardInterrupt, SystemExit):
-        stop_sync_event.set()
         print("\n🛑 Đã dừng lắng nghe sự kiện Lark Base an toàn.")
         os._exit(0)
     except Exception as e:
-        stop_sync_event.set()
         logger.error(f"Lỗi khi chạy WebSocket client: {e}")
         os._exit(1)
 

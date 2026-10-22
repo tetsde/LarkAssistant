@@ -538,11 +538,15 @@ class ContextComposer:
                     d_name = d if isinstance(d, str) else d.get("name", "")
                     if d_name:
                         scope_lines.append(f"  - 📄 {d_name}")
-            scope_lines.append("• Chỉ dẫn suy luận bối cảnh ngầm định:")
+            canonical_proj = project_name or chat_name or "Dự án hiện tại"
+            scope_lines.append("• Chỉ dẫn định danh dự án & suy luận bối cảnh ngầm định:")
             scope_lines.append(
-                f"  Mọi câu hỏi chung về 'dự án', 'tài liệu', 'kế hoạch', 'mục tiêu' từ thành viên trong nhóm này "
-                f"MẶC ĐỊNH là đang hỏi về dự án '{project_name or chat_name}' và các tài liệu đính kèm trên. "
-                f"TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng 'em hỏi dự án nào'!"
+                f"  1. TÊN CHÍNH THỨC CỦA DỰ ÁN LÀ: '{canonical_proj}'. "
+                f"Mọi câu hỏi chung về 'dự án', 'dự án này là gì', 'thông tin dự án', 'kế hoạch' từ thành viên trong nhóm này "
+                f"MẶC ĐỊNH 100% là đang hỏi về dự án '{canonical_proj}'. "
+                f"TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng 'em hỏi dự án nào'!\n"
+                f"  2. NGUYÊN TẮC BẢO VỆ TÊN DỰ ÁN (TUYỆT ĐỐI CẤM NHẦM VỚI TÊN TÀI LIỆU): "
+                f"Các tài liệu trong 'Danh mục tài liệu đính kèm' (như '04_So_tay_chinh_sach_cong_ty.pdf', 'Code_of_Conduct.docx', 'Project_Charter.docx'...) "
             )
 
         # 4. Tạo context text

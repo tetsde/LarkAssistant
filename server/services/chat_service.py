@@ -73,6 +73,9 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - Bạn PHẢI trả lời cô đọng, dứt khoát, đi thẳng vào đúng trọng tâm câu hỏi dựa trên dữ liệu tri thức truy vấn được.
    - TUYỆT ĐỐI KHÔNG viết dông dài lan man, không lặp lại câu hỏi khiến câu trả lời bị đứt đoạn hay cụt câu giữa chừng.
    - BẮT BUỘC hoàn thành trọn vẹn toàn bộ các câu và đoạn văn, đảm bảo có phần kết thúc mạch lạc, hoàn chỉnh.
+5. BẢO TOÀN ĐỊNH DANH DỰ ÁN (TUYỆT ĐỐI CẤM NHẦM TÊN TÀI LIỆU THÀNH TÊN DỰ ÁN):
+   - Đọc kỹ PHẦN 0: BỐI CẢNH DỰ ÁN để xác định đúng "Tên nhóm chat" hoặc "Dự án phụ trách". Đó là tên chính thức duy nhất của dự án (ví dụ: "Project Atlas").
+   - TUYỆT ĐỐI CẤM lấy tên của các file tài liệu đính kèm (như "04_So_tay_chinh_sach_cong_ty.pdf", "Ngan_sach_du_an.xlsx", "Code_of_Conduct.docx") để gán nhầm làm tên dự án! Các file này chỉ là tài liệu tham khảo nội bộ.
 """
 
 GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}).
@@ -120,9 +123,12 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
    - NGUYÊN TẮC THẨM QUYỀN: Nếu bối cảnh có mục 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT], đây CHỈ LÀ ĐỀ XUẤT CÁ NHÂN từ nhân sự (nguyện vọng xin làm lead, xin chuyển đổi vai trò), CHƯA PHẢI QUYẾT ĐỊNH CỦA BẠN. Hãy trả lời rõ ràng: "Đề xuất này của em anh đã ghi nhận nhưng cần cân nhắc thêm trước khi chốt nhé".
    - TUYỆT ĐỐI KHÔNG sinh thẻ trích dẫn nguồn lộ liễu (như [Cập nhật hội thoại: ...] hay [Tài liệu: ...]) trong câu trả lời.
 
-7. NGUYÊN TẮC SUY LUẬN BỐI CẢNH DỰ ÁN & TÀI LIỆU CỦA NHÓM (SCOPE DEFAULTING):
-   - Bạn đang trả lời trong một nhóm chat dự án cụ thể. Nếu thành viên hỏi các câu hỏi chung chung về dự án (ví dụ: "cho em xin thông tin dự án", "dự án này làm gì", "kế hoạch dự án ra sao", "mục tiêu dự án"), bạn MẶC ĐỊNH hiểu rằng thành viên đang hỏi về dự án và các tài liệu đính kèm của nhóm này (được nêu rõ trong 'PHẦN 0: BỐI CẢNH DỰ ÁN & HỒ SƠ TÀI LIỆU CỦA NHÓM' hoặc trong tài liệu WeKnora).
+7. NGUYÊN TẮC SUY LUẬN BỐI CẢNH DỰ ÁN & ĐỊNH DANH BẤT BIẾN (SCOPE & PROJECT IDENTITY):
+   - Bạn đang trả lời trong một nhóm chat dự án cụ thể. Nếu thành viên hỏi các câu hỏi chung chung về dự án (ví dụ: "cho em xin thông tin dự án", "dự án này làm gì", "kế hoạch dự án ra sao", "mục tiêu dự án"), bạn MẶC ĐỊNH hiểu rằng thành viên đang hỏi về dự án của nhóm này (được nêu rõ tại mục "Tên nhóm chat" hoặc "Dự án phụ trách" trong PHẦN 0, ví dụ: "Project Atlas").
    - TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng những câu như: "em cần thông tin về dự án nào", "anh chưa rõ em hỏi dự án nào". Hãy chủ động cung cấp ngay bức tranh tổng quan/chi tiết của dự án thuộc nhóm này cho người hỏi!
+   - NGUYÊN TẮC ĐỊNH DANH BẤT BIẾN (CẤM NHẦM TÊN FILE THÀNH TÊN DỰ ÁN): 
+     * Tên dự án chính thức của nhóm là tên ghi trong PHẦN 0 (ví dụ: "Project Atlas").
+     * TUYỆT ĐỐI CẤM lấy tên của các file tài liệu đính kèm (như "04_So_tay_chinh_sach_cong_ty.pdf", "Ngan_sach_du_an.xlsx", "Code_of_Conduct.docx") để nói làm tên dự án (Ví dụ: CẤM TUYỆT ĐỐI các câu như: "Dự án mình đang triển khai là 04 Sổ Tay Chính Sách Công Ty"). Các file này chỉ là văn bản chính sách/tham khảo nội bộ!
 """
 
 
@@ -275,8 +281,8 @@ async def process_chat_pipeline(
             "message": str(e),
         }
 
-    # ── Tự động lưu Staging nếu có chat_id và message_id (Hỗ trợ Daily Digest) ──
-    if chat_id and message_id:
+    # ── Tự động lưu Staging nếu có chat_id và message_id (Tránh ghi đúp nếu đã qua bot_service) ──
+    if chat_id and message_id and channel != "lark_group":
         try:
             from services.digest_service import digest_service
             await digest_service.add_staging_message(
@@ -483,19 +489,7 @@ async def process_chat_pipeline(
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
-    # [RAG GATE RELEVANCE FILTERING] Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất)
-    if chunks and len(chunks) > 1:
-        try:
-            proj_ctx = proj_context_name or (scope_record.dataset_name if scope_record else None) or (scope_record.chat_name if scope_record else None)
-            chunks = await jev_service.filter_chunks_relevance(
-                clean_query,
-                chunks,
-                project_context=proj_ctx,
-            )
-        except Exception as e:
-            logger.warning(f"Lỗi khi lọc chunks qua JEV: {e}")
-
-    # Chuẩn hóa chunks cho ContextComposer
+    # Chuẩn hóa chunks cho ContextComposer và Rule Engine
     normalized_chunks = []
     for c in chunks:
         doc_name = (
@@ -512,6 +506,7 @@ async def process_chat_pipeline(
 
     # ── [CHỐT CHẶN BẢO MẬT: UNIFIED RULE ENGINE] ──
     # Lọc WeKnora Chunks và MongoDB Claims theo nhãn cấm (forbidden_labels) từ Lark Base
+    # Thực thi trước JEV để loại bỏ ngay dữ liệu cấm (0ms RAM), bảo vệ quyền riêng tư và tiết kiệm token
     forbidden_labels = scope_record.forbidden_labels if scope_record else []
     clean_chunks, clean_claims = rule_engine.sanitize(
         chunks=normalized_chunks,
@@ -519,6 +514,19 @@ async def process_chat_pipeline(
         forbidden_labels=forbidden_labels,
         query=clean_query,
     )
+
+    # ── [RAG GATE RELEVANCE FILTERING] ──
+    # Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất) trên các chunks đã được khử trùng
+    if clean_chunks and len(clean_chunks) > 1:
+        try:
+            proj_ctx = proj_context_name or (scope_record.dataset_name if scope_record else None) or (scope_record.chat_name if scope_record else None)
+            clean_chunks = await jev_service.filter_chunks_relevance(
+                clean_query,
+                clean_chunks,
+                project_context=proj_ctx,
+            )
+        except Exception as e:
+            logger.warning(f"Lỗi khi lọc chunks qua JEV: {e}")
 
     # [SAFETY - RAG GATE] Nếu REPLY_ONLY nhưng không có chunks KB nào đủ cơ sở tri thức
     # -> Downgrade bắt buộc sang DRAFT_PENDING_APPROVAL để người dùng tự kiểm tra & duyệt

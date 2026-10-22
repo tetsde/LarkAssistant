@@ -1,8 +1,8 @@
 # 🚀 HiLark (LarkAssistant)
 
 <p align="center">
-  <b>Hệ Thống Trợ Lý Doanh Nghiệp AI Thông Minh Tích Hợp Lark (Feishu / LarkSuite)</b><br>
-  Kết hợp <b>Hybrid RAG</b> (WeKnora) + <b>Cognitive Dynamic Memory</b> (MongoDB Claims) + <b>Gatekeeper Phân Luồng Thông Minh</b> (JEV System 1) + <b>Human-in-the-Loop</b>.
+  <b>Hệ Thống Trợ Lý Điều Hành Doanh Nghiệp AI Thông Minh Tích Hợp Nền Tảng Lark (LarkSuite / Feishu)</b><br>
+  Kiến trúc đa tầng: <b>4 Lớp Xử Lý Tuần Tự</b> + <b>Bộ Kiểm Soát Ý Định JEV (System 1)</b> + <b>Kho Tri Thức Phân Vùng WeKnora (Hybrid RAG)</b> + <b>Ký Ức Động Giải Quyết Xung Đột (MongoDB Claims)</b> + <b>Cơ Chế Phê Duyệt An Toàn (Human-in-the-Loop)</b>.
 </p>
 
 <p align="center">
@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Package%20Manager-uv-blueviolet?style=flat-square" alt="uv">
   <img src="https://img.shields.io/badge/Framework-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Database-MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB">
-  <img src="https://img.shields.io/badge/RAG-WeKnora-orange?style=flat-square" alt="WeKnora">
+  <img src="https://img.shields.io/badge/RAG%20Engine-WeKnora-orange?style=flat-square" alt="WeKnora">
   <img src="https://img.shields.io/badge/Gatekeeper-JEV%20System%201-blue?style=flat-square" alt="JEV System 1">
   <img src="https://img.shields.io/badge/Platform-Lark%20%2F%20Feishu-00D6B9?style=flat-square" alt="Lark">
 </p>
@@ -19,337 +19,351 @@
 
 ## 📖 Mục Lục
 
-- [Tổng Quan Kiến Trúc](#-tổng-quan-kiến-trúc)
-- [Tính Năng Nổi Bật](#-tính-năng-nổi-bật)
-- [Kiến Trúc Dữ Liệu & Bộ Nhớ Phân Cấp](#-kiến-trúc-dữ-liệu--bộ-nhớ-phân-cấp)
-- [Cơ Chế Gatekeeper & Phân Luồng Tin Nhắn (JEV)](#-cơ-chế-gatekeeper--phân-luồng-tin-nhắn-jev)
-- [Quy Trình Duyệt Soạn Nháp (Human-in-the-Loop)](#-quy-trình-duyệt-soạn-nháp-human-in-the-loop)
-- [Daily Digest & Tích Luỹ Tri Thức Tự Động](#-daily-digest--tích-luỹ-tri-thức-tự-động)
-- [Phân Quyền Tri Thức Nhóm Chat (Chat Scope)](#-phân-quyền-tri-thức-nhóm-chat-chat-scope)
-- [Cấu Trúc Thư Mục](#-cấu-trúc-thư-mục)
-- [Hướng Dẫn Cài Đặt & Cấu Hình](#-hướng-dẫn-cài-đặt--cấu-hình)
-- [Khởi Chạy Hệ Thống](#-khởi-chạy-hệ-thống)
-- [Kiểm Thử (Unit & Integration Tests)](#-kiểm-thử-unit--integration-tests)
-- [Danh Mục Lệnh Chat Lark](#-danh-mục-lệnh-chat-lark)
-- [REST API Endpoints](#-rest-api-endpoints)
+1. [Tổng Quan Bài Toán & Giải Pháp](#-tổng-quan-bài-toán--giải-pháp)
+2. [Kiến Trúc Vận Hành 4 Lớp (The 4-Layer Architecture)](#-kiến-trúc-vận-hành-4-lớp-the-4-layer-architecture)
+3. [Bộ Kiểm Soát Ý Định JEV & Phân Tích Mục Tiêu Câu Hỏi](#-bộ-kiểm-soát-ý-định-jev--phân-tích-mục-tiêu-câu-hỏi)
+4. [Sơ Đồ Hoạt Động Tuần Tự Từng Nhánh (Activity Diagram)](#-sơ-đồ-hoạt-động-tuần-tự-từng-nhánh-activity-diagram)
+5. [Cơ Chế Ký Ức Động & Giải Quyết Xung Đột Tri Thức (Claims Lifecycle)](#-cơ-chế-ký-ức-động--giải-quyết-xung-đột-tri-thức-claims-lifecycle)
+6. [Bảo Mật & Phân Quyền Nhóm Chat (RAG Hard Isolation)](#-bảo-mật--phân-quyền-nhóm-chat-rag-hard-isolation)
+7. [Cơ Chế Duyệt Nháp An Toàn (Human-in-the-Loop)](#-cơ-chế-duyệt-nháp-an-toàn-human-in-the-loop)
+8. [Daily Digest & Tự Động Tích Luỹ Tri Thức Cuối Ngày](#-daily-digest--tự-động-tích-luỹ-tri-thức-cuối-ngày)
+9. [Đồng Bộ Dữ Liệu Biểu Mẫu Lark Base (LarkBase Pipeline)](#-đồng-bộ-dữ-liệu-biểu-mẫu-lark-base-larkbase-pipeline)
+10. [Cấu Trúc Thư Mục Dự Án](#-cấu-trúc-thư-mục-dự-án)
+11. [Hướng Dẫn Cài Đặt & Cấu Hình Môi Trường](#-hướng-dẫn-cài-đặt--cấu-hình-môi-trường)
+12. [Khởi Chạy Hệ Thống](#-khởi-chạy-hệ-thống)
+13. [Kiểm Thử (Unit & Integration Tests)](#-kiểm-thử-unit--integration-tests)
+14. [Danh Mục Lệnh Chat Lark & REST API](#-danh-mục-lệnh-chat-lark--rest-api)
+15. [Tài Liệu Kỹ Thuật Chuyên Sâu (Deep Dives)](#-tài-liệu-kỹ-thuật-chuyên-sâu-deep-dives)
 
 ---
 
-## 🏛 Tổng Quan Kiến Trúc
+## 🎯 Tổng Quan Bài Toán & Giải Pháp
 
-**HiLark** đóng vai trò là một **Trợ lý Điều phối Doanh nghiệp (Executive AI Assistant / Project Lead)** hoạt động trực tiếp trong các kênh giao tiếp Lark. Hệ thống giải quyết các bài toán cốt lõi của doanh nghiệp khi ứng dụng AI:
-1. **Tránh nhiễu (Spam Filter)**: Không phải tin nhắn nào cũng cần trả lời hoặc lưu trữ.
-2. **Xung đột tri thức (Fact Lineage & Conflict Resolution)**: Tài liệu tĩnh (PDF, Word) thường lỗi thời so với các thỏa thuận, quyết định thời gian thực trong phòng chat. HiLark tự động ưu tiên dữ liệu mới và giải thích tiến trình biến động lịch sử.
-3. **An toàn phát ngôn (Zero-hallucination & Safeguards)**: Tự động giữ lại các câu hỏi nhạy cảm hoặc thiếu cơ sở dữ liệu để gửi nháp riêng cho Sếp duyệt trước khi phát ngôn.
-4. **Tự động tích lũy tri thức (Continuous Learning)**: Tổng hợp hội thoại cuối ngày thành Quyết định, Cam kết và Tiến độ, sau đó nạp tự động vào Knowledge Base.
+Khi triển khai Trợ lý Trí tuệ Nhân tạo vào các kênh giao tiếp doanh nghiệp thực tế (như Lark/Feishu), các hệ thống RAG hoặc Chatbot truyền thống thường gặp 4 bài toán hóc búa:
 
-```mermaid
-flowchart TD
-    subgraph Lark_Platform [Lark / Feishu Platform]
-        UserMsg[Tin nhắn từ Nhóm / DM]
-        OwnerApproval[DM Duyệt Nháp / Digest]
-    end
+1. **Rác & Chi phí suy luận (Token Waste & Spam)**: Đa phần tin nhắn trong nhóm là chào hỏi, cảm ơn, đùa vui xã giao. Nếu mỗi câu chat đều gọi mô hình ngôn ngữ lớn (LLM) để tìm kiếm và trả lời sẽ gây tốn kém chi phí cực lớn và làm phiền cả nhóm chat.
+2. **Xung đột tri thức (Static Docs vs. Real-time Fact Updates)**: Tài liệu tĩnh (PDF, Word, Quy trình) được tải lên kho RAG thường bị lỗi thời so với các thỏa thuận, phân công, đổi hạn chót diễn ra trực tiếp trong nhóm chat.
+3. **Ảo giác & Lộ bí mật kinh doanh (Hallucination & Confidentiality Leaks)**: AI tự động trả lời có thể bịa đặt khi kho dữ liệu rỗng, hoặc vô tình tiết lộ thông tin lương bổng, ngân sách, hợp đồng nhạy cảm cho các thành viên không có thẩm quyền.
+4. **Vòng lặp tự trả lời chính mình (Self-Reply Loop)**: Khi trợ lý phát ngôn dưới danh nghĩa tài khoản cá nhân của Người quản lý (`as_user=True`), tin nhắn đó được bắn ngược lại sự kiện nhóm, dễ dẫn đến vòng lặp vô tận.
 
-    subgraph HiLark_Core [HiLark Core Engine]
-        LarkSvc[Lark Service - WebSocket / Webhook]
-        JEV[JEV System 1 Gatekeeper]
-        Extractor[LLM Extractor]
-        ScopeSvc[Chat Scope Service]
-        Composer[Context Composer]
-        LLM[LLM Generator - Gemini]
-        DigestDaemon[Daily Digest Scheduler]
-    end
+### Giải pháp cốt lõi của HiLark:
+- **Bộ kiểm soát tốc độ cao JEV (System 1)**: Đóng vai trò phản xạ nhanh, phân loại chính xác mục tiêu câu hỏi trước khi quyết định gọi AI hay ngắt sớm.
+- **Kiến trúc Ký ức Động (Claims-based Cognitive Memory)**: Tự động bóc tách thực thể và sự thật mới chốt trong đoạn chat; sự thật mới sẽ đè bẹp thông tin cũ trong tài liệu tĩnh.
+- **Cách ly cứng kho tri thức (RAG Hard Isolation)**: Mỗi nhóm chat chỉ được phép truy xuất đúng tài liệu được cấp quyền ở tầng cơ sở dữ liệu vector.
+- **Cơ chế Duyệt nháp (Human-in-the-Loop)**: Mọi câu hỏi nhạy cảm hoặc thiếu dữ liệu đều được giữ lại, soạn bản nháp gửi riêng vào hộp thư cá nhân (DM) của Sếp kèm 3 nút tương tác `[Gửi ngay]`, `[Sửa]`, `[Bỏ]`.
 
-    subgraph Storage_Layer [Storage & RAG]
-        Mongo[(MongoDB: memories, claims, staging, daily_digests)]
-        WeKnora[(WeKnora RAG Platform: Chunks, Docs)]
-    end
+---
 
-    UserMsg --> LarkSvc
-    LarkSvc --> JEV
-    
-    %% JEV Routing
-    JEV -->|IGNORE| Discard[Bỏ qua - Tiết kiệm chi phí]
-    JEV -->|MEMORY_ONLY| Extractor
-    JEV -->|REPLY_ONLY / MEMORY_AND_REPLY| ScopeSvc
-    JEV -->|DRAFT_PENDING_APPROVAL| DraftHold[Soạn nháp riêng]
+## 🏛 Kiến Trúc Vận Hành 4 Lớp (The 4-Layer Architecture)
 
-    Extractor -->|Lưu Entities & Facts| Mongo
-    
-    ScopeSvc -->|Lấy Dataset ID riêng| WeKnora
-    ScopeSvc -->|Lấy Active Claims| Mongo
-    WeKnora --> Composer
-    Mongo --> Composer
-    
-    Composer --> LLM
-    LLM -->|Tự động phản hồi chuẩn xác| LarkSvc
-    DraftHold -->|Gửi nháp riêng| OwnerApproval
-    OwnerApproval -->|Gửi / Sửa / Bỏ| LarkSvc
+Hệ thống được thiết kế theo 4 lớp độc lập, tuần tự và khép kín:
 
-    LarkSvc -.->|Lưu mọi tin vào Staging| Mongo
-    DigestDaemon -->|Cuối ngày tổng hợp| LLM
-    LLM -->|Đề xuất Digest| OwnerApproval
-    OwnerApproval -->|Duyệt| WeKnora
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    LỚP 1: CỔNG TIẾP NHẬN & ĐIỀU TIẾT (INBOUND GATEWAY)        │
+│  Lark WebSocket • ChatQueue Điều tiết • Giảm tải trùng lặp • Bộ đệm tin nhắn │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼───────────────────────────────────────┐
+│              LỚP 2: KIỂM SOÁT AN NINH & PHÂN LUỒNG Ý ĐỊNH (JEV SYSTEM 1)     │
+│  Trạm 1: Quét chủ đề cấm • Trạm 2: Phân tích mục tiêu • Khiên chống lặp Sếp  │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼───────────────────────────────────────┐
+│           LỚP 3: KHO TRI THỨC & HỢP NHẤT BỐI CẢNH (KNOWLEDGE & CLAIMS)       │
+│  WeKnora RAG cách ly • MongoDB Claims • Rule Engine 0ms • Trạm 3 JEV lọc RAG │
+└──────────────────────────────────────┬───────────────────────────────────────┘
+                                       │
+┌──────────────────────────────────────▼───────────────────────────────────────┐
+│                  LỚP 4: ĐÓNG VAI & PHÁT NGÔN (PERSONA & DELIVERY)            │
+│  Gemini đóng vai Sếp điềm tĩnh • Làm sạch định dạng • Phát ngôn nhóm / DM Sếp│
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+![Sơ đồ chi tiết 4 lớp xử lý](server/docs/so_do_luong_hoat_dong_4_lop_chi_tiet.png)
+
+### Bóc tách nhiệm vụ cụ thể từng lớp:
+
+| Lớp | Mô-đun phụ trách | Nhiệm vụ thực tế |
+| :--- | :--- | :--- |
+| **Lớp 1: Tiếp Nhận & Điều Tiết** | [`lark_runner.py`](server/services/larkServices/lark_runner.py), [`chat_queue.py`](server/utils/chat_queue.py) | Lắng nghe sự kiện qua WebSocket thời gian thực; lọc tin nhắn trùng lặp; gom các tin nhắn gõ ngắt quãng của thành viên trong 2.5s thành một câu trọn vẹn trước khi chuyển tiếp. |
+| **Lớp 2: An Ninh & Phân Luồng** | [`jev.py`](server/services/jev.py), [`chat_service.py`](server/services/chat_service.py) | **Trạm 1**: Quét chủ đề cấm (lương, chi phí, đút túi) $\rightarrow$ Vi phạm thì Im lặng tuyệt đối (Zero-Response) + Bắn DM mật báo cho Sếp.<br>**Trạm 2**: Phân tích mục tiêu câu hỏi thành 5 luồng hành động; kích hoạt Khiên bảo vệ Sếp và Bộ tinh chỉnh độ tự tin ($\ge 0.85$). |
+| **Lớp 3: Tri Thức & Bối Cảnh** | [`llm_extractor.py`](server/utils/llm_extractor.py), [`weknora.py`](server/services/weknora.py), [`rule_engine.py`](server/utils/rule_engine.py), [`context_composer.py`](server/utils/context_composer.py) | Bóc tách thực thể và sự thật mới vào MongoDB; truy xuất tài liệu WeKnora cách ly cứng theo nhóm; lọc an ninh 0ms trên RAM; **Trạm 3 JEV** chấm điểm ngữ nghĩa loại bỏ tài liệu lạc đề; hợp nhất bối cảnh (sự thật mới của Sếp đè tài liệu cũ). |
+| **Lớp 4: Đóng Vai & Phát Ngôn** | [`llm_client.py`](server/services/llm_client.py), [`text_filter.py`](server/utils/text_filter.py), [`lark_messenger.py`](server/services/larkServices/lark_messenger.py) | Nạp bối cảnh vào Gemini đóng vai Sếp điềm tĩnh, xưng hô anh - em tự nhiên; tẩy sạch các thẻ XML/RAG kỹ thuật; phát ngôn vào nhóm nhân danh tài khoản cá nhân của Sếp (`as_user=True`) hoặc gửi thẻ duyệt vào hộp thư riêng. |
+
+---
+
+## 🛡 Bộ Kiểm Soát Ý Định JEV & Phân Tích Mục Tiêu Câu Hỏi
+
+**JEV (System 1)** là mạng nơ-ron suy luận cực nhanh đóng vai trò chốt chặn an ninh và điều hướng trung tâm, vận hành qua 3 trạm kiểm soát:
+
+![Sơ đồ toàn diện các nhánh JEV](server/docs/jev/so_do_chi_tiet_cac_nhanh_jev.png)
+
+### Trạm 1: Quét Chủ Đề Cấm (Bảo Vệ Bí Mật Doanh Nghiệp)
+- **Cơ chế 2 lớp**: Khớp từ khóa nhanh (< 0.1ms) kết hợp mô hình JEV nhận diện tiếng lóng, nói giảm nói tránh (ví dụ: *"ting ting mấy chục củ"*, *"đút túi bao nhiêu"*).
+- **Hành vi khi vi phạm**:
+  - **Im lặng tuyệt đối (Zero-Response)**: Bot không phát ngôn bất kỳ từ nào vào nhóm chat, không để lộ việc hệ thống có dữ liệu hay không.
+  - **Mật báo riêng qua DM**: Tự động gửi cảnh báo kèm nội dung và danh tính người hỏi vào hộp thư riêng của Sếp.
+
+### Trạm 2: Phân Tích Mục Tiêu Câu Hỏi & Phân Luồng Ý Định
+JEV phân tích mục đích thực sự của người gửi thành 5 nhánh chiến lược:
+1. **`IGNORE` (Xã giao)**: Chào hỏi, cảm ơn, đùa vui (`alo`, `cảm ơn sếp`) $\rightarrow$ Dừng xử lý ngay, không tốn token, không lưu rác.
+2. **`MEMORY_ONLY` (Báo cáo việc)**: Thông báo tiến độ, chốt nhân sự, đổi deadline (`Nguyên thay Nam làm lead`) $\rightarrow$ Bóc tách thực thể lưu MongoDB, cấm bot trả lời nhóm.
+3. **`REPLY_ONLY` (Hỏi đáp nghiệp vụ)**: Hỏi thông tin có trong tài liệu phân quyền của nhóm $\rightarrow$ Tự động tìm kiếm và trả lời nhóm dưới danh nghĩa Sếp.
+4. **`MEMORY_AND_DRAFT` (Vừa nạp tin vừa hỏi dồn)**: Thành viên vừa gửi dữ liệu mới vừa hỏi duyệt $\rightarrow$ Lưu thông tin mới, chuyển câu hỏi sang dạng Bản nháp.
+5. **`DRAFT_PENDING_APPROVAL` (Nhạy cảm / Rủi ro)**: Câu hỏi chạm vào khu vực bảo mật, nhóm Tuyệt mật, hoặc kho tài liệu rỗng $\rightarrow$ Soạn câu trả lời nháp gửi Sếp duyệt tay.
+
+#### Các bộ lọc phòng vệ đặc biệt tại Trạm 2:
+- **Khiên chống lặp của Chủ nhân (Owner Anti-loop Shield)**:
+  - Nếu Sếp đưa tin nhắn công việc $\rightarrow$ Ép sang `MEMORY_ONLY` (Chỉ học và lưu dữ liệu, cấm bot nhảy vào cướp lời Sếp).
+  - Nếu Sếp tán gẫu $\rightarrow$ Ép sang `IGNORE` (Im lặng 100%, triệt tiêu vòng lặp bot tự nói chuyện với chính Sếp).
+- **Bộ tinh chỉnh độ tự tin (Confidence Tuner)**: Xác suất phân loại $\ge 0.85$ mới cho phép trả lời tự động; nếu $< 0.85$ lập tức hạ cấp sang Luồng Bản nháp.
+- **Cơ chế phòng thủ sự cố (Fail-Safe)**: Nếu máy chủ JEV chập chờn $\rightarrow$ Tin nhắn dài tự động ép sang Bản nháp, tin nhắn ngắn ép sang Bỏ qua.
+
+### Trạm 3: Lọc Mục Tiêu Đoạn Trích RAG (RAG Chunk Relevance Scorer)
+- Thu thập các đoạn văn bản trích xuất từ WeKnora (Top-5 chunks).
+- Đánh giá ngữ nghĩa từng đoạn văn:
+  - **Lạc đề (`IRRELEVANT`)**: Loại bỏ ngay lập tức, không cho vào ngữ cảnh LLM để chống ảo giác.
+  - **Trúng mục tiêu (`RELEVANT`)**: Gán điểm và xếp lên đầu để AI tiếp nhận dữ liệu chuẩn xác nhất.
+  - **Kho tài liệu rỗng / Không có đoạn liên quan**: Tự động chuyển luồng từ `REPLY_ONLY` sang `DRAFT_PENDING_APPROVAL` để Sếp đích thân xử lý.
+
+---
+
+## 🔄 Sơ Đồ Hoạt Động Tuần Tự Từng Nhánh (Activity Diagram)
+
+Khi tin nhắn được phân vào từng nhánh, hệ thống thực thi các chuỗi hành động khép kín theo quy trình:
+
+![Sơ đồ hoạt động tuần tự chi tiết](server/docs/jev/so_do_hoat_dong_chi_tiet_jev_memory_reply.png)
+
+### Bảng tóm tắt hoạt động từng bước:
+
+```
+[BẮT ĐẦU: Nhận tin nhắn] ──> [TRẠM 1: Quét cấm] ──┬─(Vi phạm)─> [Im lặng 100% + Mật báo Sếp] ──> [KẾT THÚC]
+                                                  │
+                                             (An toàn)
+                                                  │
+                                                  ▼
+                                       [TRẠM 2: Mục tiêu câu hỏi?]
+                                                  │
+         ┌───────────────────┬────────────────────┼───────────────────┐
+         ▼                   ▼                    ▼                   ▼
+    [1. IGNORE]      [2. MEMORY_ONLY]       [3. REPLY_ONLY]     [4. DRAFT / NHÁP]
+  ┌─────────────┐   ┌─────────────────┐   ┌─────────────────┐  ┌─────────────────┐
+  │B1: Nhận lệnh│   │B1: Bắt đầu luồng│   │B1: Ghép tên d.án│  │B1: Bật chế độ   │
+  │B2: Ngắt pipeline│B2: Gemini bóc   │   │B2: WeKnora cách │  │    kiểm duyệt   │
+  │B3: Không lưu│   │    tách Facts   │   │    ly cứng nhóm │  │B2: Tìm tài liệu │
+  │    MongoDB  │   │B3: Tra cứu & gạch│  │B3: Query Claims │  │    & soạn nháp  │
+  │B4: Im lặng  │   │    bỏ Fact cũ   │   │    từ MongoDB   │  │B3: Khóa gửi nhóm│
+  │    hoàn toàn│   │B4: Ghi Fact mới │   │B4: Lọc RAM + JEV│  │    & lưu MongoDB│
+  └──────┬──────┘   │    (current)    │   │B5: Hợp nhất đè  │  │B4: Bắn DM Sếp 3 │
+         │          │B5: Im lặng 100% │   │    sự thật mới  │  │    nút duyệt    │
+         │          └────────┬────────┘   │B6: Gemini đóng  │  │B5: Sếp bấm Gửi /│
+         │                   │            │    vai Sếp      │  │    Sửa / Bỏ     │
+         │                   │            │B7: Dọn thẻ & gửi│  └────────┬────────┘
+         │                   │            │    vào nhóm     │           │
+         ▼                   ▼            └────────┬────────┘           ▼
+     [KẾT THÚC]          [KẾT THÚC]                │                [KẾT THÚC]
+                                                   ▼
+                                               [KẾT THÚC]
 ```
 
 ---
 
-## ✨ Tính Năng Nổi Bật
+## 🧠 Cơ Chế Ký Ức Động & Giải Quyết Xung Đột Tri Thức (Claims Lifecycle)
 
-### 1. Tích Hợp Toàn Diện Nền Tảng Lark (LarkSuite / Feishu)
-- **Lark WebSocket Long Connection**: Kết nối 2 chiều nội bộ không cần IP tĩnh, không cần mở Port hay dùng công cụ trung gian (như ngrok).
-- **Hoạt động song song 2 danh tính**:
-  - **Danh tính User thật (`as_user=True`)**: Phát ngôn nhân danh chính User/Leader bằng User Access Token khi trả lời tin nhắn trong nhóm.
-  - **Danh tính Bot**: Gửi tin nhắn thông báo bảo mật, thẻ duyệt nháp qua Direct Message (DM) riêng cho chủ sở hữu.
-- **Xưng hô đích danh**: Tự động nhận diện tên thành viên đang hỏi để chào hỏi tự nhiên, lịch thiệp (ví dụ: *"Chào Linh, về tiến độ Module Tích hợp..."*).
+Hệ thống quản lý dữ liệu trên **MongoDB** theo mô hình Thực thể - Mệnh đề sự thật (Entity - Claim):
 
-### 2. Bộ Lọc & Định Tuyến Thông Minh JEV (Fast Thinking Gatekeeper)
-Ứng dụng mô hình suy luận tốc độ cao **TypeSafe JEV (System 1)** để phân loại ngữ nghĩa tin nhắn thành 5 nhóm hành động:
-- `IGNORE`: Tin chào hỏi xã giao, đùa vui -> Bỏ qua ngay lập tức, tiết kiệm 100% token LLM.
-- `MEMORY_ONLY`: Báo cáo tiến độ, cập nhật thông tin nội bộ -> Bóc tách Entities & Facts lưu vào cơ sở dữ liệu ngầm, không làm phiền nhóm chat.
-- `REPLY_ONLY`: Câu hỏi chuyên môn/nghiệp vụ đã có căn cứ tri thức chuẩn -> Tự động truy xuất và trả lời ngay.
-- `MEMORY_AND_REPLY`: Vấn đề quan trọng kèm câu hỏi phát sinh -> Vừa lưu tri thức mới, vừa trả lời ngay.
-- `DRAFT_PENDING_APPROVAL`: Câu hỏi nhạy cảm (lương bổng, tài chính, tranh chấp) hoặc câu hỏi vượt ngoài phạm vi tri thức sẵn có -> Giữ lại làm bản nháp chờ Sếp duyệt.
-
-### 3. Phân Cấp Tri Thức & Giải Quyết Xung Đột (Context Composer)
-Hợp nhất 2 nguồn dữ liệu trước khi sinh câu trả lời:
-- **Tầng 1 (Tài liệu tĩnh WeKnora)**: Quy trình, hợp đồng mẫu, tài liệu dự án dạng PDF, Word.
-- **Tầng 2 (Mệnh đề động MongoDB Claims)**: Các quyết định, phân công, thay đổi deadline vừa diễn ra trong chat.
-- **Quy tắc Fact Override**: Mệnh đề trạng thái `[CURRENT]` trong chat luôn có độ ưu tiên cao nhất. AI tự động chỉ rõ lịch sử biến động để thành viên nắm rõ (ví dụ: *"Theo tài liệu ban đầu ngân sách là 650 triệu, tuy nhiên theo trao đổi chốt mới nhất đã điều chỉnh lên 800 triệu"*).
-
-### 4. Cơ Chế Duyệt Nháp An Toàn (Human-in-the-Loop)
-- Khi gặp thông tin nhạy cảm, Bot gửi riêng tin nhắn bản nháp vào DM của Sếp kèm nội dung câu hỏi và các lựa chọn: `[Gửi]`, `[Sửa: <nội dung>]`, `[Bỏ]`.
-- Khi Sếp nhắn lệnh duyệt, Bot sẽ đại diện Sếp phát ngôn chuẩn xác vào nhóm chat gốc.
-
-### 5. Daily Digest Tự Động & Bóc Tách Tri Thức Cuối Ngày
-- Thu thập tin nhắn trao đổi trong ngày vào vùng đệm `conversation_staging`.
-- Bộ lập lịch nền (Daemon Scheduler) tự động chạy vào khung giờ định sẵn (mặc định 23:00).
-- Trích xuất 3 trụ cột thông tin có truy vết nguồn gốc (Provenance):
-  - **Quyết định (Decisions)**: Chính sách, thỏa thuận kỹ thuật đã chốt.
-  - **Cam kết (Commitments)**: Ai hứa việc gì, hạn chót khi nào, hứa với ai.
-  - **Thay đổi trạng thái (Status Changes)**: Tiến độ (progress), cột mốc (milestone), rủi ro nghẽn việc (blocker).
-- Gửi báo cáo xem trước cho Leader duyệt trước khi đồng bộ hoá thành tài liệu Markdown trên kho tri thức WeKnora.
-
-### 6. Phân Quyền Tri Thức Theo Từng Nhóm Chat (Chat Scoping)
-- Mỗi nhóm chat Lark có thể gắn với một Knowledge Base (Dataset ID) riêng biệt trên WeKnora.
-- Hỗ trợ câu lệnh quản trị trực tiếp trong nhóm: `get-kb`, `set-kb <dataset_id>`, `reset-kb`.
-- Kiểm tra danh sách Admin được cấp quyền (Admin Whitelist), chặn truy cập trái phép và cảnh báo qua DM.
-
----
-
-## 📊 Kiến Trúc Dữ Liệu & Bộ Nhớ Phân Cấp
-
-Hệ thống quản lý dữ liệu trên **MongoDB** (Database mặc định: `LarkAssistant`) chia làm các collections chuyên biệt:
-
-| Collection | Vai Trò & Mục Đích |
+| Collection | Mục Đích |
 | :--- | :--- |
-| `memories` | Lưu trữ **Thực thể cha (Entities)**: Dự án, Nhân sự, Đội ngũ, Tính năng, Khách hàng, Tài liệu (`ent_xxxx`). |
-| `claims` | Lưu trữ **Mệnh đề con (Facts/Claims)**: Thuộc tính gắn với Entity (`fact_xxxx`) kèm trạng thái (`current`, `superseded`, `conflicted`). Lưu vết thay thế `replaces`. |
-| `conversation_staging` | Vùng đệm tích lũy toàn bộ tin nhắn chat trong ngày để phục vụ tạo Daily Digest. |
-| `daily_digests` | Bản ghi tổng hợp tri thức cuối ngày (`digest_YYYY-MM-DD_xxxx`) kèm trạng thái duyệt và đồng bộ WeKnora (`pending_approval`, `synced`, `rejected`). |
-| `chat_scopes` | Bảng ánh xạ quyền giữa `chat_id` của nhóm Lark và `dataset_id` trên WeKnora. |
+| `memories` | Lưu trữ **Thực thể mỏ neo (Entities)**: Dự án, Nhân sự, Phân hệ, Khách hàng (`ent_xxxx`). |
+| `claims` | Lưu trữ **Mệnh đề sự thật (Facts/Claims)** gắn với Entity (`fact_xxxx`) kèm trạng thái (`current`, `superseded`, `conflicted`). Lưu vết lịch sử thay thế qua trường `replaces`. |
+| `conversation_staging`| Vùng đệm lưu trữ toàn bộ tin nhắn trao đổi trong ngày của các nhóm để phục vụ tổng hợp Daily Digest. |
+| `daily_digests` | Bản ghi tri thức tổng hợp cuối ngày (`digest_YYYY-MM-DD_xxxx`) chờ duyệt nạp vào WeKnora. |
+| `chat_scopes` | Bảng phân quyền ánh xạ giữa `chat_id` của nhóm Lark và `dataset_id` trên WeKnora. |
+| `pending_drafts` | Bộ nhớ đệm lưu các câu trả lời nháp đang chờ Sếp bấm duyệt qua DM. |
 
+### Cơ chế Fact Override (Sự thật mới đè tài liệu cũ):
 ```
-Entity: ent_hilark (HiLark)
-├── Fact: fact_01 [SUPERSEDED] budget = "650 triệu VNĐ"
-└── Fact: fact_02 [CURRENT]    budget = "800 triệu VNĐ" (replaces: fact_01)
+Thực thể: Dự án Sàn Thanh Toán (ent_san_thanhtoan)
+├── Mệnh đề cũ: fact_01 [SUPERSEDED] leader = "Nam" (Hiệu lực: Tháng 8 - Hết hạn: 20/10)
+└── Mệnh đề mới: fact_02 [CURRENT]    leader = "Nguyên" (replaces: fact_01, Cập nhật: 21/10)
 ```
+Khi thành viên hỏi *"Ai đang phụ trách lead sàn thanh toán?"*:
+- Tài liệu Word trên WeKnora (viết từ tháng 8) ghi: `Nam`.
+- Mệnh đề `fact_02` trong MongoDB ghi: `Nguyên`.
+- **ContextComposer** tự động ưu tiên `fact_02` và hướng dẫn AI giải thích: *"Theo phân công ban đầu là Nam, tuy nhiên theo chốt mới nhất từ ngày 21/10 thì Nguyên đã tiếp nhận làm lead dự án."*
 
 ---
 
-## 🎯 Cơ Chế Gatekeeper & Phân Luồng Tin Nhắn (JEV)
+## 🔒 Bảo Mật & Phân Quyền Nhóm Chat (RAG Hard Isolation)
 
-```mermaid
-stateDiagram-v2
-    [*] --> LarkIncomingMessage: Tin nhắn mới từ Lark
-    LarkIncomingMessage --> CheckIsBot: Kiểm tra người gửi
-    CheckIsBot --> IgnoreBot: Bỏ qua (Tin từ Bot)
-    CheckIsBot --> CheckOwner: Tin từ Chủ nhân (Sếp)?
-    
-    CheckOwner --> OwnerDM: Nhắn trong DM
-    OwnerDM --> ExecuteAdminCommand: Duyệt Digest / Nháp / Đổi KB
-    
-    CheckOwner --> GroupStaging: Nhắn trong Group
-    GroupStaging --> StageMessage: Lưu vào Staging chống lặp vô tận
+HiLark thực thi chính sách cách ly tri thức tuyệt đối giữa các nhóm chat doanh nghiệp:
 
-    CheckOwner --> MemberChat: Tin nhắn từ Thành viên
-    MemberChat --> CheckKbCommands: Kiểm tra lệnh quản trị (get-kb, set-kb)
-    CheckKbCommands --> ScopeExecution: Thực thi phân quyền
-    CheckKbCommands --> JEVGatekeeper: Phân tích phân loại qua JEV
-
-    JEVGatekeeper --> IGNORE: Spam / Chào hỏi
-    IGNORE --> [*]
-
-    JEVGatekeeper --> MEMORY_ONLY: Cập nhật thông tin
-    MEMORY_ONLY --> ExtractToMongo: Bóc tách Entities & Facts vào DB
-    ExtractToMongo --> [*]
-
-    JEVGatekeeper --> DRAFT_PENDING_APPROVAL: Tin nhạy cảm / Thiếu KB
-    DRAFT_PENDING_APPROVAL --> SendDraftToOwnerDM: Gửi nháp vào DM Sếp
-    SendDraftToOwnerDM --> [*]
-
-    JEVGatekeeper --> REPLY_ONLY: Câu hỏi có căn cứ
-    REPLY_ONLY --> RAGPipeline: Tra cứu WeKnora + MongoDB Claims
-    RAGPipeline --> GroundedQA: Sinh câu trả lời đích danh
-    GroundedQA --> SendReplyAsUser: Trả lời vào nhóm nhân danh User
-    SendReplyAsUser --> [*]
-```
+1. **Khóa cứng ở tầng truy vấn cơ sở dữ liệu (Database-level Isolation)**:
+   - Mỗi nhóm chat Lark liên kết với một `dataset_id` riêng trong bảng `chat_scopes`.
+   - Khi tìm kiếm tri thức, mã lệnh ép trực tiếp điều kiện:
+     ```python
+     knowledge_ids = [scope_doc["dataset_id"]]
+     # CHỈ tìm trong dataset này, WeKnora loại bỏ hoàn toàn tài liệu ngoài danh sách
+     ```
+2. **Quyền quản trị liên kết (Admin Whitelist)**:
+   - Chỉ các thành viên thuộc danh sách Quản trị viên (`ADMIN_USERS`) mới có quyền gõ lệnh `set-kb` hoặc `reset-kb` để đổi kho tri thức của nhóm.
+   - Thành viên thường gõ lệnh sẽ bị từ chối và gửi cảnh báo riêng cho Quản trị viên.
 
 ---
 
-## ✍️ Quy Trình Duyệt Soạn Nháp (Human-in-the-Loop)
+## ✍️ Cơ Chế Duyệt Nháp An Toàn (Human-in-the-Loop)
 
-Khi thành viên đặt câu hỏi thuộc diện nhạy cảm (hoặc không tìm thấy dữ liệu chuẩn trong Knowledge Base):
-
-1. **Bot giữ im lặng trong nhóm**: Không tự ý phát ngôn gây rủi ro sai sót thông tin.
-2. **Bot gửi thông báo riêng đến DM của Sếp**:
+Đối với các câu hỏi rủi ro cao, nhạy cảm hoặc kho tài liệu rỗng:
+1. Bot giữ im lặng tuyệt đối trong nhóm chat.
+2. Bot gửi thẻ tương tác vào hộp thư cá nhân (DM) của Sếp:
    ```text
-   ⚠️ [BẢN NHÁP CẦU NỐI CẦN DUYỆT]
+   ⚠️ [BẢN NHÁP CÂU TRẢ LỜI CẦN DUYỆT]
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   👤 Người hỏi    : Nguyễn Văn A (Nhóm Dự án X)
-   ❓ Câu hỏi      : "Chính sách thưởng dự án kỳ này thế nào anh?"
-   📝 Bản nháp AI  : "Chào bạn A, chính sách thưởng kỳ này..."
+   👥 Nhóm chat    : Dự án Cổng Thanh Toán
+   👤 Người hỏi    : Hoàng Minh
+   ❓ Câu hỏi      : "Kỳ này có được tạm ứng ngân sách mua server không anh?"
+   📝 Dự thảo AI   : "Chào Minh, hiện ngân sách quý này đang chốt kiểm toán..."
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   👉 Phản hồi lệnh:
-      • "Gửi" / "OK"          : Duyệt và phát ngôn vào nhóm
-      • "Sửa: <nội dung mới>"  : Chỉnh sửa và phát ngôn vào nhóm
-      • "Bỏ"                  : Huỷ bản nháp
+   👉 Lựa chọn của Sếp:
+      • Bấm nút [Gửi ngay]         : Phát ngôn nguyên văn vào nhóm dưới tên Sếp
+      • Bấm nút [Sửa] / Nhắn Sửa:  : Cập nhật câu chữ của Sếp rồi mới phát ngôn
+      • Bấm nút [Bỏ]               : Hủy bản nháp, bot im lặng hoàn toàn
    ```
-3. **Sếp duyệt trực tiếp qua DM**:
-   - Nhắn `Gửi` hoặc `OK`: Bot lập tức đại diện Sếp phát ngôn câu trả lời vào nhóm chat.
-   - Nhắn `Sửa: Dự án này tháng sau mới chốt thưởng nhé em`: Bot gửi đúng câu sửa đổi vào nhóm.
-   - Nhắn `Bỏ`: Bản nháp bị huỷ, nhóm chat không nhận bất kỳ tin nhắn nào.
+3. Sau khi Sếp duyệt, bot mới đại diện phát ngôn vào nhóm, đảm bảo 0% rủi ro phát ngôn sai lệch.
 
 ---
 
-## 📅 Daily Digest & Tích Luỹ Tri Thức Tự Động
+## 📅 Daily Digest & Tự Động Tích Luỹ Tri Thức Cuối Ngày
 
-Vào **23:00 hàng ngày** (hoặc thời gian cấu hình trong `.env`), hệ thống tự động:
-1. Đọc toàn bộ tin nhắn trao đổi trong `conversation_staging`.
-2. Dùng Gemini phân tích và trích xuất thành 3 nhóm tri thức:
-   - **Quyết định**: Các thỏa thuận đã chốt xong.
-   - **Cam kết**: Hạn chót công việc, người chịu trách nhiệm.
-   - **Thay đổi trạng thái**: Tiến độ (progress), cột mốc (milestone), điểm nghẽn (blocker).
-3. Gửi bản tóm tắt qua Lark DM cho Người duyệt (`DIGEST_APPROVER_ID`).
-4. Người duyệt chỉ cần nhắn:
-   - `Duyệt digest`: Hệ thống tự động chuyển digest thành định dạng Markdown chuẩn, nạp lên **WeKnora Knowledge Base** để mở rộng cơ sở tri thức cho RAG.
-   - `Hủy digest`: Đánh dấu từ chối, không nạp vào Knowledge Base.
+Vào **23:00 hàng ngày** (cấu hình trong `.env`), hệ thống tự động:
+1. Đọc toàn bộ dữ liệu trao đổi trong ngày từ `conversation_staging`.
+2. Dùng Gemini bóc tách 3 trụ cột tri thức:
+   - **Quyết định (Decisions)**: Chính sách, giải pháp kiến trúc đã chốt.
+   - **Cam kết (Commitments)**: Ai cam kết việc gì, với ai, thời hạn khi nào.
+   - **Tiến độ & Cột mốc (Status & Milestones)**: Việc đã xong, cột mốc đạt được, điểm nghẽn rủi ro.
+3. Gửi bản tóm tắt xin duyệt qua Lark DM cho Sếp (`DIGEST_APPROVER_ID`).
+4. Khi Sếp bấm duyệt, hệ thống tự động chuyển digest thành file Markdown chuẩn, nạp lên **WeKnora Knowledge Base** để mở rộng tri thức RAG cho ngày hôm sau.
 
 ---
 
-## 🔒 Phân Quyền Tri Thức Nhóm Chat (Chat Scope)
+## 📋 Đồng Bộ Dữ Liệu Biểu Mẫu Lark Base (LarkBase Pipeline)
 
-Hệ thống hỗ trợ quản lý mối liên kết giữa nhóm chat và cơ sở tri thức WeKnora trực tiếp qua lệnh chat:
-
-```text
-get-kb
-```
-> Hiển thị thông tin Knowledge Base (Tên, Dataset ID, Người cài đặt) đang được áp dụng cho nhóm.
-
-```text
-set-kb <dataset_id>
-```
-> *(Chỉ Admin)* Liên kết nhóm chat với Dataset ID tương ứng trên WeKnora. Hệ thống tự động xác thực sự tồn tại của Dataset trên WeKnora trước khi lưu.
-
-```text
-reset-kb
-```
-> *(Chỉ Admin)* Huỷ liên kết riêng, đưa nhóm về sử dụng Knowledge Base mặc định của hệ thống.
+HiLark tích hợp sẵn đường ống đồng bộ dữ liệu hai chiều từ **Lark Base (Bitable)**:
+- Tự động lấy danh sách bảng, trường dữ liệu, bản ghi công việc từ Lark Base.
+- Làm sạch và chuẩn hóa kiểu dữ liệu thông qua [`larkbase/cleaner.py`](server/utils/larkbase/cleaner.py).
+- Lưu trữ vào cơ sở dữ liệu nội bộ phục vụ tra cứu tiến độ thời gian thực cho trợ lý.
 
 ---
 
-## 📁 Cấu Trúc Thư Mục
+## 📁 Cấu Trúc Thư Mục Dự Án
 
 ```
 HiLark/
-├── README.md                      # Tài liệu hướng dẫn sử dụng toàn diện
+├── README.md                      # Tài liệu tổng quan kiến trúc & hướng dẫn sử dụng
 ├── .env                           # File cấu hình biến môi trường
-├── labs/                          # Nghiên cứu & Thực nghiệm (ReAct, JEV Benchmark)
-│   ├── ReAct/                     # Lab kiểm thử Agent: LLM Native vs JEV + LLM
-│   ├── jev_guide.md               # Hướng dẫn API Typesafe System 1 (JEV)
-│   ├── jev_vs_llm.ipynb           # So sánh độ chính xác & độ trễ JEV vs LLM
-│   └── phan_tich_can_bang_du_lieu.ipynb
-├── WeKnora/                       # Kho tri thức mã nguồn mở WeKnora (RAG Platform)
-└── server/                        # Server chính (FastAPI + Lark Engine)
-    ├── main.py                    # Entry point FastAPI & Lifespan Bot Service
-    ├── run_lark_bot.py            # Chạy riêng biệt Lark Bot (chế độ Standalone)
-    ├── pyproject.toml             # Khai báo thư viện & cấu hình dự án Python
-    ├── core/
-    │   └── config.py              # Đọc cấu hình từ .env
-    ├── database/
-    │   └── db.py                  # Kết nối MongoDB (Async Motor & PyMongo Sync)
-    ├── models/                    # Pydantic Schemas & DTOs
-    │   ├── chat.py                # Schema Chat Request/Response
-    │   ├── chat_scope.py          # Schema phân quyền nhóm chat <-> KB
-    │   ├── digest.py              # Schema Daily Digest, Quyết định, Cam kết
-    │   ├── lark.py                # Schema sự kiện & tin nhắn Lark
-    │   └── memory.py              # Schema Entities, Facts/Claims
-    ├── routers/                   # Các API Controllers (FastAPI Routers)
-    │   ├── chat.py                # Endpoint Unified Chat Pipeline & Grounded QA
-    │   ├── digest.py              # Endpoints quản lý & đồng bộ Daily Digest
-    │   ├── health.py              # Endpoint kiểm tra trạng thái Server
-    │   ├── lark.py                # Endpoint Webhook tiếp nhận sự kiện Lark
-    │   └── scope.py               # Endpoints quản trị phân quyền Chat Scope
-    ├── services/                  # Business Logic Layer
-    │   ├── bot_service.py         # Điều phối WebSocket, Event Dispatcher & Scheduler
-    │   ├── digest_service.py      # Xử lý tổng hợp Daily Digest & nạp WeKnora
-    │   ├── draft_store.py         # Bộ nhớ đệm quản lý bản nháp chờ Sếp duyệt
-    │   ├── jev.py                 # Tích hợp TypeSafe JEV System 1 Gatekeeper
-    │   ├── lark.py                # Lark Open Platform SDK Service (WS, User token)
-    │   ├── llm_client.py          # Unified LLM Service (Gemini & Fallbacks)
-    │   ├── scope_service.py       # Quản lý ánh xạ Nhóm Chat <-> WeKnora KB
-    │   └── weknora.py             # Tích hợp WeKnora API (Retrieve, Session, Ingest)
-    ├── utils/                     # Thư viện tiện ích
-    │   ├── context_composer.py    # Ghép Chunks WeKnora + Claims MongoDB
-    │   ├── digest.py              # Tiện ích ngày tháng & tạo Lark Applink
-    │   ├── llm_extractor.py       # Trích xuất Entities & Facts có cấu trúc
-    │   └── text_filter.py         # Dọn dẹp văn bản, xóa thẻ XML RAG
-    └── tests/                     # Bộ kiểm thử tự động
-        ├── full_pipeline.py       # Chạy thử nghiệm toàn trình qua Terminal
-        ├── test_chat_scope.py     # Kiểm thử phân quyền nhóm chat
-        ├── test_context_composer.py # Kiểm thử bộ giải quyết xung đột tri thức
-        ├── test_daily_digest.py   # Kiểm thử bóc tách Daily Digest
-        ├── test_interactive.py    # Console tương tác bóc tách Facts trực tiếp
-        ├── test_lark_service.py   # Kiểm thử kết nối Lark
-        └── test_llm_client.py     # Kiểm thử kết nối LLM
+├── server/                        # Mã nguồn máy chủ trung tâm
+│   ├── main.py                    # Điểm khởi chạy FastAPI & nạp Bot Lifespan
+│   ├── run_lark_bot.py            # Khởi chạy riêng biệt Lark Bot (Chế độ Standalone)
+│   ├── pyproject.toml             # Quản lý dependencies với uv
+│   ├── core/
+│   │   └── config.py              # Đọc và xác thực cấu hình biến môi trường
+│   ├── database/
+│   │   └── db.py                  # Kết nối MongoDB (Async Motor & PyMongo Sync)
+│   ├── models/                    # Khai báo cấu trúc dữ liệu Pydantic Schemas
+│   │   ├── chat.py                # Dữ liệu yêu cầu & phản hồi Chat
+│   │   ├── chat_scope.py          # Dữ liệu phân quyền Nhóm chat <-> WeKnora
+│   │   ├── digest.py              # Dữ liệu Daily Digest, Quyết định, Cam kết
+│   │   ├── lark.py                # Dữ liệu sự kiện & gói tin Lark
+│   │   ├── larkbase.py            # Dữ liệu biểu mẫu Lark Base
+│   │   └── memory.py              # Dữ liệu Thực thể (Entities) & Sự thật (Claims)
+│   ├── routers/                   # Các đầu mối API (FastAPI Controllers)
+│   │   ├── chat.py                # Endpoints Chat Pipeline & Grounded QA
+│   │   ├── digest.py              # Endpoints quản lý & đồng bộ Daily Digest
+│   │   ├── health.py              # Endpoint kiểm tra sức khỏe hệ thống
+│   │   ├── lark.py                # Endpoint Webhook tiếp nhận sự kiện
+│   │   └── scope.py               # Endpoints quản trị phân quyền Chat Scope
+│   ├── services/                  # Tầng nghiệp vụ xử lý chính
+│   │   ├── bot_service.py         # Điều phối kết nối WebSocket & Daily Scheduler
+│   │   ├── chat_service.py        # Pipeline xử lý hội thoại toàn trình 4 lớp
+│   │   ├── digest_service.py      # Xử lý bóc tách & đồng bộ Daily Digest
+│   │   ├── draft_service.py       # Quản lý vòng đời câu trả lời nháp
+│   │   ├── draft_store.py         # Bộ nhớ đệm bản nháp chờ Sếp duyệt
+│   │   ├── jev.py                 # Mô hình phân loại ý định & an ninh JEV System 1
+│   │   ├── larkServices/          # Bộ dịch vụ tích hợp Lark chuyên sâu
+│   │   │   ├── lark_client.py     # Quản lý SDK Lark, xác thực & User Token
+│   │   │   ├── lark_dispatcher.py # Điều phối sự kiện tin nhắn nhóm & DM
+│   │   │   ├── lark_messenger.py  # Gửi tin nhắn nhân danh Sếp hoặc nhân danh Bot
+│   │   │   └── lark_runner.py     # Quản lý vòng đời kết nối WebSocket
+│   │   ├── larkbase.py            # Dịch vụ đồng bộ bảng dữ liệu Lark Base
+│   │   ├── llm_client.py          # Trình kết nối mô hình ngôn ngữ lớn (Gemini)
+│   │   ├── scope_service.py       # Dịch vụ phân quyền nhóm chat theo Dataset
+│   │   └── weknora.py             # Dịch vụ kết nối kho tri thức WeKnora RAG
+│   ├── utils/                     # Các công cụ hỗ trợ lõi
+│   │   ├── chat_queue.py          # Hàng đợi điều tiết & gộp tin nhắn gõ ngắt quãng
+│   │   ├── context_composer.py    # Bộ hợp nhất bối cảnh (Ưu tiên Facts mới đè Docs cũ)
+│   │   ├── digest.py              # Tiện ích định dạng ngày & liên kết Lark Applink
+│   │   ├── lark_token.py          # Kiểm tra thời hạn User Token & chống sập bot
+│   │   ├── larkbase/cleaner.py    # Chuẩn hóa & làm sạch dữ liệu biểu mẫu Lark Base
+│   │   ├── llm_extractor.py       # Bóc tách thực thể & sự thật có cấu trúc
+│   │   ├── rule_engine.py         # Lọc an ninh 0ms trên RAM trước khi gửi LLM
+│   │   └── text_filter.py         # Làm sạch định dạng, gỡ bỏ thẻ XML/RAG thừa
+│   ├── docs/                      # Toàn bộ tài liệu kỹ thuật & sơ đồ trực quan
+│   │   ├── so_do_luong_hoat_dong_4_lop.md
+│   │   ├── so_do_luong_hoat_dong_4_lop_chi_tiet.png
+│   │   ├── jev/                   # Tài liệu & sơ đồ phân nhánh JEV
+│   │   ├── layer1/ ~ layer4/      # Tài liệu chuyên sâu từng lớp 1 đến 4
+│   │   ├── permission/            # Tài liệu an ninh & phân quyền dữ liệu
+│   │   └── LarkBase/              # Tài liệu đường ống đồng bộ Lark Base
+│   └── tests/                     # Bộ kiểm thử tự động
+│       ├── full_pipeline.py       # Kiểm thử toàn trình qua Terminal
+│       ├── test_chat_scope.py     # Kiểm thử phân quyền nhóm chat
+│       ├── test_context_composer.py # Kiểm thử bộ giải quyết xung đột tri thức
+│       ├── test_daily_digest.py   # Kiểm thử bóc tách Daily Digest
+│       ├── test_interactive.py    # Console tương tác bóc tách Facts trực tiếp
+│       ├── test_lark_service.py   # Kiểm thử kết nối Lark WebSocket
+│       ├── test_llm_client.py     # Kiểm thử kết nối Gemini LLM
+│       └── test_token_ping.py     # Kiểm thử cơ chế giám sát User Access Token
+├── labs/                          # Nghiên cứu thử nghiệm (ReAct, JEV Benchmark)
+└── WeKnora/                       # Kho tri thức mã nguồn mở WeKnora
 ```
 
 ---
 
-## 🛠 Hướng Dẫn Cài Đặt & Cấu Hình
+## 🛠 Hướng Dẫn Cài Đặt & Cấu Hình Môi Trường
 
 ### 1. Yêu Cầu Môi Trường
-- **Python**: Phiên bản `>= 3.13`
-- **Package Manager**: [uv](https://docs.astral.sh/uv/) (Khuyên dùng để tối ưu tốc độ và quản lý virtual environment)
-- **MongoDB**: Đang chạy cục bộ hoặc trên Cloud (`mongodb://localhost:27017`)
-- **WeKnora**: Đang chạy phiên bản API v1 (hoặc Docker Compose trong thư mục `WeKnora`)
+- **Hệ điều hành**: Linux, macOS, Windows (WSL2).
+- **Python**: Phiên bản `>= 3.13`.
+- **Trình quản lý gói**: [uv](https://docs.astral.sh/uv/) (Khuyên dùng để đạt hiệu năng tối đa).
+- **MongoDB**: Đang chạy cục bộ hoặc máy chủ từ xa (`mongodb://localhost:27017`).
+- **WeKnora**: Đang chạy phiên bản API v1 (mặc định tại `http://localhost/api/v1`).
 
 ### 2. Cài Đặt Dependencies với `uv`
 
-Di chuyển vào thư mục `server`:
 ```bash
 cd /Users/hoainam/Desktop/HiLark/server
 
-# Cài đặt toàn bộ dependencies tự động với uv
+# Cài đặt tự động toàn bộ thư viện cần thiết vào môi trường ảo
 uv sync
 ```
 
 ### 3. Cấu Hình Biến Môi Trường (`.env`)
 
-Tạo hoặc chỉnh sửa file `.env` tại thư mục gốc của dự án (`HiLark/.env`):
+Tạo file `.env` tại thư mục gốc dự án (`HiLark/.env`):
 
 ```env
 # =============================================================================
-# 1. API KEYS & DỊCH VỤ NGOÀI
+# 1. KHÓA TRÍ TUỆ NHÂN TẠO & MÔ HÌNH PHÂN LOẠI
 # =============================================================================
-# API Key của TypeSafe JEV System 1 (Gatekeeper phân luồng)
+# API Key của JEV System 1 (Mô hình phân loại ý định & an ninh tốc độ cao)
 jev_api=apikey_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Google Gemini API Key
+# Google Gemini API Key (Mô hình sinh câu trả lời & bóc tách tri thức)
 gemini_api=AQ.xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # =============================================================================
-# 2. CẤU HÌNH KHO TRI THỨC WEKNORA
+# 2. CẤU HÌNH KHO TRI THỨC WEKNORA (HYBRID RAG)
 # =============================================================================
 api_weknora=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 base_url=http://localhost/api/v1
@@ -367,7 +381,7 @@ mongo_digest_collection=daily_digests
 mongo_chat_scope_collection=chat_scopes
 
 # =============================================================================
-# 4. KẾT NỐI LARK OPEN PLATFORM
+# 4. KẾT NỐI NỀN TẢNG LARK (FEISHU / LARKSUITE)
 # =============================================================================
 app_id=cli_xxxxxxxxxxxxxxxxx
 app_secret=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -375,21 +389,21 @@ verification_token=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 encrypt_key=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 lark_domain=https://open.larksuite.com
 
-# Token người dùng (User Access Token) để phát ngôn nhân danh User
+# User Access Token (Dùng để phát ngôn nhân danh cá nhân của Sếp)
 access_token_user=eyJhbGciOiJFUzI1NiIs...
 
-# Open ID của người dùng chính (Danh tính hoạt động)
+# Open ID của Sếp (Chủ nhân tài khoản điều hành)
 user_open_id=ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # =============================================================================
-# 5. DAILY DIGEST & DUYỆT BẢN NHÁP
+# 5. TỔNG HỢP DAILY DIGEST & PHÊ DUYỆT
 # =============================================================================
 digest_schedule_time=23:00
 digest_require_approval=true
 digest_approver_id=ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # =============================================================================
-# 6. POLLING & REAL-TIME
+# 6. ĐIỀU TIẾT HÀNG ĐỢI & GIÁM SÁT
 # =============================================================================
 ENABLE_DM_POLLING=false
 DM_POLL_INTERVAL=60.0
@@ -399,23 +413,20 @@ DM_POLL_INTERVAL=60.0
 
 ## 🚀 Khởi Chạy Hệ Thống
 
-Dự án cung cấp 2 phương thức khởi chạy linh hoạt:
-
-### Cách 1: Khởi Chạy Toàn Bộ Hệ Thống (Khuyên Dùng)
-Lệnh này khởi động cả **FastAPI Server** lẫn **Lark Bot Service (WebSocket Client & Daily Digest Scheduler)** cùng lúc trong một tiến trình duy nhất:
+### Cách 1: Khởi Chạy Toàn Bộ Hệ Thống (FastAPI + WebSocket Bot + Scheduler)
 
 ```bash
 cd /Users/hoainam/Desktop/HiLark/server
 uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 - Khi chạy lệnh trên:
-  - WebSocket Client tự động kết nối tới máy chủ Lark để lắng nghe tin nhắn tức thì.
-  - Bộ hẹn giờ Daily Digest Daemon bắt đầu hoạt động ngầm.
-  - Swagger UI được mở tại: `http://localhost:8000/docs`.
+  - Máy chủ web FastAPI khởi động (Swagger API Docs sẵn sàng tại `http://localhost:8000/docs`).
+  - Kết nối WebSocket 2 chiều tới Lark được thiết lập tự động, sẵn sàng lắng nghe tin nhắn tức thời.
+  - Bộ hẹn giờ Daily Digest Daemon chạy ngầm sẵn sàng cho khung giờ 23:00.
 
-### Cách 2: Khởi Chạy Riêng Bot (Không bật Web API)
-Nếu bạn chỉ muốn chạy Bot nhận/gửi tin nhắn Lark mà không cần mở HTTP server:
+### Cách 2: Khởi Chạy Riêng Bot Lark (Chế độ Standalone)
 
+Nếu chỉ muốn vận hành Bot chat mà không cần mở cổng HTTP Web:
 ```bash
 cd /Users/hoainam/Desktop/HiLark/server
 uv run python run_lark_bot.py
@@ -425,110 +436,78 @@ uv run python run_lark_bot.py
 
 ## 🧪 Kiểm Thử (Unit & Integration Tests)
 
-Tất cả các bài kiểm thử đều có thể thực thi nhanh chóng thông qua `uv`:
+Hệ thống đi kèm bộ kiểm thử toàn diện, thực thi dễ dàng qua `uv`:
 
-### 1. Kiểm thử phân quyền nhóm chat (Chat Scope)
 ```bash
 cd /Users/hoainam/Desktop/HiLark/server
-PYTHONPATH=. uv run python tests/test_chat_scope.py
-```
 
-### 2. Kiểm thử hợp nhất tri thức & giải quyết xung đột (Context Composer)
-```bash
-PYTHONPATH=. uv run python tests/test_context_composer.py
-```
-
-### 3. Kiểm thử trích xuất & phê duyệt Daily Digest
-```bash
-PYTHONPATH=. uv run python tests/test_daily_digest.py
-```
-
-### 4. Kiểm thử kết nối LLM Client (Gemini)
-```bash
-PYTHONPATH=. uv run python tests/test_llm_client.py
-```
-
-### 5. Console thử nghiệm bóc tách Entities & Facts trực tiếp qua Terminal
-```bash
-# Chế độ tương tác nhập từng câu:
-PYTHONPATH=. uv run python tests/test_interactive.py
-
-# Chế độ chạy tự động kịch bản 5 tin nhắn mẫu:
-PYTHONPATH=. uv run python tests/test_interactive.py --scenario
-```
-
-### 6. Thử nghiệm toàn trình Full Pipeline RAG + Claims
-```bash
-# Thử nghiệm với một câu hỏi cụ thể:
-PYTHONPATH=. uv run python tests/test_full_pipeline.py --single "Ngân sách dự án HiLark là bao nhiêu?"
-```
-
-### 7. Kiểm tra & Ping User Access Token (Lark Token Health Checker)
-```bash
-# Ping kiểm tra trực tiếp User Access Token (thời hạn, lỗi 20005, chống crash):
+# 1. Kiểm tra trạng thái User Access Token (Ping kiểm tra thời hạn, chống sập bot):
 uv run python utils/lark_token.py
 
-# Chạy Unit Test kiểm thử Token Guard:
-PYTHONPATH=. uv run python tests/test_token_ping.py
+# 2. Kiểm thử hợp nhất tri thức & giải quyết xung đột (Context Composer):
+PYTHONPATH=. uv run python tests/test_context_composer.py
+
+# 3. Kiểm thử phân quyền nhóm chat theo Dataset WeKnora (Chat Scope):
+PYTHONPATH=. uv run python tests/test_chat_scope.py
+
+# 4. Kiểm thử trích xuất & phê duyệt Daily Digest:
+PYTHONPATH=. uv run python tests/test_daily_digest.py
+
+# 5. Console thử nghiệm bóc tách Thực thể & Sự thật trực tiếp trên Terminal:
+PYTHONPATH=. uv run python tests/test_interactive.py --scenario
+
+# 6. Chạy thử nghiệm toàn trình Full Pipeline qua một câu hỏi mẫu:
+PYTHONPATH=. uv run python tests/test_full_pipeline.py --single "Ai đang phụ trách lead dự án?"
 ```
 
 ---
 
-## 💬 Danh Mục Lệnh Chat Lark
+## 💬 Danh Mục Lệnh Chat Lark & REST API
 
-Người dùng và Quản trị viên có thể thao tác trực tiếp với Trợ lý qua các lệnh chat sau:
-
-### Trong Nhóm Chat (Group Chat):
-| Lệnh | Quyền Hạn | Ý Nghĩa & Tác Dụng |
+### Lệnh Chat Trong Nhóm (Group Chat):
+| Lệnh | Quyền hạn | Chức năng |
 | :--- | :--- | :--- |
-| `get-kb` hoặc `xem kb` | Mọi thành viên | Xem Knowledge Base đang liên kết của nhóm này. |
-| `set-kb <dataset_id>` | **Admin** | Liên kết nhóm chat với một Knowledge Base WeKnora riêng. |
-| `reset-kb` | **Admin** | Huỷ liên kết riêng, quay về Knowledge Base mặc định. |
+| `get-kb` hoặc `xem kb` | Mọi thành viên | Tra cứu tên và mã Dataset WeKnora đang liên kết với nhóm này. |
+| `set-kb <dataset_id>` | **Quản trị viên** | Gắn một kho tri thức WeKnora riêng biệt cho nhóm chat. |
+| `reset-kb` | **Quản trị viên** | Gỡ bỏ kho riêng, đưa nhóm về sử dụng kho tri thức mặc định. |
 
-### Trong Chat Riêng Với Sếp (1-1 DM):
-| Lệnh | Ý Nghĩa & Tác Dụng |
+### Lệnh Chat Riêng 1-1 Với Sếp (Direct Message):
+| Lệnh | Chức năng |
 | :--- | :--- |
-| `Gửi` / `OK` / `Duyệt` | Duyệt bản nháp câu trả lời đang chờ và phát ngôn vào nhóm. |
-| `Sửa: <nội dung mới>` | Chỉnh sửa nội dung câu trả lời và phát ngôn vào nhóm. |
-| `Bỏ` / `Hủy` | Huỷ bỏ bản nháp câu trả lời đang chờ. |
-| `Xem digest` | Xem trước nội dung bản Daily Digest gần nhất đang chờ duyệt. |
-| `Duyệt digest` | Phê duyệt và đẩy Daily Digest lên WeKnora Knowledge Base. |
-| `Hủy digest` | Từ chối bản Daily Digest, không nạp vào Knowledge Base. |
+| `Gửi` / `OK` / `Duyệt` | Duyệt bản nháp câu trả lời đang chờ và phát ngôn ngay vào nhóm chat dưới tên Sếp. |
+| `Sửa: <nội dung mới>` | Thay đổi nội dung câu trả lời theo đúng ý Sếp rồi mới phát ngôn vào nhóm. |
+| `Bỏ` / `Hủy` | Hủy bỏ bản nháp, bot giữ im lặng hoàn toàn. |
+| `Xem digest` | Xem trước bản tóm tắt Quyết định, Cam kết và Tiến độ trong ngày đang chờ duyệt. |
+| `Duyệt digest` | Phê duyệt và nạp dữ liệu Daily Digest thành tài liệu mới trên kho WeKnora. |
+| `Hủy digest` | Hủy bỏ bản Daily Digest của ngày. |
+
+### Các Đầu Mối REST API Chính:
+- `POST /api/chat/pipeline`: Tiếp nhận tin nhắn, thực thi toàn bộ pipeline 4 lớp và phản hồi.
+- `POST /api/chat/approve-draft`: API phê duyệt gửi bản nháp từ xa.
+- `GET /api/chat/entities`: Lấy danh sách toàn bộ Thực thể (Entities) đã học trong MongoDB.
+- `GET /api/chat/facts`: Lấy danh sách toàn bộ Mệnh đề sự thật (Claims) kèm trạng thái (`current`/`superseded`).
+- `GET /api/digests/pending/latest`: Lấy bản Daily Digest gần nhất đang chờ phê duyệt.
+- `POST /api/digests/{digest_id}/approve`: Duyệt và đồng bộ Daily Digest lên WeKnora.
+- `GET /api/v1/scopes`: Lấy danh sách toàn bộ phân quyền Nhóm chat <-> Knowledge Base.
+- `GET /health`: Kiểm tra sức khỏe toàn diện (MongoDB, WeKnora, Lark, JEV).
 
 ---
 
-## 📡 REST API Endpoints
+## 📚 Tài Liệu Kỹ Thuật Chuyên Sâu (Deep Dives)
 
-Hệ thống cung cấp hệ thống REST API hoàn chỉnh phục vụ tích hợp bên ngoài:
+Để tìm hiểu sâu hơn về kiến trúc và cách thức cài đặt chi tiết từng phân hệ, vui lòng tham khảo các tài liệu chuyên đề:
 
-### 1. Chat & Inference (`/api/chat`)
-- `POST /api/chat/pipeline`: Xử lý tin nhắn toàn trình qua Gatekeeper -> RAG -> Trả lời.
-- `POST /api/chat/user-chat`: Gửi câu hỏi mô phỏng người dùng, nhận câu trả lời dạng Persona.
-- `POST /api/chat/approve-draft`: Duyệt gửi bản nháp qua API.
-- `GET /api/chat/entities`: Lấy danh sách toàn bộ Thực thể (Entities) trong MongoDB.
-- `GET /api/chat/facts`: Lấy danh sách toàn bộ Mệnh đề (Facts/Claims) trong MongoDB.
-
-### 2. Daily Digest (`/api/digests`)
-- `GET /api/digests/pending/latest`: Lấy bản Daily Digest gần nhất đang chờ duyệt.
-- `POST /api/digests/{digest_id}/approve`: Duyệt và đồng bộ digest lên WeKnora.
-- `POST /api/digests/{digest_id}/reject`: Từ chối digest.
-- `POST /api/digests/process-daily`: Kích hoạt tổng hợp tin nhắn trong ngày cho 1 nhóm chat.
-- `POST /api/digests/run-scheduled`: Kích hoạt thủ công luồng chạy định kỳ cho tất cả các nhóm.
-- `POST /api/digests/sync-pending`: Quét và đồng bộ bù các bản ghi pending/failed lên WeKnora.
-
-### 3. Quản Trị Phân Quyền (`/api/v1/scopes`)
-- `GET /api/v1/scopes`: Lấy danh sách toàn bộ liên kết Nhóm chat <-> Knowledge Base.
-- `GET /api/v1/scopes/{chat_id}`: Lấy thông tin Knowledge Base của một nhóm chat.
-- `POST /api/v1/scopes`: Thiết lập liên kết nhóm chat với Knowledge Base mới.
-- `DELETE /api/v1/scopes/{chat_id}`: Gỡ bỏ liên kết riêng của nhóm chat.
-
-### 4. Lark Webhook & Health (`/api/lark`, `/health`)
-- `POST /api/lark/events`: Nhận sự kiện từ Lark Event Subscriptions (hỗ trợ URL Verification challenge).
-- `GET /api/lark/status`: Kiểm tra trạng thái kết nối Lark Service.
-- `GET /health`: Kiểm tra sức khỏe toàn diện (FastAPI, MongoDB, WeKnora, Lark, JEV).
+- **Kiến trúc luồng hoạt động 4 lớp**: [`server/docs/so_do_luong_hoat_dong_4_lop.md`](server/docs/so_do_luong_hoat_dong_4_lop.md)
+- **Đặc tả kiến trúc và 3 trạm kiểm soát của JEV**: [`server/docs/jev/jev_architecture_spec.md`](server/docs/jev/jev_architecture_spec.md)
+- **Chi tiết Lớp 1 (Inbound Gateway & ChatQueue)**: [`server/docs/layer1/inbound_gateway_deep_dive.md`](server/docs/layer1/inbound_gateway_deep_dive.md)
+- **Chi tiết Lớp 2 (Security Gating & Intent Classification)**: [`server/docs/layer2/security_gating_deep_dive.md`](server/docs/layer2/security_gating_deep_dive.md)
+- **Chi tiết Lớp 3 (Knowledge Base, Claims & Context Composer)**: [`server/docs/layer3/knowledge_context_deep_dive.md`](server/docs/layer3/knowledge_context_deep_dive.md)
+- **Chi tiết Lớp 4 (Persona, Sanitizer & Delivery)**: [`server/docs/layer4/persona_delivery_deep_dive.md`](server/docs/layer4/persona_delivery_deep_dive.md)
+- **Chính sách phân quyền & An ninh dữ liệu**: [`server/docs/permission/security_architecture_spec.md`](server/docs/permission/security_architecture_spec.md)
+- **Đường ống đồng bộ biểu mẫu Lark Base**: [`server/docs/LarkBase/sync_pipeline_deep_dive.md`](server/docs/LarkBase/sync_pipeline_deep_dive.md)
 
 ---
 
 <p align="center">
-  Được phát triển bởi <b>Tống Phước Hoài Nam</b> & đội ngũ nghiên cứu HiLark.
+  Được phát triển và hoàn thiện bởi <b>Tống Phước Hoài Nam</b> & đội ngũ phát triển HiLark.
 </p>
