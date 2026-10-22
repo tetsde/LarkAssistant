@@ -16,7 +16,7 @@ Nếu không có Lớp 1, người dùng gõ ngắt dòng liên tục hoặc nhi
 
 ## 🖼️ SƠ ĐỒ HOẠT ĐỘNG TỔNG QUAN
 
-![Sơ đồ phân rã kỹ thuật Lớp 1](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/phan_ra_lop_1_1792398699257.jpg)
+![Sơ đồ luồng hoạt động Layer 1](/Users/hoainam/.gemini/antigravity-ide/brain/7757b940-33a0-4b24-b567-26c89fe134f7/layer1_flow_diagram_1792400839886.jpg)
 
 ### Quy trình 6 bước tuần tự:
 ```mermaid
@@ -101,8 +101,10 @@ Nếu không gom lại, máy chủ sẽ kích hoạt AI trả lời 3 lần riê
 ---
 
 ### Bước 5: Hàng đợi điều tiết thời gian (Throttled Chat Queue)
-- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L121-207`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L121-L207)
+- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L121-210`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L121-L210)
 - **Thời gian giãn cách:** Mặc định **4.0 giây** (`USER_COOLDOWN_SECONDS = 4.0`).
+- **Giới hạn sức chứa hàng đợi:** Mặc định **100 tin nhắn** (`CHAT_QUEUE_MAX_SIZE = 100`).
+- **Cơ chế khi hàng đợi đầy (Giai đoạn 1):** Hệ thống kiên nhẫn chờ tối đa **2.0 giây** (`CHAT_QUEUE_ENQUEUE_TIMEOUT = 2.0`). Nếu quá 2 giây mà hàng đợi vẫn đầy tải thì ghi log lỗi chi tiết, từ chối tin nhắn mới và **tạm thời giữ nguyên toàn bộ tin cũ** chứ chưa tự động xóa.
 
 **Cách hoạt động:**
 - Sau khi tin nhắn được gom xong, nó được xếp vào hàng đợi xử lý tuần tự.
@@ -113,7 +115,7 @@ Nếu không gom lại, máy chủ sẽ kích hoạt AI trả lời 3 lần riê
 ---
 
 ### Bước 6: Giới hạn số lượng tác vụ chạy cùng lúc (Concurrency Semaphore)
-- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L136`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L136) và [`server/services/chat_service.py:L44`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L44)
+- **Vị trí trong mã nguồn:** [`server/utils/chat_queue.py:L138`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L138) và [`server/services/chat_service.py:L44`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L44)
 - **Số lượng tối đa:** **3 tác vụ** chạy cùng lúc (`MAX_CONCURRENT_CHAT_PIPELINES = 3`).
 
 **Mục đích bảo vệ:**
@@ -135,6 +137,8 @@ Tất cả các con số điều khiển Lớp 1 đều có thể chỉnh sửa 
 | `DEBOUNCE_DELAY_SECONDS` | `1.75` | Số giây chờ để gom các dòng gõ ngắt quãng của một người. |
 | `USER_COOLDOWN_SECONDS` | `4.0` | Số giây giãn cách tối thiểu giữa 2 lần hỏi của cùng một thành viên. |
 | `MAX_CONCURRENT_CHAT_PIPELINES` | `3` | Số câu hỏi tối đa được xử lý cùng một lúc trên toàn bộ máy chủ. |
+| `CHAT_QUEUE_MAX_SIZE` | `100` | Sức chứa tối đa của hàng đợi tin nhắn chờ (chống tràn bộ nhớ RAM). |
+| `CHAT_QUEUE_ENQUEUE_TIMEOUT` | `2.0` | Số giây tối đa chờ chỗ trống khi hàng đợi đầy trước khi báo lỗi. |
 | `DIGEST_SCHEDULE_TIME` | `23:00` | Giờ cố định mỗi đêm để gom tin nhắn làm báo cáo ngày. |
 | `ENABLE_DM_POLLING` | `false` | Có bật chế độ tự động quét hộp thư riêng định kỳ hay không. |
 | `DM_POLL_INTERVAL` | `60.0` | Chu kỳ quét hộp thư riêng (tính bằng giây). |

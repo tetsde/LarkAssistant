@@ -97,10 +97,10 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
                 md_preview = latest_pending.to_weknora_markdown()
                 preview_text = md_preview[:1500] + ("\n...(còn tiếp)" if len(md_preview) > 1500 else "")
                 await lark_service.send_bot_dm_to_owner(
-                    f"📄 [CHI TIẾT DAILY DIGEST: {latest_pending.id}]\n"
+                    f"CHI TIẾT DAILY DIGEST: {latest_pending.id}]\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{preview_text}\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "👉 Nhắn 'Duyệt digest' để nạp vào WeKnora hoặc 'Hủy digest' để từ chối."
                 )
             return

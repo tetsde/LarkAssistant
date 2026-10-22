@@ -130,12 +130,16 @@ class ThrottledChatQueue:
         self,
         cooldown_seconds: float = 4.0,
         max_concurrent: int = 3,
+        max_size: int = 100,
+        enqueue_timeout: float = 2.0,
         pipeline_executor: Optional[Callable[[ChatQueueItem], Coroutine[Any, Any, None]]] = None,
     ):
         self.cooldown_seconds = cooldown_seconds
+        self.max_size = max_size
+        self.enqueue_timeout = enqueue_timeout
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.pipeline_executor = pipeline_executor
-        self._queue: asyncio.Queue[ChatQueueItem] = asyncio.Queue()
+        self._queue: asyncio.Queue[ChatQueueItem] = asyncio.Queue(maxsize=max_size)
         self._last_user_processed: Dict[str, float] = {}
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
@@ -160,11 +164,36 @@ class ThrottledChatQueue:
             self._worker_task.cancel()
         logger.info("🛑 ThrottledChatQueue Worker đã dừng.")
 
-    async def enqueue(self, item: ChatQueueItem) -> None:
-        """Đưa một mục chat đã gom vào hàng đợi."""
+    async def enqueue(self, item: ChatQueueItem) -> bool:
+        """
+        Đưa một mục chat đã gom vào hàng đợi:
+          - Nếu queue đầy, chờ tối đa enqueue_timeout giây (mặc định 2.0s).
+          - Quá thời gian mà queue vẫn đầy: ghi log lỗi rõ ràng, bỏ qua tin mới.
+          - Tạm thời giữ nguyên toàn bộ tin cũ trong queue (chưa tự động xóa).
+          - Trả về True nếu xếp hàng thành công, False nếu timeout/lỗi.
+        """
         if not self._worker_task or self._worker_task.done():
             self.start()
-        await self._queue.put(item)
+
+        try:
+            await asyncio.wait_for(self._queue.put(item), timeout=self.enqueue_timeout)
+            return True
+        except asyncio.TimeoutError:
+            err_msg = (
+                f"❌ [QUEUE OVERFLOW] Hàng đợi Layer 1 đã đầy ({self._queue.qsize()}/{self.max_size}). "
+                f"Đã chờ {self.enqueue_timeout}s nhưng không có chỗ trống! "
+                f"Bỏ qua tin nhắn mới của '{item.user_name}' ({item.sender_id}) trong chat '{item.chat_id}' "
+                f"(Anchor MsgID: {item.anchor_message_id}, Nội dung: \"{item.combined_text[:60]}...\"). "
+                f"Tạm thời giữ nguyên các tin cũ trong hàng đợi."
+            )
+            print(f"\n{err_msg}")
+            logger.error(err_msg)
+            return False
+        except Exception as e:
+            err_msg = f"❌ [QUEUE ERROR] Lỗi không xác định khi đưa tin vào hàng đợi: {e}"
+            print(f"\n{err_msg}")
+            logger.error(err_msg, exc_info=True)
+            return False
 
     async def _worker_loop(self) -> None:
         """Vòng lặp tiêu thụ tin nhắn trong hàng đợi."""
@@ -216,6 +245,8 @@ class ChatQueueService:
         self.queue = ThrottledChatQueue(
             cooldown_seconds=getattr(settings, "USER_COOLDOWN_SECONDS", 4.0),
             max_concurrent=getattr(settings, "MAX_CONCURRENT_CHAT_PIPELINES", 3),
+            max_size=getattr(settings, "CHAT_QUEUE_MAX_SIZE", 100),
+            enqueue_timeout=getattr(settings, "CHAT_QUEUE_ENQUEUE_TIMEOUT", 2.0),
             pipeline_executor=self._execute_pipeline,
         )
 
@@ -239,7 +270,12 @@ class ChatQueueService:
 
     async def _on_debounced_ready(self, item: ChatQueueItem) -> None:
         """Callback khi debouncer gom tin xong -> đẩy vào hàng đợi."""
-        await self.queue.enqueue(item)
+        enqueued = await self.queue.enqueue(item)
+        if not enqueued:
+            logger.warning(
+                f"⚠️ [CHAT QUEUE DROP] Không thể xếp hàng tin nhắn từ '{item.user_name}' "
+                f"sau {self.queue.enqueue_timeout}s chờ đợi do hàng đợi đầy."
+            )
 
     async def _execute_pipeline(self, item: ChatQueueItem) -> None:
         """Thực thi pipeline trò chuyện chuẩn của HiLark."""
