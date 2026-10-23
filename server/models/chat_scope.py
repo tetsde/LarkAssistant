@@ -69,18 +69,15 @@ class ChatScopeRecord(BaseModel):
 
     def get_project_name(self) -> str:
         """
-        Trích xuất tên dự án đại diện của nhóm chat:
-        Ưu tiên: project_tag -> Tên suy luận từ file đính kèm (docs) -> chat_name
+        Trích xuất tên dự án đại diện của nhóm chat.
+        Nguồn chân lý: project_tag (Mã dự án) -> chat_name (Cột 'Dự án / Nhóm' từ Lark Base hoặc Chat Title).
+        Tuyệt đối không đoán mò từ tên file đính kèm.
         """
         if self.project_tag and self.project_tag.strip():
             return self.project_tag.strip()
-        doc_names = self.get_document_names()
-        if doc_names:
-            first_doc = doc_names[0]
-            clean = re.sub(r"\.(pdf|docx?|xlsx?|md|txt)$", "", first_doc, flags=re.IGNORECASE)
-            clean = re.sub(r"^(project_charter_|tai_lieu_|ke_hoach_|doc_)", "", clean, flags=re.IGNORECASE)
-            return clean.replace("_", " ").title()
-        return self.chat_name or "Dự án nội bộ"
+        if self.chat_name and self.chat_name.strip():
+            return self.chat_name.strip()
+        return "Dự án nội bộ"
 
     def to_dict(self) -> Dict[str, Any]:
         d = self.model_dump()

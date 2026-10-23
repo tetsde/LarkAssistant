@@ -189,12 +189,14 @@ class WeKnoraService:
                     res_json = resp.json()
                     doc_data = res_json.get("data", {}) if isinstance(res_json, dict) else {}
                     doc_id = doc_data.get("id") or doc_data.get("knowledge_id", "")
+                    doc_summary = doc_data.get("summary") or doc_data.get("description") or None
                     return {
                         "success": True,
                         "knowledge_id": doc_id,
                         "file_name": file_name,
                         "dataset_id": target_id,
                         "is_duplicate": resp.status_code == 409,
+                        "summary": doc_summary,
                         "data": doc_data,
                     }
                 else:
@@ -205,6 +207,35 @@ class WeKnoraService:
                     }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def get_document_info(
+        self,
+        dataset_id: str,
+        knowledge_id: str,
+        timeout: float = 10.0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Lấy thông tin chi tiết và tóm tắt (summary) của một tài liệu từ WeKnora.
+        Endpoint: GET /knowledge-bases/{dataset_id}/knowledge/{knowledge_id}
+        """
+        if not self.api_key or not self.base_url or not dataset_id or not knowledge_id:
+            return None
+
+        url = f"{self.base_url}/knowledge-bases/{dataset_id.strip()}/knowledge/{knowledge_id.strip()}"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(url, headers=self.headers)
+                if resp.status_code == 200:
+                    data = resp.json().get("data", {})
+                    return {
+                        "id": data.get("id", knowledge_id),
+                        "title": data.get("title") or data.get("name") or "",
+                        "summary": data.get("summary") or data.get("description") or None,
+                        "status": data.get("status") or "",
+                    }
+                return None
+        except Exception:
+            return None
 
     async def retrieve(
         self,

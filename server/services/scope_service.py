@@ -313,7 +313,7 @@ class ScopeService:
                 ft = d.get("file_token")
                 kid = d.get("knowledge_id")
                 if ft and kid:
-                    existing_doc_map[ft] = kid
+                    existing_doc_map[ft] = d
 
         synced_docs: List[Dict[str, Any]] = []
         knowledge_ids: List[str] = []
@@ -331,7 +331,10 @@ class ScopeService:
             if not file_token:
                 continue
 
-            k_id = existing_doc_map.get(file_token)
+            existing_doc = existing_doc_map.get(file_token)
+            k_id = existing_doc.get("knowledge_id") if existing_doc else None
+            doc_summary = existing_doc.get("summary") if existing_doc else None
+
             if not k_id:
                 try:
                     logger.info(f"📥 [ChatScope Sync] Đang tải file '{file_name}' ({file_token}) từ Lark Base...")
@@ -345,10 +348,21 @@ class ScopeService:
                             mime_type=mime_type,
                         )
                         k_id = upload_res.get("knowledge_id", "")
+                        doc_summary = upload_res.get("summary")
                         if k_id:
                             logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp file thành công: knowledge_id={k_id}")
                 except Exception as e:
                     logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý file '{file_name}': {e}", exc_info=True)
+
+            # Nếu k_id đã có nhưng chưa có summary (ví dụ lúc upload WeKnora đang parse bất đồng bộ),
+            # thử truy vấn metadata từ WeKnora để cập nhật đắp vào
+            if k_id and not doc_summary:
+                try:
+                    doc_info = await weknora_service.get_document_info(effective_dataset_id, k_id)
+                    if doc_info and doc_info.get("summary"):
+                        doc_summary = doc_info["summary"]
+                except Exception as e:
+                    logger.debug(f"Chưa lấy được summary từ WeKnora cho file {file_name}: {e}")
 
             if k_id:
                 synced_docs.append({
@@ -357,6 +371,7 @@ class ScopeService:
                     "size": file_size,
                     "type": mime_type,
                     "knowledge_id": k_id,
+                    "summary": doc_summary,
                 })
                 knowledge_ids.append(k_id)
 

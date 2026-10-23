@@ -565,16 +565,20 @@ async def process_chat_pipeline(
     # 3. Hợp nhất ngữ cảnh với ContextComposer
     scope_ctx_data = None
     if scope_record:
-        doc_names = (
-            scope_record.get_document_names()
-            if hasattr(scope_record, "get_document_names")
-            else [d.get("name") for d in (scope_record.documents or []) if isinstance(d, dict) and d.get("name")]
+        documents = (
+            scope_record.documents
+            if scope_record.documents
+            else (scope_record.get_document_names() if hasattr(scope_record, "get_document_names") else [])
         )
-        proj_name = proj_context_name or (scope_record.chat_name if scope_record else "Dự án nội bộ")
+        proj_name = proj_context_name or (
+            scope_record.get_project_name()
+            if hasattr(scope_record, "get_project_name")
+            else (scope_record.chat_name or "Dự án nội bộ")
+        )
         scope_ctx_data = {
             "chat_name": scope_record.chat_name,
             "project_name": proj_name,
-            "documents": doc_names,
+            "documents": documents,
         }
 
     composer = ContextComposer()

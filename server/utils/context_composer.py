@@ -495,7 +495,8 @@ class ContextComposer:
         QUERY_STOPWORDS = {
             "là", "gì", "thế", "nào", "cho", "của", "và", "như", "các", "có", "không",
             "nhé", "được", "ạ", "ơi", "với", "trong", "đến", "này", "đó", "hỏi", "về",
-            "ai", "sao", "thì", "đã", "đang", "sẽ", "phải", "muốn", "xin", "bạn", "mình"
+            "ai", "sao", "thì", "đã", "đang", "sẽ", "phải", "muốn", "xin", "bạn", "mình",
+            "làm", "dự", "án", "em", "anh", "chị"
         }
         query_tokens = [w for w in re.findall(r"\w+", query_text) if len(w) >= 2 and w not in QUERY_STOPWORDS]
 
@@ -568,7 +569,7 @@ class ContextComposer:
             # --- CHIỀU 4: SO KHỚP NGUỒN TRÍCH DẪN & NGƯỜI PHÁT NGÔN (Snippet & Speaker Match) ---
             if not is_matched:
                 if c_snippet and query_tokens:
-                    snippet_tokens = set(re.findall(r"\w+", c_snippet))
+                    snippet_tokens = {w for w in re.findall(r"\w+", c_snippet.lower()) if len(w) >= 2 and w not in QUERY_STOPWORDS}
                     overlap = set(query_tokens).intersection(snippet_tokens)
                     if overlap:
                         is_matched = True
@@ -660,17 +661,23 @@ class ContextComposer:
             project_name = scope_context.get("project_name") or ""
             doc_list = scope_context.get("documents") or []
 
-            scope_lines.append("--- PHẦN 0: BỐI CẢNH DỰ ÁN & HỒ SƠ TÀI LIỆU CỦA NHÓM (GROUP SCOPE PROFILE) ---")
+            scope_lines.append("--- PHẦN 0: BỐI CẢNH DỰ ÁN & BẢN ĐỒ TÀI LIỆU (DOCUMENT MANIFEST) ---")
             if chat_name:
                 scope_lines.append(f"• Tên nhóm chat       : {chat_name}")
             if project_name:
                 scope_lines.append(f"• Dự án phụ trách     : {project_name}")
             if doc_list:
-                scope_lines.append("• Danh mục tài liệu đính kèm của nhóm:")
+                scope_lines.append("• Bản đồ tài liệu & Vai trò văn bản (Document Manifest):")
                 for d in doc_list:
-                    d_name = d if isinstance(d, str) else d.get("name", "")
-                    if d_name:
-                        scope_lines.append(f"  - 📄 {d_name}")
+                    if isinstance(d, dict):
+                        d_name = d.get("name") or "Tài liệu"
+                        d_summary = d.get("summary")
+                        if d_summary and str(d_summary).strip():
+                            scope_lines.append(f"  - 📄 [{d_name}]: {str(d_summary).strip()}")
+                        else:
+                            scope_lines.append(f"  - 📄 [{d_name}] (Tài liệu tham khảo nội bộ)")
+                    elif isinstance(d, str) and d.strip():
+                        scope_lines.append(f"  - 📄 [{d.strip()}] (Tài liệu tham khảo nội bộ)")
             canonical_proj = project_name or chat_name or "Dự án hiện tại"
             scope_lines.append("• Chỉ dẫn định danh dự án & suy luận bối cảnh ngầm định:")
             scope_lines.append(
@@ -679,7 +686,8 @@ class ContextComposer:
                 f"MẶC ĐỊNH 100% là đang hỏi về dự án '{canonical_proj}'. "
                 f"TUYỆT ĐỐI KHÔNG hỏi ngược lại người dùng 'em hỏi dự án nào'!\n"
                 f"  2. NGUYÊN TẮC BẢO VỆ TÊN DỰ ÁN (TUYỆT ĐỐI CẤM NHẦM VỚI TÊN TÀI LIỆU): "
-                f"Các tài liệu trong 'Danh mục tài liệu đính kèm' (như '04_So_tay_chinh_sach_cong_ty.pdf', 'Code_of_Conduct.docx', 'Project_Charter.docx'...) "
+                f"Các tài liệu trong 'Bản đồ tài liệu' (như Sổ tay chính sách, Code of Conduct, Bảng dự toán...) "
+                f"chỉ là văn bản tham chiếu nội bộ. Tuyệt đối không lấy tên file làm tên dự án."
             )
 
         # 4. Tạo context text
