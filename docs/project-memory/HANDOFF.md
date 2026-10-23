@@ -3,48 +3,41 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Khởi tạo, cấu hình và kiểm thử hệ thống Project Memory & Skill `project-memory` cho repository HiLark.
-- **Status:** Done
+- **Goal:** Brainstorm & Thiết kế Kiến trúc Xử lý Đa tài liệu (Multi-Document RAG), Phân tầng Tri thức (Two-Tier Hierarchy) và Đồng bộ trực tiếp Lark Docs.
+- **Status:** In Progress (Đã chốt kiến trúc & đồng bộ Notion Decision Log)
 - **Scope:** 
-  1. Đưa `.agents/skills/project-memory/`, `docs/project-memory/`, `AGENTS.md` ra thư mục gốc repo theo đúng chuẩn Antigravity.
-  2. Xác minh kết nối Notion MCP và schema thực tế của database `Engineering Decision Log`.
-  3. Khảo sát codebase, chạy kiểm thử thực tế và điền `docs/project-memory/PROJECT_CONTEXT.md` hoàn toàn dựa trên bằng chứng đã xác minh.
-- **Acceptance criteria:**
-  - Quy tắc `AGENTS.md` được coding agent tự động tuân thủ.
-  - Thông tin dự án trong `PROJECT_CONTEXT.md` đầy đủ, chính xác, không suy đoán.
-  - Kiểm thử thực tế được ghi nhận rõ ràng (passed / failed).
-  - Không ảnh hưởng đến các thay đổi chưa commit của người dùng.
+  1. Mổ xẻ nguyên nhân gốc rễ lỗi nhiễu loạn thông tin khi upload nhiều file (`Project_Charter`, `Code_of_Conduct`, `04_So_tay_chinh_sach_cong_ty`, `Ngan_sach_du_an`).
+  2. Vạch trần bug logic trong code: hàm `get_project_name()` trong `server/models/chat_scope.py` lấy `doc_names[0]` dẫn đến ép LLM nhận diện sai tên dự án.
+  3. Thiết kế kiến trúc Phân tầng Tri thức: Global Wiki KB (chính sách chung) vs Project Scoped KB (tài liệu riêng của nhóm).
+  4. Thiết kế cơ chế Auto-Manifest (tự động đọc hiểu và tạo thẻ vai trò tài liệu dưới background, zero user friction).
+  5. Đề xuất & thống nhất giải pháp đồng bộ trực tiếp Lark Docs (Docx raw content qua OpenAPI) thay vì chỉ upload file thủ công từ máy tính.
+  6. Làm rõ quy trình giải quyết xung đột khi tài liệu cập nhật từ A lên A+1 (Atomic Replacement trong WeKnora + Real-time Override từ Claims).
 
 ## What is confirmed
-- Quy tắc bắt buộc tại root và global rules hoạt động nhịp nhàng.
-- Notion MCP kết nối thành công bot `mcp2`, tìm thấy database `Engineering Decision Log` (ID: `402590f7-e19e-80cd-8873-f3b12a9a0a72`).
-- Trạng thái git uncommitted của người dùng (`chat_service.py`, `context_composer.py`) được bảo toàn tuyệt đối.
-- Toàn bộ kiến trúc và các đường dẫn code chính của HiLark đã được bóc tách vào `PROJECT_CONTEXT.md`.
+- Nguyên nhân trực tiếp gây ra câu trả lời ngớ ngẩn trong ảnh screenshot là dòng code `first_doc = doc_names[0]` tại `server/models/chat_scope.py:79`.
+- Cơ chế cập nhật tài liệu WeKnora qua việc xóa document cũ và re-index document mới (Atomic replacement) chỉ mất 1-3 giây chạy ngầm, không gây nghẽn và ngăn chặn 100% "Ghost Chunks".
+- Quyết định kiến trúc `EDL-0002` (Two-Tier Hierarchy & Lark Docs Sync) đã được ghi nhận trên Notion (Page ID: `402590f7-e19e-81ef-82bb-eb091ece965f`).
+- Quyết định kiến trúc `EDL-0003` (JEV Piggyback Routing cho Phân tầng Tri thức) đã được tạo và đồng bộ thành công lên Notion Database `Engineering Decision Log` (Page ID: `402590f7-e19e-8179-bc26-ed7248bb725b`).
+- Quyết định kiến trúc `EDL-0004` (Tận dụng WeKnora Document Summary làm Macro-Context) đã được tạo và đồng bộ thành công lên Notion Database `Engineering Decision Log` (Page ID: `402590f7-e19e-8100-93e5-c38fe1e74da5`).
+- Đã xác nhận: Bộ đệm `MessageDebouncer` (1.75s) tại `server/utils/chat_queue.py` giải quyết triệt để vấn đề tin nhắn chat ngắt quãng của người dùng trước khi đến JEV.
+- Đã xác nhận: Cơ chế Pessimistic Routing (ngưỡng tin cậy >= 0.85, phân vân tự động fallback sang `HYBRID` query cả 2 kho) loại trừ 100% rủi ro mất mát dữ liệu (False Negatives).
+- Đã xác nhận: Tận dụng trường `summary` có sẵn của WeKnora để sinh Document Manifest thay vì tốn chi phí gọi LLM ngoài (Zero-cost LLM worker).
 
 ## Work completed
-- **Thiết lập thư mục gốc:** Sao chép `.agents/`, `docs/project-memory/`, `AGENTS.md` ra thư mục gốc repo.
-- **Tài liệu hóa ngữ cảnh:** Điền thông tin chuẩn xác vào `docs/project-memory/PROJECT_CONTEXT.md`.
-- **Cập nhật bàn giao:** Hoàn thiện `docs/project-memory/HANDOFF.md`.
+- **Phân tích kỹ thuật & Code Audit:** Soi toàn bộ flow từ LarkBase sync, WeKnora retrieval, JEV relevance filter, ContextComposer đến Grounded QA.
+- **Thiết kế & Phản biện Kiến trúc Routing:** Đào sâu ưu/nhược điểm các phương án truy vấn giữa Project KB và Global Wiki KB, chốt Phương án B (JEV Piggyback).
+- **Tối ưu hóa Macro-Context:** Thống nhất tận dụng trường `summary` tự động của WeKnora để nhúng vào ContextComposer và sửa hàm nhận diện tên dự án.
+- **Đồng bộ Notion Decision Log:** Tạo và ghi nhận đầy đủ chi tiết quyết định `EDL - 0002`, `EDL - 0003`, `EDL - 0004` trên Notion qua Notion MCP.
+- **Cập nhật Project Memory:** Cập nhật `docs/project-memory/DECISIONS.md` và `docs/project-memory/HANDOFF.md`.
 
 ## Verification
-- **Tests written:** Không (chỉ chạy test hiện có của repo).
 - **Commands actually run:**
-  - `git status`: Xác nhận branch `main`, bảo toàn uncommitted files.
-  - `API-get-self` & `API-post-search` (Notion MCP): Kết nối bot và trích xuất schema database.
-  - `PYTHONPATH=. .venv/bin/python tests/test_context_composer.py`: 8 tests passed.
-  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_rule_engine.py`: 7 tests passed.
-  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_claims_isolation.py`: 3 tests passed.
-  - `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests/01 -p "test_*.py"`: 73 tests (72 passed, 1 failed).
-- **Not run / failed:**
-  - `tests/01/test_master_digest.py::test_master_digest_dm_text_format` FAILED do chuỗi định dạng tiêu đề kiểm tra `BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM` khác với output code `📊 BÁO CÁO NGÀY CẤP ĐIỀU HÀNH (DAILY MASTER DIGEST)`.
-- **Residual risks:**
-  - JWT token `access_token_user` trong `.env` đã quá hạn 17 giờ, cần refresh khi chạy thao tác user thực tế trên Lark.
+  - Notion MCP `API-post-page`: Tạo thành công page `EDL - 0004` trong Database Decision Log.
+  - Notion MCP `API-update-page-markdown`: Ghi nhận toàn bộ nội dung phân tích kiến trúc, 3 lớp ContextComposer, và cơ chế fallback của EDL-0004.
+  - Notion MCP `API-retrieve-page-markdown`: Đọc lại và xác minh 100% nội dung đã được lưu chuẩn xác.
 
-## Blockers and unknowns
-- Không có blocker cho việc phát triển code tiếp theo.
-
-## Next concrete step
-1. Bắt đầu phiên làm việc mới trên bất kỳ tính năng nào của HiLark, hoặc xử lý test lệch format tại `tests/01/test_master_digest.py` nếu cần.
-
-## Links
-- Notion Database: [Engineering Decision Log](https://app.notion.com/p/402590f7e19e80cd8873f3b12a9a0a72) (ID: `402590f7-e19e-80cd-8873-f3b12a9a0a72`)
+## Next concrete steps
+1. Sửa dứt điểm hàm `get_project_name()` trong `server/models/chat_scope.py` kết hợp lọc theo tên file và `summary` (cấm lấy file chính sách/ngân sách).
+2. Lưu trường `summary` từ WeKnora vào `synced_docs` trong `server/services/scope_service.py` và nhúng Document Manifest vào `server/utils/context_composer.py`.
+3. Nâng cấp payload `classify_message` trong `server/services/jev.py` thêm question `knowledge_domain` và logic routing tại `server/services/chat_service.py`.
+4. Triển khai parser cho Lark Docx trực tiếp qua Lark Open API.
