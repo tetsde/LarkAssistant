@@ -442,15 +442,29 @@ async def process_chat_pipeline(
         }
 
     # REPLY_ONLY và MEMORY_AND_DRAFT đều cần tạo nội dung từ context.
-    # 1. Lấy active claims (gồm cả Current và Proposed) từ MongoDB theo scope nhóm
+    # 1. Lấy active claims (gồm cả Current và Proposed) và Entities từ MongoDB theo scope nhóm
     all_facts = []
+    entity_map: Dict[str, Any] = {}
     try:
-        all_facts = await get_mongo_facts(
+        facts_coro = get_mongo_facts(
             chat_id=chat_id,
             project_tag=proj_context_name,
         )
+        entities_coro = get_mongo_entities(workspace_id=None)
+        facts_res, entities_res = await asyncio.gather(facts_coro, entities_coro, return_exceptions=True)
+
+        if isinstance(facts_res, list):
+            all_facts = facts_res
+        elif isinstance(facts_res, Exception):
+            logger.warning(f"Lỗi khi đọc facts từ MongoDB: {facts_res}")
+
+        if isinstance(entities_res, list):
+            entity_map = {str(e.get("id")): e for e in entities_res if isinstance(e, dict) and e.get("id")}
+        elif isinstance(entities_res, Exception):
+            logger.warning(f"Lỗi khi đọc entities từ MongoDB: {entities_res}")
     except Exception as e:
-        logger.warning(f"Lỗi khi đọc facts từ MongoDB: {e}")
+        logger.warning(f"Lỗi khi đọc tri thức động từ MongoDB: {e}")
+
     active_claims = [f for f in all_facts if f.get("status", "current") in ("current", "proposed")]
 
     # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat
@@ -568,6 +582,7 @@ async def process_chat_pipeline(
         retriever_data=clean_chunks if clean_chunks else None,
         claims_data=clean_claims if clean_claims else None,
         query=clean_query,
+        entity_map=entity_map,
         auto_align=True,
         scope_context=scope_ctx_data,
     )

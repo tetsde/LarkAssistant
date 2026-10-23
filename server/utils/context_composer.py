@@ -26,9 +26,12 @@ Sử dụng:
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Union
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -228,6 +231,20 @@ class ContextComposer:
         raw_facts: List[Dict[str, Any]] = []
         entities_lookup: Dict[str, Dict[str, Any]] = dict(entity_map or {})
 
+        # Tự động nạp entities từ MongoDB nếu chưa có entity_map
+        if not entities_lookup:
+            try:
+                from database.db import get_all_entities_sync
+                raw_entities = get_all_entities_sync(workspace_id=None)
+                if raw_entities:
+                    for ent in raw_entities:
+                        if isinstance(ent, dict):
+                            eid_key = str(ent.get("id") or ent.get("_id") or "")
+                            if eid_key:
+                                entities_lookup[eid_key] = ent
+            except Exception as e:
+                logger.debug(f"Không thể tự động tải entities từ MongoDB: {e}")
+
         # 1. Bóc tách dữ liệu
         if isinstance(claims_data, list):
             for elem in claims_data:
@@ -239,7 +256,7 @@ class ContextComposer:
                     ename = elem.get("name") or elem.get("canonical_name") or "Chung"
                     etype = elem.get("type") or "unknown"
                     if eid:
-                        entities_lookup[eid] = {"name": ename, "type": etype}
+                        entities_lookup[str(eid)] = {"name": ename, "type": etype}
 
                     for f in elem.get("active_facts", []):
                         if isinstance(f, dict):
@@ -275,7 +292,7 @@ class ContextComposer:
                     if isinstance(ent, dict):
                         eid = ent.get("id") or ent.get("_id")
                         if eid:
-                            entities_lookup[eid] = ent
+                            entities_lookup[str(eid)] = ent
 
         # 2. Chuẩn hóa từng Fact
         seen_fact_ids: Set[str] = set()
@@ -303,6 +320,10 @@ class ContextComposer:
                 ent_obj = entities_lookup[eid]
                 ename = ent_obj.get("name") or ent_obj.get("canonical_name")
                 etype = ent_obj.get("type")
+
+            # Fallback nếu vẫn chưa có ename: lấy từ project_tag hoặc entity_name
+            if not ename:
+                ename = f.get("project_tag") or f.get("entity_name")
 
             src = f.get("source")
             snippet = None
@@ -422,62 +443,164 @@ class ContextComposer:
         entity_map: Optional[Dict[str, Any]] = None,
     ) -> List[NormalizedClaim]:
         """
-        Cơ chế So khớp Chéo Thực thể (Entity-Centric Alignment):
-        Chỉ giữ lại các Claims mà tên thực thể hoặc bí danh (aliases)
-        có xuất hiện trong nội dung Chunks tài liệu WeKnora hoặc Câu hỏi người dùng.
-        Tự động loại bỏ các Claims thuộc các dự án / thực thể hoàn toàn không liên quan.
+        Cơ chế So khớp Chéo Đa Chiều (Multi-Dimensional Alignment):
+        Lọc và đối chiếu Mệnh đề (Claims) với Chunks tài liệu WeKnora và Câu hỏi người dùng theo 4 chiều:
+          1. Entity Match: Tên thực thể hoặc bí danh (aliases) xuất hiện trong câu hỏi/tài liệu.
+          2. Property Match: Thuộc tính nghiệp vụ (lead, owner, role, deadline, scope, mục tiêu...) xuất hiện trong câu hỏi.
+          3. Value Match: Giá trị của mệnh đề (tên người, số liệu, thông số) xuất hiện trong câu hỏi/tài liệu.
+          4. Source / Speaker Match: Trích dẫn thảo luận gốc (source_snippet) hoặc người phát ngôn (asserted_by) trùng khớp.
+
+        Cơ chế An Toàn Chống Rỗng (Safe Scoped Fallback):
+          Nếu claims đầu vào là tập claims đã được lọc theo ngữ cảnh nhóm chat/dự án (scoped claims),
+          mà câu hỏi mang tính khái quát (không chỉ đích danh thực thể khác xa lạ), hệ thống sẽ giữ lại
+          các claims phù hợp (ưu tiên CURRENT và PROPOSED) thay vì trả về danh sách rỗng [].
         """
         if not claims:
             return []
         if not chunks and not query:
             return claims
 
-        # Tạo văn bản nền neo đối chiếu: Chunks content + Doc Name + Query
+        # Tự động nạp entity_map nếu chưa có
+        if not entity_map:
+            try:
+                from database.db import get_all_entities_sync
+                raw_entities = get_all_entities_sync(workspace_id=None)
+                if raw_entities:
+                    entity_map = {str(e.get("id")): e for e in raw_entities if isinstance(e, dict) and e.get("id")}
+            except Exception:
+                entity_map = {}
+
+        # 1. Tạo văn bản nền neo đối chiếu: Chunks content + Doc Name + Query
         anchor_parts = []
         if chunks:
             anchor_parts.extend([f"{c.content} {c.doc_name}" for c in chunks])
         if query:
             anchor_parts.append(query)
         anchor_text = " ".join(anchor_parts).lower()
+        query_text = (query or "").lower().strip()
+
+        # Từ điển ánh xạ từ đồng nghĩa cho các thuộc tính nghiệp vụ thường gặp
+        PROPERTY_SYNONYMS: Dict[str, Set[str]] = {
+            "lead": {"lead", "trưởng", "phụ trách", "chỉ huy", "quản lý"},
+            "owner": {"owner", "chủ", "phụ trách", "nắm", "quản lý", "lead", "chịu trách nhiệm"},
+            "role": {"role", "vai trò", "vị trí", "chức vụ", "làm gì", "công việc"},
+            "assignee": {"assignee", "người làm", "giao cho", "phụ trách", "ai làm", "ai nhận"},
+            "scope": {"scope", "phạm vi", "kế hoạch", "mục tiêu", "nội dung", "thay đổi", "giảm", "tăng", "bỏ", "thêm"},
+            "deadline": {"deadline", "hạn chót", "thời hạn", "ngày nào", "khi nào", "tiến độ"},
+            "budget": {"ngân sách", "chi phí", "tiền", "budget"},
+            "status": {"trạng thái", "tình hình", "tiến độ", "ra sao", "thế nào"},
+        }
+
+        # Trích xuất các từ khóa có ý nghĩa từ query (bỏ stopwords ngắn)
+        QUERY_STOPWORDS = {
+            "là", "gì", "thế", "nào", "cho", "của", "và", "như", "các", "có", "không",
+            "nhé", "được", "ạ", "ơi", "với", "trong", "đến", "này", "đó", "hỏi", "về",
+            "ai", "sao", "thì", "đã", "đang", "sẽ", "phải", "muốn", "xin", "bạn", "mình"
+        }
+        query_tokens = [w for w in re.findall(r"\w+", query_text) if len(w) >= 2 and w not in QUERY_STOPWORDS]
 
         # Xây dựng danh sách từ khóa nhận diện của từng Entity (name + aliases)
         entity_keywords_map: Dict[str, Set[str]] = {}
+        all_known_entity_names: Set[str] = set()
         for eid, ent in (entity_map or {}).items():
             kws: Set[str] = set()
             ename = (ent.get("name") or ent.get("canonical_name") or "").lower().strip()
             if ename and len(ename) >= 2:
                 kws.add(ename)
+                all_known_entity_names.add(ename)
             for a in ent.get("aliases", []):
                 if a and isinstance(a, str) and len(a.strip()) >= 2:
-                    kws.add(a.lower().strip())
+                    alias_clean = a.lower().strip()
+                    kws.add(alias_clean)
+                    all_known_entity_names.add(alias_clean)
             if kws:
                 entity_keywords_map[str(eid)] = kws
 
         matched_claims: List[NormalizedClaim] = []
+        matched_ids: Set[str] = set()
+
         for claim in claims:
+            cid = claim.id or f"{claim.property}_{claim.value}"
+            if cid in matched_ids:
+                continue
+
             c_name = (claim.entity_name or "").lower().strip()
             c_eid = str(claim.entity_id or "")
+            c_prop = (claim.property or "").lower().strip()
+            c_val_str = str(claim.value or "").lower().strip()
+            c_snippet = (claim.source_snippet or "").lower().strip()
 
-            # 1. So khớp trực tiếp tên thực thể (Entity Name) với Word Boundary
-            is_matched = bool(
-                c_name
-                and len(c_name) >= 2
-                and re.search(rf"(?<!\w){re.escape(c_name)}(?!\w)", anchor_text)
-            )
+            is_matched = False
 
-            # 2. So khớp qua aliases của thực thể trong entity_map với Word Boundary
+            # --- CHIỀU 1: SO KHỚP THỰC THỂ (Entity Name & Aliases) ---
+            if c_name and c_name != "hệ thống" and len(c_name) >= 2:
+                if re.search(rf"(?<!\w){re.escape(c_name)}(?!\w)", anchor_text):
+                    is_matched = True
+
             if not is_matched and c_eid in entity_keywords_map:
-                is_matched = any(
-                    bool(re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", anchor_text))
-                    for kw in entity_keywords_map[c_eid]
-                )
+                if any(re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", anchor_text) for kw in entity_keywords_map[c_eid]):
+                    is_matched = True
+
+            # --- CHIỀU 2: SO KHỚP THUỘC TÍNH (Property Match) ---
+            if not is_matched and c_prop and len(c_prop) >= 2:
+                if re.search(rf"(?<!\w){re.escape(c_prop)}(?!\w)", anchor_text):
+                    is_matched = True
+                elif query_text:
+                    synonyms = PROPERTY_SYNONYMS.get(c_prop, set())
+                    if any(re.search(rf"(?<!\w){re.escape(syn)}(?!\w)", query_text) for syn in synonyms):
+                        is_matched = True
+
+            # --- CHIỀU 3: SO KHỚP GIÁ TRỊ (Value Match) ---
+            if not is_matched and c_val_str and len(c_val_str) >= 2:
+                if len(c_val_str) <= 30:
+                    if re.search(rf"(?<!\w){re.escape(c_val_str)}(?!\w)", anchor_text):
+                        is_matched = True
+                else:
+                    if c_val_str in anchor_text:
+                        is_matched = True
+
+                if not is_matched and query_tokens:
+                    val_tokens = [w for w in re.findall(r"\w+", c_val_str) if len(w) >= 2 and w not in QUERY_STOPWORDS]
+                    overlap = set(query_tokens).intersection(set(val_tokens))
+                    if overlap:
+                        is_matched = True
+
+            # --- CHIỀU 4: SO KHỚP NGUỒN TRÍCH DẪN & NGƯỜI PHÁT NGÔN (Snippet & Speaker Match) ---
+            if not is_matched:
+                if c_snippet and query_tokens:
+                    snippet_tokens = set(re.findall(r"\w+", c_snippet))
+                    overlap = set(query_tokens).intersection(snippet_tokens)
+                    if overlap:
+                        is_matched = True
+
+                if not is_matched and claim.asserted_by and isinstance(claim.asserted_by, dict):
+                    speaker = (claim.asserted_by.get("user_name") or "").lower().strip()
+                    if speaker and len(speaker) >= 2 and re.search(rf"(?<!\w){re.escape(speaker)}(?!\w)", anchor_text):
+                        is_matched = True
 
             if is_matched:
                 matched_claims.append(claim)
+                matched_ids.add(cid)
 
-        # [FIX CRITICAL BUG]: Khi lọc không khớp thực thể nào, TRẢ VỀ RỖNG []
-        # Tuyệt đối KHÔNG fallback trả về toàn bộ claims của công ty (tránh nhầm lẫn nhân sự khác).
-        return matched_claims
+        # --- CHIỀU 5: CƠ CHẾ AN TOÀN CHỐNG RỖNG (Safe Scoped Fallback) ---
+        if not matched_claims and claims:
+            query_mentions_other_entity = False
+            for ent_kw in all_known_entity_names:
+                if len(ent_kw) >= 3 and re.search(rf"(?<!\w){re.escape(ent_kw)}(?!\w)", query_text):
+                    claim_entities = {
+                        (c.entity_name or "").lower().strip() for c in claims
+                    }.union({
+                        kw for c in claims if c.entity_id in entity_keywords_map for kw in entity_keywords_map[c.entity_id]
+                    })
+                    if ent_kw not in claim_entities:
+                        query_mentions_other_entity = True
+                        break
+
+            if not query_mentions_other_entity:
+                logger.debug("Safe Scoped Fallback: Giữ lại toàn bộ scoped claims cho câu hỏi tổng quát.")
+                return claims[: self.max_claims]
+
+        return matched_claims[: self.max_claims]
 
     # -------------------------------------------------------------------------
     # 3. PHƯƠNG THỨC CHÍNH: COMPOSE
@@ -504,6 +627,16 @@ class ContextComposer:
           - auto_align: Tự động so khớp chéo thực thể (Cách 1) loại bỏ claims không liên quan
           - scope_context: Bối cảnh nhóm chat & danh mục file docs từ Lark Base / MongoDB
         """
+        # Tự động nạp entity_map nếu chưa được cung cấp
+        if not entity_map:
+            try:
+                from database.db import get_all_entities_sync
+                raw_entities = get_all_entities_sync(workspace_id=None)
+                if raw_entities:
+                    entity_map = {str(e.get("id")): e for e in raw_entities if isinstance(e, dict) and e.get("id")}
+            except Exception:
+                entity_map = {}
+
         # 1. Chuẩn hóa dữ liệu
         chunks = self.normalize_retriever_data(retriever_data)
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
@@ -596,6 +729,7 @@ class ContextComposer:
                 "num_chunks": len(chunks),
                 "num_claims": len(claims),
                 "num_active_claims": len([c for c in claims if c.status == "current"]),
+                "num_proposed_claims": len([c for c in claims if c.status == "proposed"]),
                 "num_superseded_claims": len([c for c in claims if c.status == "superseded"]),
                 "citations": citations,
                 "entities_covered": entities_covered,
@@ -612,8 +746,24 @@ class ContextComposer:
         entity_map: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Đóng gói ngữ cảnh dưới dạng XML Tags (rất phù hợp với Claude / Gemini / GPT)."""
+        if not entity_map:
+            try:
+                from database.db import get_all_entities_sync
+                raw_entities = get_all_entities_sync(workspace_id=None)
+                if raw_entities:
+                    entity_map = {str(e.get("id")): e for e in raw_entities if isinstance(e, dict) and e.get("id")}
+            except Exception:
+                entity_map = {}
+
         chunks = self.normalize_retriever_data(retriever_data)
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
+        if claims and (chunks or query):
+            claims = self.align_claims_with_retriever(
+                chunks=chunks,
+                claims=claims,
+                query=query,
+                entity_map=entity_map,
+            )
 
         xml_parts: List[str] = ["<knowledge_context>"]
 
@@ -667,6 +817,8 @@ def compose_context(
     retriever_data: Any = None,
     claims_data: Any = None,
     query: Optional[str] = None,
+    entity_map: Optional[Dict[str, Any]] = None,
+    scope_context: Optional[Dict[str, Any]] = None,
     include_superseded: bool = True,
     max_chunks: int = 8,
     max_claims: int = 25,
@@ -676,7 +828,7 @@ def compose_context(
 
     Ví dụ:
         ctx = compose_context(retriever_chunks, claims_list, query="Ngân sách?")
-        print(ctx["prompt_ready"])
+        print(ctx["context_text"])
     """
     composer = ContextComposer(
         max_chunks=max_chunks,
@@ -687,4 +839,6 @@ def compose_context(
         retriever_data=retriever_data,
         claims_data=claims_data,
         query=query,
+        entity_map=entity_map,
+        scope_context=scope_context,
     )
