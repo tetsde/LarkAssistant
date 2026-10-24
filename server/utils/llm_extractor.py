@@ -307,8 +307,10 @@ EXTRACTION RULES:
   * If approximate or period (e.g., "cuối tháng 10", "quý 4") -> Format as "cuối tháng 10/2026" or "Q4/2026".
   * DO NOT output raw fragmented strings like "ngày/10" or relative words if they can be resolved to exact Vietnam calendar time.
 
-⛔ RESTRICTIONS - DO NOT EXTRACT CHATTER / CONVERSATIONAL NOISE:
+⛔ RESTRICTIONS - DO NOT EXTRACT CHATTER, INQUIRIES, OR CONVERSATIONAL NOISE:
 - FORBIDDEN properties: "action", "chat", "message", "sent_message", "received_message", "urging_deadline", "notify". The system only records persistent business facts, not communication activity logs.
+- FORBIDDEN INQUIRIES / QUESTIONS: DO NOT extract questions, inquiries, or rhetorical requests ("báo ai", "ai làm", "ở đâu", "khi nào", "thế nào", "làm sao") as facts. For example, NEVER extract property="assignee", value="ai" from a question "báo ai ạ?".
+- FORBIDDEN PERSONAL LIFE / HEALTH: DO NOT extract individual health or personal leave ("mai em ốm", "bận việc riêng", "đi ăn cưới", "nghỉ phép") as a project's operational "status" or "scope". Only extract persistent business/technical facts about the entity!
 
 🎯 OUTPUT CONTROL & RANKING RULES:
 - Quantity: Extract a MAXIMUM of 1 to 5 concise facts per message.
@@ -684,6 +686,18 @@ def parse_facts(
                 value = " ".join(words[:15]) + "..."
             elif len(value) > 120:
                 value = value[:117] + "..."
+
+        # [FACT SANITIZER - EDL-0008]: Loại bỏ fact là câu hỏi nghi vấn hoặc việc riêng cá nhân
+        val_clean = str(value).strip().lower()
+        QUESTION_PRONOUNS = {"ai", "gì", "đâu", "nào", "sao", "ai ạ", "ai vậy", "ai nhỉ", "ai đó", "?"}
+        if val_clean in QUESTION_PRONOUNS or val_clean.endswith("?") or val_clean.startswith("ai "):
+            logger.info(f"🚫 [Fact Sanitizer] Loại bỏ fact câu hỏi nghi vấn: prop='{prop}', value='{value}'")
+            continue
+
+        PERSONAL_LEAVE_KEYWORDS = {"ốm", "nghỉ ốm", "bận việc riêng", "đi viện", "việc gia đình", "đám cưới"}
+        if prop in ("status", "scope") and any(kw in val_clean for kw in PERSONAL_LEAVE_KEYWORDS):
+            logger.info(f"🚫 [Fact Sanitizer] Loại bỏ fact sinh hoạt cá nhân: prop='{prop}', value='{value}'")
+            continue
 
         # Source context
         source_snippet = str(item.get("source_snippet", item.get("source", ""))).strip()

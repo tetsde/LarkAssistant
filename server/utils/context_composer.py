@@ -101,7 +101,7 @@ class ContextComposer:
 
     DEFAULT_CONFLICT_RULES = """NGUYÊN TẮC GIẢI QUYẾT XUNG ĐỘT & THẨM QUYỀN TRI THỨC (AUTHORITY & CONFLICT RESOLUTION):
 1. THẨM QUYỀN TỐI CAO TỪ CEO / BAN ĐIỀU HÀNH: Các mệnh đề có tiền tố ⭐ [QUYẾT ĐỊNH CHÍNH THỨC TỪ CEO / BAN ĐIỀU HÀNH] hoặc [CURRENT] do Sếp/Owner chốt là chân lý thực tế cao nhất, có hiệu lực tuyệt đối và cao hơn mọi tài liệu văn bản tĩnh.
-2. PHÂN BIỆT RẠCH RÒI ĐỀ XUẤT VÀ QUYẾT ĐỊNH: Các mệnh đề có tiền tố 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT (PROPOSED)] chỉ là ý kiến, nguyện vọng hoặc câu hỏi xin phép của nhân viên, TUYỆT ĐỐI CHƯA PHẢI QUYẾT ĐỊNH. Khi trả lời, bot phải làm rõ: "Đây mới là đề xuất của bạn [X], hiện chưa được Sếp duyệt chính thức".
+2. PHÂN BIỆT RẠCH RÒI ĐỀ XUẤT VÀ QUYẾT ĐỊNH: Các mệnh đề có tiền tố 💡 [ĐỀ XUẤT NHÂN SỰ / CHỜ DUYỆT (PROPOSED)] chỉ là ý kiến, nguyện vọng hoặc câu hỏi xin phép của nhân viên, TUYỆT ĐỐI CHƯA PHẢI QUYẾT ĐỊNH. CHỈ đề cập hoặc phản hồi về đề xuất này nếu câu hỏi của người dùng trực tiếp liên quan hoặc hỏi về đề xuất/nguyện vọng đó. Khi đó giải thích rõ: "Đây mới là đề xuất của bạn [X], hiện chưa được Sếp duyệt chính thức". TUYỆT ĐỐI KHÔNG tự ý chêm đề xuất vào câu trả lời nếu người dùng đang hỏi chuyện khác.
 3. KHÔNG GÁN GHÉP NHẦM LẪN NHÂN SỰ: Mỗi nhân sự có lộ trình và nhiệm vụ riêng. Người hỏi hỏi về ai thì chỉ trả lời đúng về người đó, tuyệt đối không lấy thông tin, vai trò hay lộ trình của nhân sự khác gán cho người hỏi.
 4. NÊU RÕ BIẾN ĐỘNG LỊCH SỬ: Nếu phát hiện mâu thuẫn giữa Tài liệu và Mệnh đề (ví dụ: tài liệu ghi giá trị A nhưng mệnh đề đã cập nhật giá trị B), hãy giải thích rõ: "Theo tài liệu gốc là A, tuy nhiên theo cập nhật thảo luận mới nhất đã được điều chỉnh thành B"."""
 
@@ -443,22 +443,21 @@ class ContextComposer:
         entity_map: Optional[Dict[str, Any]] = None,
     ) -> List[NormalizedClaim]:
         """
-        Cơ chế So khớp Chéo Đa Chiều (Multi-Dimensional Alignment):
-        Lọc và đối chiếu Mệnh đề (Claims) với Chunks tài liệu WeKnora và Câu hỏi người dùng theo 4 chiều:
-          1. Entity Match: Tên thực thể hoặc bí danh (aliases) xuất hiện trong câu hỏi/tài liệu.
-          2. Property Match: Thuộc tính nghiệp vụ (lead, owner, role, deadline, scope, mục tiêu...) xuất hiện trong câu hỏi.
-          3. Value Match: Giá trị của mệnh đề (tên người, số liệu, thông số) xuất hiện trong câu hỏi/tài liệu.
-          4. Source / Speaker Match: Trích dẫn thảo luận gốc (source_snippet) hoặc người phát ngôn (asserted_by) trùng khớp.
-
-        Cơ chế An Toàn Chống Rỗng (Safe Scoped Fallback):
-          Nếu claims đầu vào là tập claims đã được lọc theo ngữ cảnh nhóm chat/dự án (scoped claims),
-          mà câu hỏi mang tính khái quát (không chỉ đích danh thực thể khác xa lạ), hệ thống sẽ giữ lại
-          các claims phù hợp (ưu tiên CURRENT và PROPOSED) thay vì trả về danh sách rỗng [].
+        Contextual Claim Gate (EDL-0008):
+        Lọc và chỉ nạp các Mệnh đề (Claims) thực sự liên quan đến Trọng tâm Câu hỏi của người dùng:
+          1. Cô lập Proposed Claims: Mệnh đề trạng thái PROPOSED chỉ được xem xét khi câu hỏi
+             thực sự có ý định hỏi/nhắc đến đề xuất, nguyện vọng hoặc vai trò nhân sự.
+          2. Property & Value Match: So khớp theo thuộc tính nghiệp vụ hoặc giá trị trong câu hỏi.
+          3. Triệt tiêu Safe Scoped Fallback: Nếu không có claim nào khớp với câu hỏi, trả về [] (rỗng).
+             Tuyệt đối không tự ý nạp toàn bộ claims của nhóm vào prompt.
+          4. Chỉ cho phép nạp Key Facts hiện hành (CURRENT) nếu là câu hỏi tổng quan dự án.
         """
         if not claims:
             return []
-        if not chunks and not query:
-            return claims
+        
+        query_text = (query or "").lower().strip()
+        if not query_text:
+            return []
 
         # Tự động nạp entity_map nếu chưa có
         if not entity_map:
@@ -470,52 +469,59 @@ class ContextComposer:
             except Exception:
                 entity_map = {}
 
-        # 1. Tạo văn bản nền neo đối chiếu: Chunks content + Doc Name + Query
-        anchor_parts = []
-        if chunks:
-            anchor_parts.extend([f"{c.content} {c.doc_name}" for c in chunks])
-        if query:
-            anchor_parts.append(query)
-        anchor_text = " ".join(anchor_parts).lower()
-        query_text = (query or "").lower().strip()
-
-        # Từ điển ánh xạ từ đồng nghĩa cho các thuộc tính nghiệp vụ thường gặp
+        # Từ điển ánh xạ từ đồng nghĩa cho các thuộc tính nghiệp vụ
         PROPERTY_SYNONYMS: Dict[str, Set[str]] = {
             "lead": {"lead", "trưởng", "phụ trách", "chỉ huy", "quản lý"},
             "owner": {"owner", "chủ", "phụ trách", "nắm", "quản lý", "lead", "chịu trách nhiệm"},
             "role": {"role", "vai trò", "vị trí", "chức vụ", "làm gì", "công việc"},
-            "assignee": {"assignee", "người làm", "giao cho", "phụ trách", "ai làm", "ai nhận"},
-            "scope": {"scope", "phạm vi", "kế hoạch", "mục tiêu", "nội dung", "thay đổi", "giảm", "tăng", "bỏ", "thêm"},
-            "deadline": {"deadline", "hạn chót", "thời hạn", "ngày nào", "khi nào", "tiến độ"},
-            "budget": {"ngân sách", "chi phí", "tiền", "budget"},
+            "assignee": {"assignee", "người làm", "giao cho", "phụ trách", "ai làm", "ai nhận", "giao ai"},
+            "scope": {"scope", "phạm vi", "kế hoạch", "mục tiêu", "nội dung", "thay đổi", "giảm", "tăng", "bỏ", "thêm", "tính năng"},
+            "deadline": {"deadline", "hạn chót", "thời hạn", "ngày nào", "khi nào", "tiến độ", "hạn", "bao giờ"},
+            "budget": {"ngân sách", "chi phí", "tiền", "budget", "kinh phí", "giá"},
             "status": {"trạng thái", "tình hình", "tiến độ", "ra sao", "thế nào"},
         }
 
-        # Trích xuất các từ khóa có ý nghĩa từ query (bỏ stopwords ngắn)
+        # Nhận diện ý định hỏi về Đề xuất / Nguyện vọng nhân sự (Proposal Intent)
+        PROPOSAL_INTENT_KEYWORDS = {
+            "đề xuất", "nguyện vọng", "xin làm", "xin nhận", "ý kiến", "chốt chưa",
+            "duyệt chưa", "được không", "ai làm lead", "ai là lead", "ai lead",
+            "vai trò của em", "đề xuất của em", "đề xuất của", "cho em làm", "cho em xin",
+        }
+        is_asking_about_proposal = any(kw in query_text for kw in PROPOSAL_INTENT_KEYWORDS)
+
+        # Nhận diện câu hỏi tổng quan dự án (General Project Overview Query)
+        GENERAL_PROJECT_QUERY_KEYWORDS = {
+            "thông tin dự án", "tổng quan dự án", "dự án này làm gì", "kế hoạch dự án",
+            "mục tiêu dự án", "dự án thế nào", "dự án ra sao", "tình hình dự án", "tiến độ dự án",
+        }
+        is_general_project_query = any(kw in query_text for kw in GENERAL_PROJECT_QUERY_KEYWORDS)
+
+        # Trích xuất các token có nghĩa từ câu hỏi (bỏ stopwords)
         QUERY_STOPWORDS = {
             "là", "gì", "thế", "nào", "cho", "của", "và", "như", "các", "có", "không",
             "nhé", "được", "ạ", "ơi", "với", "trong", "đến", "này", "đó", "hỏi", "về",
             "ai", "sao", "thì", "đã", "đang", "sẽ", "phải", "muốn", "xin", "bạn", "mình",
-            "làm", "dự", "án", "em", "anh", "chị"
+            "làm", "dự", "án", "em", "anh", "chị", "giúp", "báo"
         }
         query_tokens = [w for w in re.findall(r"\w+", query_text) if len(w) >= 2 and w not in QUERY_STOPWORDS]
 
-        # Xây dựng danh sách từ khóa nhận diện của từng Entity (name + aliases)
-        entity_keywords_map: Dict[str, Set[str]] = {}
-        all_known_entity_names: Set[str] = set()
+        # Xây dựng từ khóa Entity riêng biệt (Distinct Entities) có mặt trong câu hỏi
+        GENERIC_ENTITY_WORDS = {
+            "dự án", "project", "hệ thống", "công ty", "nhóm", "team", "lead", "sếp", "ông", "bạn", "mình",
+            "dự án này", "dự án của chúng ta", "ai", "bên mình", "chúng tôi", "người", "nhân sự", "phạm vi"
+        }
+        query_mentioned_entities: Set[str] = set()
         for eid, ent in (entity_map or {}).items():
-            kws: Set[str] = set()
             ename = (ent.get("name") or ent.get("canonical_name") or "").lower().strip()
-            if ename and len(ename) >= 2:
-                kws.add(ename)
-                all_known_entity_names.add(ename)
+            if ename and len(ename) >= 2 and ename not in GENERIC_ENTITY_WORDS and re.search(rf"(?<!\w){re.escape(ename)}(?!\w)", query_text):
+                query_mentioned_entities.add(str(eid))
+                query_mentioned_entities.add(ename)
             for a in ent.get("aliases", []):
                 if a and isinstance(a, str) and len(a.strip()) >= 2:
                     alias_clean = a.lower().strip()
-                    kws.add(alias_clean)
-                    all_known_entity_names.add(alias_clean)
-            if kws:
-                entity_keywords_map[str(eid)] = kws
+                    if alias_clean not in GENERIC_ENTITY_WORDS and re.search(rf"(?<!\w){re.escape(alias_clean)}(?!\w)", query_text):
+                        query_mentioned_entities.add(str(eid))
+                        query_mentioned_entities.add(alias_clean)
 
         matched_claims: List[NormalizedClaim] = []
         matched_ids: Set[str] = set()
@@ -525,81 +531,67 @@ class ContextComposer:
             if cid in matched_ids:
                 continue
 
+            c_status = (claim.status or "current").lower().strip()
             c_name = (claim.entity_name or "").lower().strip()
             c_eid = str(claim.entity_id or "")
             c_prop = (claim.property or "").lower().strip()
             c_val_str = str(claim.value or "").lower().strip()
             c_snippet = (claim.source_snippet or "").lower().strip()
 
+            # --- NGUYÊN TẮC CÔ LẬP PROPOSED CLAIMS ---
+            # Nếu là đề xuất cá nhân (proposed), CẤM đưa vào trừ khi câu hỏi đích danh hỏi về đề xuất/vai trò đó
+            if c_status == "proposed" and not is_asking_about_proposal:
+                continue
+
             is_matched = False
 
-            # --- CHIỀU 1: SO KHỚP THỰC THỂ (Entity Name & Aliases) ---
-            if c_name and c_name != "hệ thống" and len(c_name) >= 2:
-                if re.search(rf"(?<!\w){re.escape(c_name)}(?!\w)", anchor_text):
-                    is_matched = True
-
-            if not is_matched and c_eid in entity_keywords_map:
-                if any(re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", anchor_text) for kw in entity_keywords_map[c_eid]):
-                    is_matched = True
-
-            # --- CHIỀU 2: SO KHỚP THUỘC TÍNH (Property Match) ---
-            if not is_matched and c_prop and len(c_prop) >= 2:
-                if re.search(rf"(?<!\w){re.escape(c_prop)}(?!\w)", anchor_text):
-                    is_matched = True
-                elif query_text:
-                    synonyms = PROPERTY_SYNONYMS.get(c_prop, set())
-                    if any(re.search(rf"(?<!\w){re.escape(syn)}(?!\w)", query_text) for syn in synonyms):
+            # --- CHIỀU 1: SO KHỚP THUỘC TÍNH NGHIỆP VỤ (Property Match) ---
+            if c_prop and len(c_prop) >= 2:
+                synonyms = PROPERTY_SYNONYMS.get(c_prop, {c_prop})
+                if any(re.search(rf"(?<!\w){re.escape(syn)}(?!\w)", query_text) for syn in synonyms):
+                    # Nếu câu hỏi có nhắc Entity khác hẳn Entity của claim này -> không match
+                    if not query_mentioned_entities or (c_eid in query_mentioned_entities or c_name in query_mentioned_entities):
                         is_matched = True
 
-            # --- CHIỀU 3: SO KHỚP GIÁ TRỊ (Value Match) ---
+            # --- CHIỀU 2: SO KHỚP GIÁ TRỊ CỤ THỂ (Value Match) ---
             if not is_matched and c_val_str and len(c_val_str) >= 2:
+                # Giá trị ngắn (tên người, số liệu) xuất hiện trong câu hỏi
                 if len(c_val_str) <= 30:
-                    if re.search(rf"(?<!\w){re.escape(c_val_str)}(?!\w)", anchor_text):
+                    if re.search(rf"(?<!\w){re.escape(c_val_str)}(?!\w)", query_text):
                         is_matched = True
                 else:
-                    if c_val_str in anchor_text:
+                    if c_val_str in query_text:
                         is_matched = True
 
-                if not is_matched and query_tokens:
-                    val_tokens = [w for w in re.findall(r"\w+", c_val_str) if len(w) >= 2 and w not in QUERY_STOPWORDS]
-                    overlap = set(query_tokens).intersection(set(val_tokens))
-                    if overlap:
+            # --- CHIỀU 3: SO KHỚP Ý ĐỊNH ĐỀ XUẤT CỤ THỂ (Khi is_asking_about_proposal == True) ---
+            if not is_matched and is_asking_about_proposal and c_status == "proposed":
+                # Trùng khớp người đề xuất hoặc thuộc tính đề xuất
+                if claim.asserted_by and isinstance(claim.asserted_by, dict):
+                    speaker = (claim.asserted_by.get("user_name") or "").lower().strip()
+                    if speaker and len(speaker) >= 2 and re.search(rf"(?<!\w){re.escape(speaker)}(?!\w)", query_text):
                         is_matched = True
-
-            # --- CHIỀU 4: SO KHỚP NGUỒN TRÍCH DẪN & NGƯỜI PHÁT NGÔN (Snippet & Speaker Match) ---
-            if not is_matched:
                 if c_snippet and query_tokens:
                     snippet_tokens = {w for w in re.findall(r"\w+", c_snippet.lower()) if len(w) >= 2 and w not in QUERY_STOPWORDS}
-                    overlap = set(query_tokens).intersection(snippet_tokens)
-                    if overlap:
-                        is_matched = True
-
-                if not is_matched and claim.asserted_by and isinstance(claim.asserted_by, dict):
-                    speaker = (claim.asserted_by.get("user_name") or "").lower().strip()
-                    if speaker and len(speaker) >= 2 and re.search(rf"(?<!\w){re.escape(speaker)}(?!\w)", anchor_text):
+                    if set(query_tokens).intersection(snippet_tokens):
                         is_matched = True
 
             if is_matched:
                 matched_claims.append(claim)
                 matched_ids.add(cid)
 
-        # --- CHIỀU 5: CƠ CHẾ AN TOÀN CHỐNG RỖNG (Safe Scoped Fallback) ---
-        if not matched_claims and claims:
-            query_mentions_other_entity = False
-            for ent_kw in all_known_entity_names:
-                if len(ent_kw) >= 3 and re.search(rf"(?<!\w){re.escape(ent_kw)}(?!\w)", query_text):
-                    claim_entities = {
-                        (c.entity_name or "").lower().strip() for c in claims
-                    }.union({
-                        kw for c in claims if c.entity_id in entity_keywords_map for kw in entity_keywords_map[c.entity_id]
-                    })
-                    if ent_kw not in claim_entities:
-                        query_mentions_other_entity = True
-                        break
-
-            if not query_mentions_other_entity:
-                logger.debug("Safe Scoped Fallback: Giữ lại toàn bộ scoped claims cho câu hỏi tổng quát.")
-                return claims[: self.max_claims]
+        # --- NGUYÊN TẮC TRIỆT TIÊU FALLBACK MÙ QUÁNG ---
+        # Chỉ khi là câu hỏi tổng quan dự án mới lấy Key Facts (status, scope, deadline) ở trạng thái CURRENT
+        if not matched_claims:
+            if is_general_project_query:
+                overview_claims = [
+                    c for c in claims
+                    if c.status == "current" and (c.property or "").lower() in ("status", "deadline", "scope")
+                ]
+                logger.debug(f"[Contextual Claim Gate] Bổ sung {len(overview_claims)} Key Facts cho câu hỏi tổng quan dự án.")
+                return overview_claims[:3]
+            # Mặc định: Trả về rỗng [] để bảo vệ độ sạch của context!
+            logger.debug("[Contextual Claim Gate] Không có claim liên quan trực tiếp đến query. Trả về [].")
+            return []
 
         return matched_claims[: self.max_claims]
 

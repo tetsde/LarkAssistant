@@ -36,12 +36,68 @@ class TextFilter:
 
         return cleaned
 
-    def clean_output(self, text: str) -> str:
+    @staticmethod
+    def strip_markdown(text: str) -> str:
+        """
+        Loại bỏ cú pháp Markdown (.md) để trả lời dưới dạng Plain Text thuần túy:
+          - Loại bỏ khối code ```code``` và inline code `code`.
+          - Loại bỏ ký tự in đậm (**text**, __text__) và in nghiêng (*text*, _text_).
+          - Loại bỏ tiêu đề Markdown (#, ##, ###) và bullet points (*, -, +).
+          - Chuyển đổi Markdown link [text](url) -> text (url).
+        """
+        if not text or not isinstance(text, str):
+            return ""
+
+        # 1. Khối code ```code``` -> giữ lại nội dung code bên trong
+        cleaned = re.sub(r'```(?:[a-zA-Z0-9_-]+)?\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
+        # 2. Inline code `code` -> code
+        cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+        # 3. In đậm / in nghiêng: ***text***, **text**, *text*, ___text___, __text__, _text_
+        cleaned = re.sub(r'\*\*\*(.*?)\*\*\*', r'\1', cleaned)
+        cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned)
+        cleaned = re.sub(r'(?<!\w)\*(.*?)\*(?!\w)', r'\1', cleaned)
+        cleaned = re.sub(r'___(.*?)___', r'\1', cleaned)
+        cleaned = re.sub(r'__(.*?)__', r'\1', cleaned)
+        cleaned = re.sub(r'(?<!\w)_(.*?)(?![\w/])', r'\1', cleaned)
+        # 4. Tiêu đề Markdown: #, ##, ###
+        cleaned = re.sub(r'^[ \t]*#{1,6}\s*', '', cleaned, flags=re.MULTILINE)
+        # 5. Ký tự gạch đầu dòng danh sách: *, -, +
+        cleaned = re.sub(r'^[ \t]*[\*\-\+]\s+', '', cleaned, flags=re.MULTILINE)
+        # 6. Markdown links [text](url) -> text (url)
+        cleaned = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 (\2)', cleaned)
+        cleaned = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', cleaned)
+        return cleaned
+
+    @staticmethod
+    def strip_greetings(text: str) -> str:
+        """
+        Loại bỏ lời chào khách sáo ở đầu tin nhắn (Chào bạn, Chào em, Chào [Tên], Hi..., Xin chào...).
+        Chỉ giữ lại nội dung thực tế hoặc lời xưng hô tự nhiên trong câu.
+        """
+        if not text or not isinstance(text, str):
+            return ""
+
+        greeting_pattern = (
+            r'^(?:(?:Xin\s+)?Chào(?!\s+mừng)|Hi|Hello)\b'
+            r'(?:\s+(?:em|anh|chị|bạn|mọi người|[A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)?))?'
+            r'(?:[,:\-–!]\s*|\s*\n+\s*|\s+)'
+        )
+        m = re.match(greeting_pattern, text, flags=re.IGNORECASE)
+        if m:
+            rest = text[m.end():].strip()
+            if rest:
+                return rest[0].upper() + rest[1:]
+            return rest
+        return text
+
+    def clean_output(self, text: str, strip_md: bool = True, strip_greet: bool = True) -> str:
         """
         Làm sạch nội dung đầu ra từ LLM:
           - Loại bỏ các thẻ trích dẫn RAG/WeKnora: <kb ... />, </kb>, <doc ... />, v.v.
-          - Dọn dẹp khoảng trắng dư thừa, dấu câu bị hở do việc xóa thẻ.
-          - Giữ nguyên cấu trúc định dạng Markdown (xuống dòng, bảng biểu, danh sách).
+          - Loại bỏ các ngoặc trích dẫn nguồn RAG ([Tài liệu: ...], [Cập nhật hội thoại: ...]).
+          - Loại bỏ định dạng Markdown (.md) nếu strip_md=True (trả lời Plain Text).
+          - Loại bỏ lời chào khách sáo ở đầu tin nhắn nếu strip_greet=True.
+          - Dọn dẹp khoảng trắng dư thừa, chuẩn hóa dấu câu và ngắt dòng.
         """
         if not text or not isinstance(text, str):
             return ""
@@ -75,6 +131,14 @@ class TextFilter:
             cleaned,
             flags=re.IGNORECASE
         )
+
+        # 1.2 Loại bỏ cú pháp Markdown (.md) theo yêu cầu người dùng
+        if strip_md:
+            cleaned = self.strip_markdown(cleaned)
+
+        # 1.3 Loại bỏ lời chào khách sáo mở đầu câu nếu có
+        if strip_greet:
+            cleaned = self.strip_greetings(cleaned)
 
         # 2. Xóa khoảng trắng đứng trước dấu câu do việc xóa thẻ để lại (vd: "abc , xyz" -> "abc, xyz")
         cleaned = re.sub(r'[ \t]+([,.:;?!])', r'\1', cleaned)
