@@ -483,13 +483,22 @@ async def process_chat_pipeline(
         if not scope_record and chat_id:
             scope_record = await scope_service.get_scope_by_chat_id(chat_id)
 
-        project_dataset_id = scope_record.dataset_id if scope_record else None
-        company_wiki_id = (
+        # 1. Kho dự án chuyên biệt của nhóm chat (chứa tài liệu dự án theo phân quyền)
+        project_dataset_id = scope_record.dataset_id if scope_record else (settings.WEKNORA_DATASET_ID or None)
+
+        # 2. Kho Chính Sách & Quy Định Toàn Công Ty (Sổ tay nhân viên, Code of Conduct, Policies...)
+        policy_dataset_id = settings.WEKNORA_POLICY_DATASET_ID or None
+
+        # 3. Kho Wiki / Digest Hội thoại (nếu có cấu hình)
+        wiki_dataset_id = (
             (scope_record.wiki_dataset_id if (scope_record and scope_record.wiki_dataset_id) else None)
-            or settings.WEKNORA_POLICY_DATASET_ID
             or settings.WEKNORA_WIKI_DATASET_ID
             or None
         )
+
+        # Tập hợp các kho tri thức quy chế / chính sách toàn công ty (Policy KB luôn là cốt lõi)
+        global_policy_kbs = [kb for kb in [policy_dataset_id, wiki_dataset_id] if kb]
+        global_policy_kbs = list(dict.fromkeys(global_policy_kbs))
 
         target_knowledge_ids = (
             scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
@@ -502,13 +511,13 @@ async def process_chat_pipeline(
 
         # ── [RAG TWO-TIER PIGGYBACK ROUTING] ──
         # Pessimistic Threshold: Chỉ khi confidence >= 0.85 mới định tuyến đơn kho, còn lại fallback HYBRID song song
-        if jev_domain == "COMPANY_POLICY" and company_wiki_id:
+        if jev_domain == "COMPANY_POLICY" and global_policy_kbs:
             logger.info(
-                f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Company Wiki ({company_wiki_id}) | Confidence: {jev_domain_conf:.2f}"
+                f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Policy KBs ({global_policy_kbs}) | Confidence: {jev_domain_conf:.2f}"
             )
             chunks = await weknora_service.retrieve(
                 query=clean_query,
-                knowledge_base_ids=[company_wiki_id],
+                knowledge_base_ids=global_policy_kbs,
                 knowledge_ids=None,
                 match_count=retrieve_count,
             )
@@ -523,10 +532,10 @@ async def process_chat_pipeline(
                 match_count=retrieve_count,
             )
         else:
-            # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả 2 kho tri thức
-            if project_dataset_id and company_wiki_id and project_dataset_id != company_wiki_id:
+            # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả kho dự án và kho chính sách
+            if project_dataset_id and global_policy_kbs:
                 logger.info(
-                    f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Wiki: {company_wiki_id})"
+                    f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Policy KBs: {global_policy_kbs})"
                 )
                 tasks = [
                     weknora_service.retrieve(
@@ -537,19 +546,19 @@ async def process_chat_pipeline(
                     ),
                     weknora_service.retrieve(
                         query=clean_query,
-                        knowledge_base_ids=[company_wiki_id],
+                        knowledge_base_ids=global_policy_kbs,
                         knowledge_ids=None,
                         match_count=retrieve_count,
                     ),
                 ]
-                res_proj, res_wiki = await asyncio.gather(*tasks, return_exceptions=True)
+                res_proj, res_policy = await asyncio.gather(*tasks, return_exceptions=True)
                 chunks_proj = res_proj if isinstance(res_proj, list) else []
-                chunks_wiki = res_wiki if isinstance(res_wiki, list) else []
+                chunks_policy = res_policy if isinstance(res_policy, list) else []
 
                 # Hợp nhất và lọc trùng chunks theo id/content, sắp xếp theo score cao nhất
                 merged_chunks = []
                 seen_chunk_ids = set()
-                for c in sorted(chunks_proj + chunks_wiki, key=lambda x: x.get("score") or 0.0, reverse=True):
+                for c in sorted(chunks_proj + chunks_policy, key=lambda x: x.get("score") or 0.0, reverse=True):
                     cid = c.get("id") or c.get("chunk_id") or c.get("content", "")[:50]
                     if cid not in seen_chunk_ids:
                         seen_chunk_ids.add(cid)
@@ -562,10 +571,10 @@ async def process_chat_pipeline(
                     knowledge_ids=target_knowledge_ids,
                     match_count=retrieve_count,
                 )
-            elif company_wiki_id:
+            elif global_policy_kbs:
                 chunks = await weknora_service.retrieve(
                     query=clean_query,
-                    knowledge_base_ids=[company_wiki_id],
+                    knowledge_base_ids=global_policy_kbs,
                     knowledge_ids=None,
                     match_count=retrieve_count,
                 )
@@ -580,23 +589,39 @@ async def process_chat_pipeline(
             or c.get("document_name")
             or "Tài liệu hệ thống"
         )
+        kb_id = str(c.get("knowledge_base_id") or "")
+        is_policy_doc = (
+            kb_id == str(settings.WEKNORA_POLICY_DATASET_ID)
+            or any(
+                kw in doc_name.lower()
+                for kw in ["so_tay", "chinh_sach", "quy_che", "quy_tac", "employee_handbook", "code_of_conduct", "policy", "handbook"]
+            )
+        )
         normalized_chunks.append({
             "content": c.get("content", ""),
             "document_name": doc_name,
             "chunk_id": c.get("id") or c.get("chunk_id"),
             "score": c.get("score"),
+            "is_policy_doc": is_policy_doc,
+            "knowledge_base_id": kb_id,
         })
 
     # ── [CHỐT CHẶN BẢO MẬT: UNIFIED RULE ENGINE] ──
-    # Lọc WeKnora Chunks và MongoDB Claims theo nhãn cấm (forbidden_labels) từ Lark Base
-    # Thực thi trước JEV để loại bỏ ngay dữ liệu cấm (0ms RAM), bảo vệ quyền riêng tư và tiết kiệm token
+    # Với các chunks dự án: Lọc nghiêm ngặt theo forbidden_labels của nhóm.
+    # Với các chunks chính sách toàn công ty (Policy KB): Miễn trừ nhãn cấm dự án (như ngân sách/chi phí dự án)
+    # để bảo đảm nhân viên luôn tra cứu được quyền lợi nghỉ phép, quy tắc ứng xử, chế độ công ty.
     forbidden_labels = scope_record.forbidden_labels if scope_record else []
-    clean_chunks, clean_claims = rule_engine.sanitize(
-        chunks=normalized_chunks,
+    proj_chunks_to_filter = [c for c in normalized_chunks if not c.get("is_policy_doc")]
+    policy_chunks = [c for c in normalized_chunks if c.get("is_policy_doc")]
+
+    clean_proj_chunks, clean_claims = rule_engine.sanitize(
+        chunks=proj_chunks_to_filter,
         claims=active_claims,
         forbidden_labels=forbidden_labels,
         query=clean_query,
     )
+    # Hợp nhất: policy chunks hợp lệ + project chunks đã được làm sạch
+    clean_chunks = [c for c in policy_chunks if len(str(c.get("content", "")).strip()) >= 3] + clean_proj_chunks
 
     # ── [RAG GATE RELEVANCE FILTERING] ──
     # Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất) trên các chunks đã được khử trùng

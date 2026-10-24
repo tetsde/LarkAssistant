@@ -102,8 +102,19 @@ class LarkBaseService:
             or ""
         ).strip().strip("\"'")
 
+        stored_user_token = ""
+        try:
+            from database.db import get_sync_db
+            db = get_sync_db()
+            doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
+            if doc and doc.get("access_token"):
+                stored_user_token = doc["access_token"]
+        except Exception:
+            pass
+
         self.user_access_token = (
             user_access_token
+            or stored_user_token
             or getattr(settings, "LARK_USER_ACCESS_TOKEN", "")
             or os.getenv("access_token_user")
             or os.getenv("LARK_USER_ACCESS_TOKEN")

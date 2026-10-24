@@ -199,7 +199,7 @@ def ping_user_access_token(
             is_valid=False,
             is_expired=True,
             status="missing",
-            message="Chưa có User Access Token. Vui lòng truy cập http://localhost:8000/auth/lark/login để cấp quyền.",
+            message="Chưa cấu hình hoặc chưa có User Access Token. Vui lòng truy cập http://localhost:8000/auth/lark/login để cấp quyền.",
             code=None,
         )
 
