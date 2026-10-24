@@ -42,20 +42,23 @@
   - Cấu hình chu kỳ đồng bộ: Đặt `POLICY_SYNC_INTERVAL_SECONDS = 3600` (1 tiếng) trong cả `.env` và `config.py` để tối ưu tài nguyên, kèm hỗ trợ kích hoạt tức thì qua API `POST /policy/sync?force=true`.
 
 ## Verification
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_output_sanitizer.py`: 6/6 tests passed (0.003s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_policy_sync.py`: 6/6 tests passed (0.053s) (bao gồm cả test case `test_sync_policies_force_no_diff`).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_contextual_claim_gate.py`: 8/8 tests passed (0.017s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_policy_qa.py`: 1/1 test passed (0.514s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_token_service.py`: 9/9 tests passed (0.026s).
-- Simulation Test Thực tế:
-  * Query 1: `@Hoài Nam có cần báo HR không anh?` -> Trả lời plain text thuần túy, không markdown, không lời chào khách sáo, vào thẳng trọng tâm và xưng hô tự nhiên.
-  * Query 2: `anh ơi cho em hỏi chính sách nghỉ phép của công ty mình thế nào?` -> Trả lời dạng plain text đánh số 1. 2., không in đậm, không chào khách sáo, xưng anh - em tự nhiên.
-  * Sync WeKnora Trigger: Đã test kích hoạt thành công tác vụ sync incremental sang WeKnora với `status: running` và `last_sync_at` được cập nhật chính xác.
+- Full Test Suite Execution:
+  * `PYTHONPATH=server server/.venv/bin/python -m unittest discover tests/01`: 110 tests (109 passed, 1 failed do chuỗi assertion tiêu đề cũ trong `test_master_digest.py`).
+- Rà soát Nợ Kỹ Thuật & Code Smells:
+  * Đã hoàn thành quét mã nguồn toàn diện và lập tài liệu: `docs/project-memory/TECHNICAL_DEBT.md` (Điểm đánh giá hệ thống: 6.8/10).
+  * Phát hiện 0 database index trên 7 collections MongoDB (nguy cơ COLLSCAN).
+  * Phát hiện 2 cache tăng vô hạn gây Memory Leak (`_sent_message_ids`, `_user_name_cache`).
+  * Phát hiện 11+ vị trí khởi tạo `httpx.AsyncClient()` rải rác không tái sử dụng TCP/TLS pool.
+  * Phát hiện 24 vị trí `except Exception: pass` nuốt lỗi im lặng.
 
 ## Next concrete steps
-1. Hệ thống đã hoàn tất và xác minh 100% toàn bộ các hạng mục: Token Service, Policy RAG Multi-dataset, Contextual Claim Gate, Plain Text Persona & Output Sanitizer, Policy Sync Engine.
-2. Chu kỳ sync nền đặt ổn định ở mức 3600s (1 tiếng); khi cần sync tức thì có thể gọi `POST /policy/sync?force=true`.
-3. Sẵn sàng tiếp nhận các yêu cầu phát triển hoặc kiểm thử tiếp theo.
+1. **Ưu tiên 1 (Khẩn cấp):** Xử lý nợ Database & Memory Leak (`docs/project-memory/TECHNICAL_DEBT.md` - Phase 1):
+   - Tạo hàm `ensure_database_indexes()` trong `database/db.py` đánh index cho cả 7 collections MongoDB lúc startup.
+   - Giới hạn kích thước và thêm TTL cho `_sent_message_ids` trong `lark_messenger.py` và `_user_name_cache` trong `lark_client.py`.
+2. **Ưu tiên 2 (Hiệu năng):** Thiết lập Shared Persistent `httpx.AsyncClient` cho WeKnora và JEV trong FastAPI lifespan.
+3. **Ưu tiên 3 (Clean Code):** Hợp nhất Token Management (`LarkTokenManager`), di dời từ điển tĩnh sang `core/lexicons.py`.
+4. **Ưu tiên 4 (Test Tooling):** Bổ sung `pytest.ini` và sửa chuỗi assertion trong `test_master_digest.py` để đạt 110/110 tests pass.
+
 
 
 

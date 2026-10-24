@@ -360,7 +360,7 @@ class ContextComposer:
     # 2. ĐÓNG GÓI NỘI DUNG (FORMATTING & RENDERING)
     # -------------------------------------------------------------------------
 
-    def format_retriever_section(self, chunks: List[RetrievedChunk], max_chunk_chars: int = 4000) -> str:
+    def format_retriever_section(self, chunks: List[RetrievedChunk], max_chunk_chars: int = 16000) -> str:
         """Định dạng phân vùng tài liệu từ WeKnora."""
         if not chunks:
             return "(Không có dữ liệu tài liệu trích xuất từ WeKnora)"
