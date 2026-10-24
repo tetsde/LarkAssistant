@@ -7,12 +7,15 @@ if SERVER_ROOT not in sys.path:
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from routers import health, chat, lark, digest, scope, policy
+from routers import health, chat, lark, digest, scope, policy, auth
 from services.bot_service import start_bot_service, stop_bot_service
+from services.token_service import token_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Nạp Token User còn hiệu lực từ MongoDB vào RAM
+    await token_service.init_token_on_startup()
     # Khởi động Lark Bot Service (WebSocket Client, Event Handlers, Daily Digest Scheduler)
     start_bot_service()
     yield
@@ -34,6 +37,7 @@ app.include_router(lark.router)
 app.include_router(digest.router)
 app.include_router(scope.router)
 app.include_router(policy.router)
+app.include_router(auth.router)
 
 
 

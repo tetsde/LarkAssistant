@@ -513,6 +513,8 @@ def start_bot_service() -> None:
                 if getattr(settings, "POLICY_SYNC_ENABLED", True):
                     from services.policy_sync_service import start_policy_sync_loop
                     loop.create_task(start_policy_sync_loop())
+                from services.token_service import start_token_refresh_loop
+                loop.create_task(start_token_refresh_loop())
             except RuntimeError:
                 pass
         except Exception as e:

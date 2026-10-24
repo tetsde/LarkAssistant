@@ -98,6 +98,12 @@ def get_draft_logs_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_DRAFT_LOGS_COLLECTION]
 
 
+def get_auth_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trạng thái Token OAuth2 & Refresh Token của Lark."""
+    db = get_async_db()
+    return db[settings.MONGO_AUTH_COLLECTION]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client

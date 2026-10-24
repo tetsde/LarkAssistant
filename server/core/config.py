@@ -34,6 +34,8 @@ class Settings:
     MONGO_CHAT_SCOPE_COLLECTION: str = os.getenv("mongo_chat_scope_collection", "chat_scopes")
     MONGO_DRAFT_LOGS_COLLECTION: str = os.getenv("mongo_draft_logs_collection", "draft_logs")
     MONGO_MASTER_DIGEST_COLLECTION: str = os.getenv("mongo_master_digest_collection", "master_daily_digests")
+    MONGO_AUTH_COLLECTION: str = os.getenv("mongo_auth_collection", "lark_auth")
+    LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "http://localhost:8000/auth/lark/callback")
 
     # Lark Settings
     LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")
