@@ -14,6 +14,9 @@ class Settings:
     WEKNORA_DATASET_ID: str = os.getenv("dataset_id", "")
     WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
     WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "d715d7ee-1853-4bd9-b22d-779b1ec1e28f")
+    WEKNORA_POLICY_DATASOURCE_ID: str = os.getenv("policy_datasource_id") or os.getenv("WEKNORA_POLICY_DATASOURCE_ID", "c853ff6e-68c7-4767-998f-df8eb7820b1d")
+    POLICY_SYNC_ENABLED: bool = (os.getenv("policy_sync_enabled") or os.getenv("POLICY_SYNC_ENABLED", "true")).lower() in ("true", "1", "yes")
+    POLICY_SYNC_INTERVAL_SECONDS: int = int(os.getenv("policy_sync_interval_seconds") or os.getenv("POLICY_SYNC_INTERVAL_SECONDS", "3600"))
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api", "")
 
     # Backward compatibility alias

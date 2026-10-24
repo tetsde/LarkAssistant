@@ -438,14 +438,26 @@ class ScopeService:
         """
         Lắng nghe sự kiện Bitable thay đổi (drive.file.bitable_record_changed_v1)
         tự động cập nhật MongoDB & tải file PDF mới vào WeKnora theo thời gian thực.
+        Hỗ trợ phân luồng:
+          - Bảng Quản lý nhóm (tblK5UANXj0FxHuQ) -> Cập nhật Chat Scopes
+          - Bảng Chính sách (tblZphzEZPLQAy24) -> Kích hoạt Policy Sync
         """
         try:
             event = getattr(event_data, "event", None)
             if not event:
                 return
+
+            table_id = getattr(event, "table_id", "")
             action_list = getattr(event, "action_list", []) or []
             record_ids = [getattr(a, "record_id", "") for a in action_list if getattr(a, "record_id", "")]
             if not record_ids:
+                return
+
+            # Kiểm tra nếu sự kiện xuất phát từ Bảng Chính Sách Công Ty
+            if table_id and table_id == settings.LARK_BASE_POLICY_TABLE_ID:
+                logger.info(f"🏛️ [Bitable Realtime Event] Phát hiện thay đổi trong Bảng Chính Sách ({table_id}) -> Kích hoạt Policy Sync!")
+                from services.policy_sync_service import policy_sync_service
+                await policy_sync_service.sync_policies()
                 return
 
             logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi, tiến hành đồng bộ: {record_ids}")

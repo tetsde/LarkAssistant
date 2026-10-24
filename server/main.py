@@ -7,7 +7,7 @@ if SERVER_ROOT not in sys.path:
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from routers import health, chat, lark, digest, scope
+from routers import health, chat, lark, digest, scope, policy
 from services.bot_service import start_bot_service, stop_bot_service
 
 
@@ -33,6 +33,7 @@ app.include_router(chat.router)
 app.include_router(lark.router)
 app.include_router(digest.router)
 app.include_router(scope.router)
+app.include_router(policy.router)
 
 
 

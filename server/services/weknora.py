@@ -382,7 +382,108 @@ class WeKnoraService:
             print(f"Lỗi khi gọi WeKnora retrieve_sync: {e}")
             return []
 
+    # =========================================================================
+    # DATA SOURCE MANAGEMENT (FEISHU / LARK DRIVE & DOCS)
+    # =========================================================================
+
+    async def get_datasource_info(self, datasource_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Lấy thông tin chi tiết của một Data Source trong WeKnora.
+        Endpoint: GET /datasource/{datasource_id}
+        """
+        if not self.api_key or not self.base_url or not datasource_id:
+            return None
+
+        clean_id = datasource_id.strip()
+        url = f"{self.base_url}/datasource/{clean_id}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=self.headers)
+                if response.status_code == 200:
+                    return response.json()
+                print(f"[WeKnora] get_datasource_info HTTP {response.status_code}: {response.text}")
+                return None
+        except Exception as e:
+            print(f"[WeKnora] Lỗi khi gọi get_datasource_info({clean_id}): {e}")
+            return None
+
+    async def update_datasource_resources(
+        self, datasource_id: str, resource_ids: List[str]
+    ) -> bool:
+        """
+        Cập nhật danh sách resource_ids (folder/doc tokens) cho Data Source.
+        Thực hiện GET để bảo toàn các cấu hình khác (sync_schedule, sync_mode...),
+        cập nhật config.resource_ids rồi gọi PUT /datasource/{datasource_id}.
+        """
+        if not self.api_key or not self.base_url or not datasource_id:
+            return False
+
+        clean_id = datasource_id.strip()
+        current_info = await self.get_datasource_info(clean_id)
+        if not current_info or not isinstance(current_info, dict):
+            print(f"[WeKnora] Không thể lấy thông tin hiện tại của datasource {clean_id} để update.")
+            return False
+
+        # Cập nhật danh sách resource_ids
+        config = current_info.get("config") or {}
+        config["resource_ids"] = list(dict.fromkeys(resource_ids))  # Giữ thứ tự và loại trùng lặp
+        current_info["config"] = config
+
+        url = f"{self.base_url}/datasource/{clean_id}"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.put(url, headers=self.headers, json=current_info)
+                if response.status_code == 200:
+                    return True
+                print(f"[WeKnora] update_datasource_resources HTTP {response.status_code}: {response.text}")
+                return False
+        except Exception as e:
+            print(f"[WeKnora] Lỗi khi update_datasource_resources({clean_id}): {e}")
+            return False
+
+    async def trigger_datasource_sync(self, datasource_id: str) -> Dict[str, Any]:
+        """
+        Kích hoạt tác vụ đồng bộ ngay lập tức cho Data Source.
+        Endpoint: POST /datasource/{datasource_id}/sync
+        """
+        if not self.api_key or not self.base_url or not datasource_id:
+            return {"success": False, "error": "Missing config or datasource_id"}
+
+        clean_id = datasource_id.strip()
+        url = f"{self.base_url}/datasource/{clean_id}/sync"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=self.headers)
+                if response.status_code in (200, 201, 202):
+                    return {"success": True, "data": response.json()}
+                return {
+                    "success": False,
+                    "status_code": response.status_code,
+                    "error": response.text,
+                }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_datasource_sync_status(self, datasource_id: str) -> Dict[str, Any]:
+        """
+        Kiểm tra trạng thái đồng bộ và kết quả lần sync gần nhất của Data Source.
+        """
+        info = await self.get_datasource_info(datasource_id)
+        if not info:
+            return {"status": "unknown", "error": "Datasource not found"}
+
+        return {
+            "id": info.get("id"),
+            "name": info.get("name"),
+            "status": info.get("status"),
+            "last_sync_result": info.get("last_sync_result"),
+            "error_message": info.get("error_message"),
+            "resource_ids": (info.get("config") or {}).get("resource_ids", []),
+            "updated_at": info.get("updated_at"),
+        }
+
 
 weknora_service = WeKnoraService()
+
 
 

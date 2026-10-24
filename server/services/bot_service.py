@@ -510,6 +510,9 @@ def start_bot_service() -> None:
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(scope_service.sync_all_groups_from_base())
+                if getattr(settings, "POLICY_SYNC_ENABLED", True):
+                    from services.policy_sync_service import start_policy_sync_loop
+                    loop.create_task(start_policy_sync_loop())
             except RuntimeError:
                 pass
         except Exception as e:
