@@ -169,7 +169,27 @@ def ping_user_access_token(
     if token is not None:
         target_token = token.strip()
     else:
-        target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
+        # 1. Ưu tiên lấy token đã nạp vào lark_service
+        try:
+            from services.lark import lark_service
+            target_token = (getattr(lark_service, "user_access_token", "") or "").strip()
+        except Exception:
+            target_token = ""
+
+        # 2. Nếu rỗng, thử đọc từ MongoDB lark_auth
+        if not target_token:
+            try:
+                from database.db import get_sync_db
+                db = get_sync_db()
+                doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
+                if doc and doc.get("access_token"):
+                    target_token = doc["access_token"].strip()
+            except Exception:
+                pass
+
+        # 3. Fallback cuối cùng về file .env
+        if not target_token:
+            target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
 
     target_domain = (domain or settings.LARK_DOMAIN or "https://open.larksuite.com").rstrip("/")
 
@@ -179,7 +199,7 @@ def ping_user_access_token(
             is_valid=False,
             is_expired=True,
             status="missing",
-            message="Chưa cấu hình `access_token_user` trong .env!",
+            message="Chưa có User Access Token. Vui lòng truy cập http://localhost:8000/auth/lark/login để cấp quyền.",
             code=None,
         )
 
@@ -226,6 +246,21 @@ def ping_user_access_token(
             user_data = data.get("data", {})
             user_name = user_data.get("name", "Người dùng")
             open_id = user_data.get("open_id") or user_data.get("user_id")
+
+            # Nếu token dạng Opaque (u-...), tra cứu thời hạn lưu trong MongoDB
+            if remaining_sec is None:
+                try:
+                    from database.db import get_sync_db
+                    db = get_sync_db()
+                    doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
+                    if doc and doc.get("access_token") == target_token:
+                        exp_at = doc.get("expires_at", 0)
+                        now_ts = time.time()
+                        if exp_at > now_ts:
+                            remaining_sec = int(exp_at - now_ts)
+                            exp_dt = datetime.fromtimestamp(exp_at, tz=VIETNAM_TZ)
+                except Exception:
+                    pass
 
             time_info = ""
             if remaining_sec is not None:

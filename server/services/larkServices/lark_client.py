@@ -53,14 +53,27 @@ class LarkClientMixin:
         if config is not None:
             self.config = config
         else:
+            # Ưu tiên lấy token sống từ MongoDB lark_auth nếu có
+            stored_user_token = ""
+            stored_open_id = ""
+            try:
+                from database.db import get_sync_db
+                db = get_sync_db()
+                doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
+                if doc and doc.get("access_token"):
+                    stored_user_token = doc["access_token"]
+                    stored_open_id = doc.get("open_id", "")
+            except Exception:
+                pass
+
             self.config = LarkConfig(
                 app_id=app_id or settings.LARK_APP_ID or "",
                 app_secret=app_secret or settings.LARK_APP_SECRET or "",
                 verification_token=verification_token or settings.LARK_VERIFICATION_TOKEN or "",
                 encrypt_key=encrypt_key or settings.LARK_ENCRYPT_KEY or "",
                 domain=domain or settings.LARK_DOMAIN or lark.LARK_DOMAIN,
-                user_access_token=user_access_token or settings.LARK_USER_ACCESS_TOKEN or "",
-                user_open_id=user_open_id or settings.LARK_USER_OPEN_ID or "",
+                user_access_token=user_access_token or stored_user_token or settings.LARK_USER_ACCESS_TOKEN or "",
+                user_open_id=user_open_id or stored_open_id or settings.LARK_USER_OPEN_ID or "",
             )
 
         self.app_id = self.config.app_id

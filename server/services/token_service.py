@@ -425,22 +425,24 @@ class LarkTokenService:
             logger.warning(f"Lỗi khi đọc token từ MongoDB lúc startup: {e}")
 
     def _sync_to_lark_client(self, access_token: str, open_id: str, name: str) -> None:
-        """Đồng bộ token trực tiếp vào singleton lark_client và lark_base_service nếu có."""
+        """Đồng bộ token trực tiếp vào singleton lark_service và lark_base_service nếu có."""
         try:
-            from services.bot_service import lark_client, lark_base_service
-            if lark_client:
-                lark_client.user_access_token = access_token
-                lark_client._last_token_check = None
+            from services.lark import lark_service
+            from services.larkbase import lark_base_service
+            if lark_service:
+                lark_service.user_access_token = access_token
+                lark_service._last_token_check = None
                 if open_id:
-                    lark_client.known_user_open_id = open_id
-                if not lark_client._current_user_profile:
-                    lark_client._current_user_profile = {}
-                lark_client._current_user_profile["name"] = name
-                lark_client._current_user_profile["open_id"] = open_id
+                    lark_service.known_user_open_id = open_id
+                if not lark_service._current_user_profile:
+                    lark_service._current_user_profile = {}
+                lark_service._current_user_profile["name"] = name
+                lark_service._current_user_profile["open_id"] = open_id
             if lark_base_service:
                 lark_base_service.user_access_token = access_token
+            logger.info(f"🔄 Đã đồng bộ User Token vào lark_service & lark_base_service (User: {name})")
         except Exception as ex:
-            logger.debug(f"Không thể đồng bộ vào lark_client singleton: {ex}")
+            logger.warning(f"Không thể đồng bộ vào lark_service singleton: {ex}")
 
     async def _fetch_user_profile(self, access_token: str) -> Dict[str, Any]:
         """Gọi endpoint user_info của Lark để lấy thông tin người dùng."""

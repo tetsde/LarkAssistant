@@ -442,6 +442,25 @@ def start_bot_service() -> None:
     print(f"App ID : {lark_service.app_id}")
     print(f"Domain : {lark_service.domain}")
 
+    # 0. Đồng bộ User Token mới nhất từ MongoDB vào lark_service (nếu có)
+    try:
+        from database.db import get_sync_db
+        db = get_sync_db()
+        doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
+        if doc and doc.get("access_token"):
+            lark_service.user_access_token = doc["access_token"]
+            lark_service._last_token_check = None
+            if doc.get("open_id"):
+                lark_service.known_user_open_id = doc["open_id"]
+            if not lark_service._current_user_profile:
+                lark_service._current_user_profile = {}
+            lark_service._current_user_profile["name"] = doc.get("user_name", "User")
+            lark_service._current_user_profile["open_id"] = doc.get("open_id", "")
+            if lark_base_service:
+                lark_base_service.user_access_token = doc["access_token"]
+    except Exception as e:
+        logger.debug(f"Không thể nạp token sync từ MongoDB: {e}")
+
     # 1. Đăng ký Message Handler vào Lark Service
     lark_service.register_handler(handle_lark_incoming_message)
 
@@ -453,7 +472,7 @@ def start_bot_service() -> None:
 
     # 3. Kiểm tra tính hợp lệ và Ping User Access Token (Chống Crash)
     from utils.lark_token import check_and_warn_token
-    token_res = check_and_warn_token()
+    token_res = check_and_warn_token(token=lark_service.user_access_token)
 
     # 4. Thông tin người dùng
     user_info = lark_service.get_current_user()
