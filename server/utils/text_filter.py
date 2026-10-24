@@ -77,6 +77,9 @@ class TextFilter:
         if not text or not isinstance(text, str):
             return ""
 
+        # Bỏ khoảng trắng và dòng trống ở đầu văn bản trước khi quét lời chào
+        text = text.lstrip()
+
         greeting_pattern = (
             r'^(?:(?:Xin\s+)?Chào(?!\s+mừng)|Hi|Hello)\b'
             r'(?:\s+(?:em|anh|chị|bạn|mọi người|[A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)?))?'

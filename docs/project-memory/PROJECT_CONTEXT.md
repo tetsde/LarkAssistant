@@ -79,15 +79,18 @@ Kiến trúc vận hành 4 lớp tuần tự:
 Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engineering Decision Log` (ID: `402590f7-e19e-80cd-8873-f3b12a9a0a72`).
 
 ## 8. Known issues and unknowns
+- **Resolved issues:**
+  1. `access_token_user`: Đã giải quyết triệt để qua `EDL-0006` (hệ thống tự động xoay vòng refresh token và lưu trữ bền vững MongoDB).
+  2. `Contextual Claim Gate`: Đã giải quyết triệt để qua `EDL-0008` (cô lập đề xuất proposed và phân tách domain).
+  3. `Policy Sync Diff Guard`: Đã khắc phục việc WeKnora không kéo tệp từ Lark Drive định kỳ khi token folder giữ nguyên.
 - **Verified issues:**
   1. `tests/01/test_master_digest.py::test_master_digest_dm_text_format`: Bị fail do chuỗi tiêu đề `BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM` mong đợi khác với định dạng thực tế sinh ra `📊 BÁO CÁO NGÀY CẤP ĐIỀU HÀNH (DAILY MASTER DIGEST)`.
-  2. `access_token_user`: Có cảnh báo hết hạn JWT token trong log test (cần làm mới từ Lark Developer Console khi cần thao tác với tư cách user).
 - **Open questions:**
   - Kế hoạch triển khai Docker/Container hóa cho môi trường Production.
 - **Assumptions requiring confirmation:**
   - Giả định MongoDB cục bộ hoặc cloud URI đã sẵn sàng khi chạy bot service thực tế.
 
 ## 9. Last verified
-- **Date:** 2026-10-23
-- **What was checked:** Cấu hình `server/pyproject.toml`, `server/core/config.py`, kiến trúc 4 lớp trong `server/`, chạy kiểm thử 73 test cases trong `server/tests/01/`.
-- **By / source:** Antigravity Agent (phiên test skill `project-memory`).
+- **Date:** 2026-10-24
+- **What was checked:** Cấu hình `server/core/config.py`, `.env`, kiểm thử Contextual Claim Gate (8/8 pass), Output Sanitizer (6/6 pass), Policy Sync (6/6 pass), Token Service (9/9 pass).
+- **By / source:** Antigravity Agent (phiên bàn giao kỹ thuật).

@@ -26,19 +26,36 @@
   - `server/services/chat_service.py`: Thêm `DOMAIN SEPARATION GATE` chặn hoàn toàn Project Claims khi hỏi `COMPANY_POLICY`; điều chỉnh Persona Prompt không tự chêm đề xuất ngoài lề.
   - `server/utils/llm_extractor.py`: Bổ sung Fact Sanitizer và luật cấm bóc tách câu hỏi nghi vấn ("báo ai ạ") và việc riêng ("mai em ốm") thành fact dự án.
   - MongoDB Cleanup: Dọn dẹp 2 claims rác (`fact_371a9d83`, `fact_700d61be`).
+- Plain Text & Natural Reply Persona (Phản hồi không Markdown, không chào khách sáo):
+  - `server/services/chat_service.py`:
+    * Cập nhật `GROUNDED_QA_USER_PERSONA_PROMPT` và `GROUNDED_QA_SYSTEM_PROMPT`: Cấm mở đầu bằng lời chào khách sáo ("Chào [Tên],", "Hi...", "Xin chào,"). Cấm định dạng Markdown (.md) như in đậm (`**`), in nghiêng (`*`), bullet lists (`*`, `-`, `+`), headers (`#`).
+    * Bắt buộc trả lời plain text tự nhiên, trực tiếp xưng hô "anh" - "em", reply đúng người hỏi ({user_name}).
+    * Đảm bảo `target_user` tự động fallback lấy từ `sender` nếu `user_name` chưa được truyền trực tiếp.
+  - `server/utils/text_filter.py`:
+    * Thêm hàm `strip_markdown`: Tự động loại bỏ code blocks, inline code, bold, italic, headers, bullet list marks và markdown link tags.
+    * Thêm hàm `strip_greetings`: Tự động cắt bỏ lời chào mở đầu khách sáo (nếu LLM vô tình sinh ra), giữ nguyên cách xưng hô tự nhiên trong thân bài ("Phước kiểm tra giúp anh...").
+    * Tích hợp vào `clean_output` đảm bảo 2 lớp bảo vệ (Layer 1: Prompt instruction, Layer 2: Sanitizer filter).
+- Policy Sync Engine & Lark Drive Incremental Trigger Fix:
+  - `server/services/policy_sync_service.py`:
+    * Khắc phục cơ chế Diff Check: Khi token thư mục không đổi (`has_diff=False`), hệ thống bỏ qua bước update cấu hình DataSource nhưng **vẫn kích hoạt `trigger_datasource_sync(force=True)`** để WeKnora tự động quét các file mới/sửa đổi từ Lark Drive vào Knowledge Base.
+    * Cập nhật background worker `start_policy_sync_loop` gọi sync định kỳ với `force=True`.
+  - Cấu hình chu kỳ đồng bộ: Đặt `POLICY_SYNC_INTERVAL_SECONDS = 3600` (1 tiếng) trong cả `.env` và `config.py` để tối ưu tài nguyên, kèm hỗ trợ kích hoạt tức thì qua API `POST /policy/sync?force=true`.
 
 ## Verification
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_contextual_claim_gate.py`: 8/8 tests passed (0.007s).
+- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_output_sanitizer.py`: 6/6 tests passed (0.003s).
+- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_policy_sync.py`: 6/6 tests passed (0.053s) (bao gồm cả test case `test_sync_policies_force_no_diff`).
+- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_contextual_claim_gate.py`: 8/8 tests passed (0.017s).
 - `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_policy_qa.py`: 1/1 test passed (0.514s).
 - `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_token_service.py`: 9/9 tests passed (0.026s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_jev_classification.py`: 9/9 tests passed (0.392s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_policy_sync.py`: 5/5 tests passed (0.048s).
-- `PYTHONPATH=server server/.venv/bin/python server/tests/01/test_token_ping.py`: 4/4 tests passed (0.388s).
-- Simulation Test Thực tế: Chạy query `@Hoài Nam có cần báo HR không anh?` trả lời chuẩn xác về quy định báo HR từ Sổ tay nhân viên/Quy tắc ứng xử, không còn bất kỳ dấu vết nào của câu đề xuất làm lead ngoài lề.
+- Simulation Test Thực tế:
+  * Query 1: `@Hoài Nam có cần báo HR không anh?` -> Trả lời plain text thuần túy, không markdown, không lời chào khách sáo, vào thẳng trọng tâm và xưng hô tự nhiên.
+  * Query 2: `anh ơi cho em hỏi chính sách nghỉ phép của công ty mình thế nào?` -> Trả lời dạng plain text đánh số 1. 2., không in đậm, không chào khách sáo, xưng anh - em tự nhiên.
+  * Sync WeKnora Trigger: Đã test kích hoạt thành công tác vụ sync incremental sang WeKnora với `status: running` và `last_sync_at` được cập nhật chính xác.
 
 ## Next concrete steps
-1. Server chạy ổn định, hệ thống RAG và Memory Claims đã đạt độ sạch tuyệt đối (zero context pollution).
-2. Sẵn sàng nhận câu hỏi kiểm thử tiếp theo từ người dùng trong Lark.
+1. Hệ thống đã hoàn tất và xác minh 100% toàn bộ các hạng mục: Token Service, Policy RAG Multi-dataset, Contextual Claim Gate, Plain Text Persona & Output Sanitizer, Policy Sync Engine.
+2. Chu kỳ sync nền đặt ổn định ở mức 3600s (1 tiếng); khi cần sync tức thì có thể gọi `POST /policy/sync?force=true`.
+3. Sẵn sàng tiếp nhận các yêu cầu phát triển hoặc kiểm thử tiếp theo.
 
 
 

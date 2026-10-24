@@ -218,17 +218,20 @@ class PolicySyncService:
                     "message": "Danh sách tài liệu không thay đổi. Không cần kích hoạt sync.",
                 }
 
-            # 5. Cập nhật Data Source trên WeKnora nếu có thay đổi
-            logger.info(f"⚡ [PolicySync] Phát hiện thay đổi: {current_set} -> {new_set}. Đang cập nhật WeKnora...")
-            update_ok = await weknora_service.update_datasource_resources(ds_id, new_tokens)
-            if not update_ok:
-                logger.error("[PolicySync] Cập nhật resource_ids vào WeKnora Data Source thất bại.")
-                return {
-                    "status": "update_failed",
-                    "resource_ids": new_tokens,
-                    "synced": False,
-                    "error": "Failed to update WeKnora datasource resources",
-                }
+            # 5. Cập nhật Data Source trên WeKnora nếu có thay đổi cấu hình resource_ids
+            if has_diff:
+                logger.info(f"⚡ [PolicySync] Phát hiện thay đổi tokens: {current_set} -> {new_set}. Đang cập nhật WeKnora...")
+                update_ok = await weknora_service.update_datasource_resources(ds_id, new_tokens)
+                if not update_ok:
+                    logger.error("[PolicySync] Cập nhật resource_ids vào WeKnora Data Source thất bại.")
+                    return {
+                        "status": "update_failed",
+                        "resource_ids": new_tokens,
+                        "synced": False,
+                        "error": "Failed to update WeKnora datasource resources",
+                    }
+            else:
+                logger.info(f"🔄 [PolicySync] Danh sách tokens không đổi ({len(new_set)} tokens). Kích hoạt re-sync WeKnora...")
 
             # 6. Kích hoạt đồng bộ trên WeKnora
             logger.info(f"🚀 [PolicySync] Đang kích hoạt đồng bộ WeKnora Data Source {ds_id}...")
@@ -285,7 +288,7 @@ async def start_policy_sync_loop() -> None:
     # Lần đầu: Chờ 5 giây sau khi server khởi động để hệ thống ổn định
     await asyncio.sleep(5)
     try:
-        await policy_sync_service.sync_policies()
+        await policy_sync_service.sync_policies(force=True)
     except Exception as e:
         logger.error(f"[PolicySync Loop] Lỗi đồng bộ ban đầu: {e}", exc_info=True)
 
@@ -293,7 +296,7 @@ async def start_policy_sync_loop() -> None:
     while True:
         try:
             await asyncio.sleep(interval)
-            await policy_sync_service.sync_policies()
+            await policy_sync_service.sync_policies(force=True)
         except asyncio.CancelledError:
             logger.info("[PolicySync Loop] Đã nhận tín hiệu dừng worker.")
             break
