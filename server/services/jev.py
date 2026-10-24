@@ -38,6 +38,18 @@ class JevService:
                         "MEMORY_AND_DRAFT": "Tin nhắn quan trọng cần ghi nhớ và có câu hỏi cần phản hồi. Lưu thông tin vào memory, soạn câu trả lời nháp gửi chủ nhân duyệt; tuyệt đối không tự reply vào chat.",
                         "DRAFT_PENDING_APPROVAL": "CHỈ áp dụng cho các câu hỏi ĐẶC BIỆT NHẠY CẢM MẬT (như bảng lương cá nhân nhân viên, bí mật tài chính kế toán riêng tư, thỏa thuận hợp đồng bảo mật, tranh chấp pháp lý nghiêm trọng). Còn các câu hỏi tiến độ, thành viên, thông tin dự án chung thì KHÔNG chọn nhãn này."
                     }
+                },
+                "knowledge_domain": {
+                    "type": "choice",
+                    "instructions": (
+                        "Phân tích câu hỏi/tin nhắn để xác định phạm vi tri thức cần tra cứu. "
+                        "Chọn 1 trong 3 nhãn bên dưới:"
+                    ),
+                    "criteria": {
+                        "PROJECT": "Câu hỏi hoặc nội dung thuần túy về một dự án cụ thể, kế hoạch, tiến độ, sprint, task, bug, kiến trúc, tính năng kỹ thuật, phân công nhân sự trong dự án của nhóm.",
+                        "COMPANY_POLICY": "Câu hỏi hoặc nội dung thuần túy về chính sách chung của công ty, quy định nhân sự, chế độ đãi ngộ, ngày nghỉ phép, bảo hiểm, văn hóa doanh nghiệp, bảo mật thông tin nội bộ, sổ tay nhân viên.",
+                        "HYBRID": "Câu hỏi vừa liên quan đến dự án vừa liên quan đến chính sách công ty, hoặc câu hỏi chung chung, không rõ ràng, phân vân giữa hai phạm vi."
+                    }
                 }
             }
         }
@@ -48,15 +60,52 @@ class JevService:
                 response.raise_for_status()
                 data = response.json()
                 
-                # Trích xuất kết quả phân loại từ JEV (thường nằm ở data.answers.message_action)
-                action_data = data.get("answers", {}).get("message_action")
-                
+                answers = data.get("answers", {})
+                action_data = answers.get("message_action")
+                domain_data = answers.get("knowledge_domain")
+
+                # --- XỬ LÝ KNOWLEDGE DOMAIN (PIGGYBACK ROUTING & PESSIMISTIC THRESHOLD) ---
+                domain_choice = "HYBRID"
+                domain_conf = 0.50
+
+                if isinstance(domain_data, dict):
+                    raw_domain = domain_data.get("choice", "HYBRID")
+                    probabilities = domain_data.get("probabilities", {})
+                    prob_domain = probabilities.get(raw_domain, domain_data.get("confidence", 0.0))
+                    # Ngưỡng tin cậy bi quan: >= 0.85 mới chốt đơn kho, còn lại fallback HYBRID để truy vấn cả 2 kho
+                    if raw_domain in ("PROJECT", "COMPANY_POLICY") and prob_domain >= 0.85:
+                        domain_choice = raw_domain
+                        domain_conf = prob_domain
+                    elif raw_domain == "HYBRID":
+                        domain_choice = "HYBRID"
+                        domain_conf = prob_domain
+                    else:
+                        # Điểm số < 0.85: Chủ động hạ cấp an toàn về HYBRID
+                        domain_choice = "HYBRID"
+                        domain_conf = prob_domain
+                elif isinstance(domain_data, str) and domain_data in ("PROJECT", "COMPANY_POLICY", "HYBRID"):
+                    domain_choice = domain_data
+                    domain_conf = 0.85
+                else:
+                    domain_choice = "HYBRID"
+                    domain_conf = 0.50
+
                 if not action_data:
-                    return {"action": "IGNORE", "confidence": 0.0} 
+                    return {
+                        "action": "IGNORE",
+                        "confidence": 0.0,
+                        "knowledge_domain": domain_choice,
+                        "domain_confidence": domain_conf,
+                    }
                 
                 # Nếu API trả về chuỗi trực tiếp (fallback)
                 if isinstance(action_data, str):
-                    return {"action": action_data, "confidence": 0.0}
+                    return {
+                        "action": action_data,
+                        "confidence": 0.0,
+                        "knowledge_domain": domain_choice,
+                        "domain_confidence": domain_conf,
+                    }
                     
                 # Schema dạng dictionary của JEV
                 choice = action_data.get("choice", "IGNORE")
@@ -68,36 +117,47 @@ class JevService:
                 prob_draft_risk = probabilities.get("DRAFT_PENDING_APPROVAL", 0.0)
                 prob_reply = probabilities.get("REPLY_ONLY", 0.0)
 
+                final_action = "IGNORE"
+                final_conf = prob_choice
+
                 if choice == "MEMORY_AND_DRAFT":
                     if prob_choice >= 0.70:
-                        return {"action": "MEMORY_AND_DRAFT", "confidence": prob_choice}
+                        final_action, final_conf = "MEMORY_AND_DRAFT", prob_choice
                     else:
                         # Hạ cấp xuống chỉ ghi nhớ nếu độ tự tin chưa đủ cao.
-                        return {"action": "MEMORY_ONLY", "confidence": prob_choice}
+                        final_action, final_conf = "MEMORY_ONLY", prob_choice
 
                 elif choice == "MEMORY_ONLY":
                     if prob_choice >= 0.50:
-                        return {"action": "MEMORY_ONLY", "confidence": prob_choice}
+                        final_action, final_conf = "MEMORY_ONLY", prob_choice
                     else:
-                        return {"action": "IGNORE", "confidence": prob_choice}
+                        final_action, final_conf = "IGNORE", prob_choice
 
                 elif choice == "REPLY_ONLY":
                     # Ưu tiên tự trả lời các câu hỏi cơ bản, chỉ chặn sang DRAFT khi rủi ro thực sự áp đảo
                     if prob_draft_risk >= 0.85 and prob_draft_risk > prob_choice:
-                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_draft_risk}
+                        final_action, final_conf = "DRAFT_PENDING_APPROVAL", prob_draft_risk
                     elif prob_choice >= 0.75:
-                        return {"action": "REPLY_ONLY", "confidence": prob_choice}
+                        final_action, final_conf = "REPLY_ONLY", prob_choice
                     else:
-                        return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
+                        final_action, final_conf = "DRAFT_PENDING_APPROVAL", prob_choice
 
                 elif choice == "DRAFT_PENDING_APPROVAL":
                     # Nếu JEV chọn DRAFT nhưng xác suất thấp (< 0.60) và REPLY_ONLY cũng cao -> Ưu tiên tự trả lời
                     if prob_choice < 0.60 and prob_reply >= 0.30:
-                        return {"action": "REPLY_ONLY", "confidence": prob_reply}
-                    return {"action": "DRAFT_PENDING_APPROVAL", "confidence": prob_choice}
+                        final_action, final_conf = "REPLY_ONLY", prob_reply
+                    else:
+                        final_action, final_conf = "DRAFT_PENDING_APPROVAL", prob_choice
 
                 else:  # choice == "IGNORE"
-                    return {"action": "IGNORE", "confidence": prob_choice}
+                    final_action, final_conf = "IGNORE", prob_choice
+
+                return {
+                    "action": final_action,
+                    "confidence": final_conf,
+                    "knowledge_domain": domain_choice,
+                    "domain_confidence": domain_conf,
+                }
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"JEV Classification Failed: {str(e)}")
 

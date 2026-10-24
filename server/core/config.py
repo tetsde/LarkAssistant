@@ -13,6 +13,7 @@ class Settings:
     JEV_API_KEY: str = os.getenv("jev_api", "")
     WEKNORA_DATASET_ID: str = os.getenv("dataset_id", "")
     WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
+    WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "d715d7ee-1853-4bd9-b22d-779b1ec1e28f")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api", "")
 
     # Backward compatibility alias
@@ -45,6 +46,7 @@ class Settings:
     # Lark Base (Bitable) Settings
     LARK_BASE_APP_TOKEN: str = os.getenv("LARK_BASE_APP_TOKEN") or os.getenv("app_token", "")
     LARK_BASE_TABLE_ID: str = os.getenv("LARK_BASE_TABLE_ID") or os.getenv("table_id", "")
+    LARK_BASE_POLICY_TABLE_ID: str = os.getenv("policy_table_id") or os.getenv("LARK_BASE_POLICY_TABLE_ID", "tblZphzEZPLQAy24")
 
     # Daily Digest & Approval Settings
     DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")

@@ -29,16 +29,22 @@
 - **Tối ưu hóa Macro-Context:** Thống nhất tận dụng trường `summary` tự động của WeKnora để nhúng vào ContextComposer và sửa hàm nhận diện tên dự án.
 - **Hoàn thành Giai đoạn 1 (Fix get_project_name):** Đã xóa dứt điểm dòng `first_doc = doc_names[0]` trong `server/models/chat_scope.py`, chuẩn hóa nguồn chân lý `project_tag -> chat_name`, viết unit test pass 13/13.
 - **Hoàn thành Giai đoạn 2 (WeKnora Summary Persistence):** Đã bổ sung `get_document_info()` trong `weknora.py` và lưu trữ/backfill `summary` vào `synced_docs` trong `scope_service.py`, viết unit test pass 15/15.
-- **Đồng bộ Notion Decision Log:** Tạo và ghi nhận đầy đủ chi tiết quyết định `EDL - 0002`, `EDL - 0003`, `EDL - 0004` trên Notion qua Notion MCP, cập nhật Section 5 (Execution Evidence) cho `EDL-0002` và `EDL-0004`.
+- **Hoàn thành Giai đoạn 3 (Document Manifest & ContextComposer):** Đã format Section 0 Document Manifest kèm `summary` trong `context_composer.py`, truyền `documents` đầy đủ từ `chat_service.py`, viết unit test kiểm thử 6/6 tests pass trong `test_context_composer.py`.
+- **Hoàn thành Giai đoạn 4 (JEV Piggyback Routing & Two-Tier Retrieval):** Đã thêm question `knowledge_domain` vào JEV `classify_message`, áp dụng Pessimistic Routing (ngưỡng >= 0.85), định tuyến WeKnora song song `asyncio.gather` cho chế độ Hybrid, loại bỏ hoàn toàn regex/keywords cứng để đạt chuẩn AI-native. Unit test: 9/9 pass trong `test_jev_classification.py`.
+- **Đồng bộ Notion Decision Log:** Tạo và ghi nhận đầy đủ chi tiết quyết định `EDL - 0002`, `EDL - 0003`, `EDL - 0004` trên Notion qua Notion MCP, cập nhật Section 5 (Execution Evidence) cho cả 3 quyết định `EDL-0002`, `EDL-0003`, `EDL-0004`.
 - **Cập nhật Project Memory:** Cập nhật `docs/project-memory/DECISIONS.md` và `docs/project-memory/HANDOFF.md`.
 
 ## Verification
 - **Commands actually run:**
-  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_chat_scope.py`: 15/15 tests passed (0.131s).
-  - Notion MCP `API-update-page-markdown`: Cập nhật tiến độ & bằng chứng thực thi Giai đoạn 2 vào page `EDL-0004`.
-  - Notion MCP `API-retrieve-page-markdown`: Đọc lại và xác minh 100% nội dung đã được lưu chuẩn xác.
+  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_jev_classification.py`: 9/9 tests passed (0.518s).
+  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_memory_weknora_gating.py`: 5/5 tests passed (0.038s).
+  - `PYTHONPATH=. .venv/bin/python -m unittest tests/01/test_chat_scope.py`: 15/15 tests passed (0.116s).
+  - `PYTHONPATH=. .venv/bin/python tests/01/test_context_composer.py`: 6/6 tests passed (0.012s).
+  - Notion MCP `API-patch-block-children`: Đã cập nhật Section 5 (Execution Evidence) vào trang Notion `EDL-0003` (Page ID: `402590f7-e19e-8179-bc26-ed7248bb725b`).
 
 ## Next concrete steps
-1. **Giai đoạn 3 (Đang thực hiện):** Nhúng Bản đồ tài liệu (Document Manifest) kèm `summary` vào `server/utils/context_composer.py` và truyền cấu trúc tài liệu từ `chat_service.py`.
-2. **Giai đoạn 4:** Nâng cấp payload `classify_message` trong `server/services/jev.py` thêm question `knowledge_domain` và logic routing tại `server/services/chat_service.py`.
-3. Triển khai parser cho Lark Docx trực tiếp qua Lark Open API.
+1. **Giai đoạn 5 (Lark Docs Direct Sync qua OpenAPI):**
+   - Triển khai hàm trích xuất nội dung văn bản thuần trực tiếp từ link/document token của Lark Docx qua Lark Open API (`docx.v1.document`).
+   - Cập nhật luồng sync từ Lark Base để tự động kéo nội dung Docx và nạp vào WeKnora mà không cần người dùng export thủ công file ra máy tính.
+   - Viết unit test cho Lark Docx parser & sync flow.
+   - DỪNG LẠI và báo cáo cho user review Giai đoạn 5.

@@ -375,15 +375,21 @@ async def process_chat_pipeline(
             logger.error(f"Lỗi khi kiểm tra forbidden_query qua JEV: {e}")
 
     # ── Bước 2: JEV Routing - Phân loại xem tin nhắn có đáng xử lý hay không ──
+    jev_domain = "HYBRID"
+    jev_domain_conf = 0.50
     try:
         jev_result = await jev_service.classify_message(clean_query)
         jev_action = jev_result.get("action", "IGNORE")
         jev_confidence = jev_result.get("confidence", 0.0)
+        jev_domain = jev_result.get("knowledge_domain", "HYBRID")
+        jev_domain_conf = jev_result.get("domain_confidence", 0.50)
     except Exception as e:
         logger.error(f"Lỗi phân loại JEV: {e}")
         # [SAFETY] Khi JEV API lỗi/timeout, TUYỆT ĐỐI không tự ý phát ngôn vào nhóm.
         jev_action = "DRAFT_PENDING_APPROVAL" if ("?" in clean_query or len(clean_query.split()) >= 4) else "IGNORE"
         jev_confidence = 0.0
+        jev_domain = "HYBRID"
+        jev_domain_conf = 0.50
 
     # ── [OWNER ANTI-LOOP SHIELD] ──
     # Nếu tin nhắn do CHÍNH CHỦ NHÂN phát ngôn trong GROUP:
@@ -404,6 +410,8 @@ async def process_chat_pipeline(
             "status": "ignored",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
+            "knowledge_domain": jev_domain,
+            "domain_confidence": jev_domain_conf,
             "query": clean_query,
             "answer": None,
             "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời.",
@@ -435,6 +443,8 @@ async def process_chat_pipeline(
             "status": "memorized",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
+            "knowledge_domain": jev_domain,
+            "domain_confidence": jev_domain_conf,
             "query": clean_query,
             "extraction": extraction_data,
             "answer": None,
@@ -467,39 +477,98 @@ async def process_chat_pipeline(
 
     active_claims = [f for f in all_facts if f.get("status", "current") in ("current", "proposed")]
 
-    # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat
+    # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat & Two-Tier Routing
     chunks = []
     try:
         if not scope_record and chat_id:
             scope_record = await scope_service.get_scope_by_chat_id(chat_id)
 
-        target_kb = scope_record.dataset_id if scope_record else None
-        target_kbs = [target_kb] if target_kb else None
+        project_dataset_id = scope_record.dataset_id if scope_record else None
+        company_wiki_id = (
+            (scope_record.wiki_dataset_id if (scope_record and scope_record.wiki_dataset_id) else None)
+            or settings.WEKNORA_POLICY_DATASET_ID
+            or settings.WEKNORA_WIKI_DATASET_ID
+            or None
+        )
 
-        # ── [GIẢI PHÁP 2: RAG HARD ISOLATION] Chỉ tìm kiếm trong đúng các file Documents của nhóm ──
         target_knowledge_ids = (
             scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
         )
-        if target_knowledge_ids:
-            logger.info(
-                f"🔒 [RAG Isolation] Giới hạn tìm kiếm trong {len(target_knowledge_ids)} tài liệu của nhóm: {target_knowledge_ids}"
-            )
 
-        # ── [GIẢI PHÁP 1: CONTEXT-DRIVEN QUERY EXPANSION] ──
-        # Bỏ hoàn toàn danh sách từ khóa tĩnh (vague_keywords).
-        # Mọi câu hỏi chuyên môn trong nhóm dự án mặc định hướng về dự án đó.
-        # Nếu câu hỏi chưa nhắc đến tên dự án, tự động bổ sung tên bối cảnh dự án vào query WeKnora.
+        # Context-Driven Query Expansion cho câu hỏi dự án
         retrieval_query = clean_query
         if proj_context_name and proj_context_name.lower() not in clean_query.lower():
             retrieval_query = f"{clean_query} {proj_context_name}"
-            logger.info(f"🔍 [RAG Scope Augment] Tự động bổ sung bối cảnh dự án '{proj_context_name}' vào query WeKnora: '{retrieval_query}'")
 
-        chunks = await weknora_service.retrieve(
-            query=retrieval_query,
-            knowledge_base_ids=target_kbs,
-            knowledge_ids=target_knowledge_ids,
-            match_count=retrieve_count,
-        )
+        # ── [RAG TWO-TIER PIGGYBACK ROUTING] ──
+        # Pessimistic Threshold: Chỉ khi confidence >= 0.85 mới định tuyến đơn kho, còn lại fallback HYBRID song song
+        if jev_domain == "COMPANY_POLICY" and company_wiki_id:
+            logger.info(
+                f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Company Wiki ({company_wiki_id}) | Confidence: {jev_domain_conf:.2f}"
+            )
+            chunks = await weknora_service.retrieve(
+                query=clean_query,
+                knowledge_base_ids=[company_wiki_id],
+                knowledge_ids=None,
+                match_count=retrieve_count,
+            )
+        elif jev_domain == "PROJECT" and project_dataset_id:
+            logger.info(
+                f"📁 [RAG Routing] Định tuyến đơn kho -> Project Scoped KB ({project_dataset_id}) | Confidence: {jev_domain_conf:.2f}"
+            )
+            chunks = await weknora_service.retrieve(
+                query=retrieval_query,
+                knowledge_base_ids=[project_dataset_id],
+                knowledge_ids=target_knowledge_ids,
+                match_count=retrieve_count,
+            )
+        else:
+            # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả 2 kho tri thức
+            if project_dataset_id and company_wiki_id and project_dataset_id != company_wiki_id:
+                logger.info(
+                    f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Wiki: {company_wiki_id})"
+                )
+                tasks = [
+                    weknora_service.retrieve(
+                        query=retrieval_query,
+                        knowledge_base_ids=[project_dataset_id],
+                        knowledge_ids=target_knowledge_ids,
+                        match_count=retrieve_count,
+                    ),
+                    weknora_service.retrieve(
+                        query=clean_query,
+                        knowledge_base_ids=[company_wiki_id],
+                        knowledge_ids=None,
+                        match_count=retrieve_count,
+                    ),
+                ]
+                res_proj, res_wiki = await asyncio.gather(*tasks, return_exceptions=True)
+                chunks_proj = res_proj if isinstance(res_proj, list) else []
+                chunks_wiki = res_wiki if isinstance(res_wiki, list) else []
+
+                # Hợp nhất và lọc trùng chunks theo id/content, sắp xếp theo score cao nhất
+                merged_chunks = []
+                seen_chunk_ids = set()
+                for c in sorted(chunks_proj + chunks_wiki, key=lambda x: x.get("score") or 0.0, reverse=True):
+                    cid = c.get("id") or c.get("chunk_id") or c.get("content", "")[:50]
+                    if cid not in seen_chunk_ids:
+                        seen_chunk_ids.add(cid)
+                        merged_chunks.append(c)
+                chunks = merged_chunks[:retrieve_count]
+            elif project_dataset_id:
+                chunks = await weknora_service.retrieve(
+                    query=retrieval_query,
+                    knowledge_base_ids=[project_dataset_id],
+                    knowledge_ids=target_knowledge_ids,
+                    match_count=retrieve_count,
+                )
+            elif company_wiki_id:
+                chunks = await weknora_service.retrieve(
+                    query=clean_query,
+                    knowledge_base_ids=[company_wiki_id],
+                    knowledge_ids=None,
+                    match_count=retrieve_count,
+                )
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
@@ -665,6 +734,8 @@ async def process_chat_pipeline(
             "status": "memory_and_draft_pending_approval" if jev_action == "MEMORY_AND_DRAFT" else "draft_pending_approval",
             "jev_action": jev_action,
             "jev_confidence": jev_confidence,
+            "knowledge_domain": jev_domain,
+            "domain_confidence": jev_domain_conf,
             "query": clean_query,
             "draft_answer": answer,
             "answer": answer,
@@ -694,6 +765,8 @@ async def process_chat_pipeline(
         "status": "auto_replied",
         "jev_action": jev_action,
         "jev_confidence": jev_confidence,
+        "knowledge_domain": jev_domain,
+        "domain_confidence": jev_domain_conf,
         "query": clean_query,
         "answer": answer,
         "user_name": user_name,
