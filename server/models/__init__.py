@@ -33,9 +33,12 @@ from models.larkbase import (
 )
 
 from models.chat_queue import ChatQueueItem
+from models.docreader import DocReaderResult, DocParseResult
 
 __all__ = [
     "ChatQueueItem",
+    "DocReaderResult",
+    "DocParseResult",
     "ChatRequest",
     "UserChatRequest",
     "ApproveDraftRequest",

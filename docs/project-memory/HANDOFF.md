@@ -31,20 +31,33 @@
   * Bổ sung cấu hình `DOCREADER_GRPC_HOST="127.0.0.1"`, `DOCREADER_GRPC_PORT=50051`, `DOCREADER_TIMEOUT_SECONDS=60` vào `server/core/config.py`.
   * Khởi tạo thư mục `server/proto/`, sao chép `docreader.proto` và biên dịch sinh mã Python stubs `docreader_pb2.py`, `docreader_pb2_grpc.py`.
   * Chạy kiểm thử smoke test `test_grpc_smoke.py`: Kết nối thành công tới `WeKnora-docreader:50051`, nhận diện 3 engines (`builtin`, `markitdown`, `opendataloader`) và chuyển đổi văn bản sang Markdown 100% không lỗi.
+- **Hoàn tất Bước 2.1 (Core gRPC Wrapper & Extension Gate - EDL-0010)**:
+  * Xây dựng `server/services/docreader_service.py`:
+    - File Extension Gate: Kiểm tra nghiêm ngặt 17 định dạng tệp hợp lệ (`.docx`, `.pdf`, `.xlsx`, `.pptx`, `.md`, `.txt`, `.png`, `.jpg`...). Chặn sớm các file không hợp lệ (`.exe`, `.zip`, `.py`...).
+    - File Size Gate: Giới hạn tệp tối đa 50MB và chặn tệp rỗng 0 bytes.
+    - Kênh kết nối gRPC tái sử dụng (`grpc.aio.insecure_channel`) kèm cấu hình buffer 50MB và keepalive tối ưu.
+    - Xử lý lỗi an toàn (`grpc.aio.AioRpcError`, timeout, exception) trả về `DocReaderResult`.
+  * Viết bộ kiểm thử `server/tests/01/test_docreader_service.py` (8/8 test cases passed 100% trong 0.137s).
 
 ## Verification
 - Context Truncation Fix:
   * Chạy kịch bản mô phỏng kiểm thử sinh câu trả lời với chunk đầy đủ: Gemini trích dẫn chính xác "ngày 25 hàng tháng" từ Sổ tay Nhân viên.
 - AnyDoc gRPC Phase 1 Smoke Test:
-  * Chạy script `test_grpc_smoke.py` từ virtualenv Python server:
-    - `Connecting to gRPC DocReader at 127.0.0.1:50051...`
-    - `ListEngines: 3 engines (builtin, markitdown, opendataloader) available`
-    - `Read: markdown returned, error='' -> Status 100% Success`.
+  * Chạy script `test_grpc_smoke.py`: Kết nối thành công 100%.
+- DocReader Service Unit Test Suite (`tests/01/test_docreader_service.py`):
+  * Ran 8 tests in 0.137s -> **8/8 PASSED**:
+    - `test_extension_gate_supported_files`: Chấp nhận đúng 14 định dạng hợp lệ.
+    - `test_extension_gate_unsupported_files`: Chặn 10 định dạng cấm/không an toàn.
+    - `test_read_rejected_by_extension_gate`: Phản hồi lỗi rõ ràng khi gặp file `.py`.
+    - `test_read_rejected_by_empty_content`: Từ chối file 0 bytes.
+    - `test_read_rejected_by_size_gate`: Từ chối file > 50MB.
+    - `test_read_success_with_real_grpc_call`: Gọi thật sang container `WeKnora-docreader:50051` bóc tách Markdown chuẩn xác.
+    - `test_connection_reuse`: Tái sử dụng gRPC stub thành công.
+    - `test_sync_wrapper`: Chạy đồng bộ `read_sync` thành công.
 
 ## Next concrete steps
-1. **Giai đoạn 2 (Xây dựng Core Parser Services - EDL-0010):**
-   - Xây dựng `server/services/docreader_service.py` (gRPC client AnyDoc có timeout, connection reuse, 50MB message limits).
-   - Mở rộng `server/services/larkServices/lark_client.py` với `download_message_resource` (Lark IM binary) và `get_docx_raw_content` (Lark DocX OpenAPI).
+1. **Bước tiếp theo (Giai đoạn 2 - Phần 2):**
+   - Mở rộng `server/services/larkServices/lark_client.py` với 2 hàm: `download_message_resource` (tải binary từ Lark IM) và `get_docx_raw_content` (gọi Lark OpenAPI docx).
    - Xây dựng `server/services/doc_parser_service.py` (điều phối nhận diện URL Lark Doc vs Binary Attachment).
 2. **Giai đoạn 3 (Tích hợp Claims Pipeline & Dispatcher):**
    - Xây dựng `process_document_to_claims` trong `chat_service.py` và hook sự kiện vào `bot_service.py`.
