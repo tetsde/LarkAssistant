@@ -25,9 +25,10 @@ Kiến trúc vận hành 4 lớp tuần tự:
 1. **Lớp 1: Cổng sự kiện Lark (Gateway & Dispatcher):** Nhận tin nhắn/sự kiện qua WebSocket (`services/bot_service.py`) hoặc Webhook HTTP, lọc trùng tin nhắn (deduplication).
 2. **Lớp 2: Bộ kiểm soát ý định JEV (System 1 Gatekeeper):** Phản xạ nhanh phân loại ý định người dùng (chào hỏi xã giao, tra cứu Q&A, giao việc, out-of-scope) để ngắt sớm hoặc điều hướng xử lý, tránh lãng phí token LLM.
 3. **Lớp 3: Động cơ nhận thức & Giải quyết xung đột tri thức:**
-   - **WeKnora RAG:** Tìm kiếm hybrid (vector + BM25 keyword) trên kho tài liệu tĩnh có phân vùng theo nhóm chat (`chat_scopes`).
-   - **MongoDB Claims (Ký ức động):** Lưu trữ các sự thật mới chốt trong đoạn chat. Cơ chế `ContextComposer` cho phép Claims mới ghi đè thông tin cũ trong tài liệu tĩnh.
-   - **Rule Engine:** Lọc bỏ dữ liệu nhạy cảm (lương, thầu phụ, ngân sách) trước khi đưa vào prompt LLM.
+   - **Tầng Phân Giải Đa Phương Tiện (Document Parsing Layer):** Chuẩn hóa file đính kèm (PDF, DOCX, XLSX, PPTX, ảnh) qua WeKnora AnyDoc gRPC (`WeKnora-docreader:50051`) và Lark DocX/Wiki URL qua Lark OpenAPI thành Markdown thuần với 0 token cost, cung cấp đầu vào cho `llm_extractor`.
+   - **WeKnora RAG (Baseline Layer):** Tìm kiếm hybrid (vector + BM25 keyword) trên kho tài liệu tĩnh bất biến có phân vùng theo nhóm chat (`chat_scopes`).
+   - **MongoDB Claims (Claims Overlay):** Lưu trữ các sự thật mới chốt trong đoạn chat hoặc bóc tách từ tài liệu họp. Cơ chế `ContextComposer` giải quyết xung đột theo nguyên tắc: `CURRENT Claims > Static WeKnora Baseline`.
+   - **Rule Engine & Contextual Claim Gate:** Lọc bỏ dữ liệu nhạy cảm và ngăn chặn ô nhiễm ngữ cảnh chéo domain trước khi đưa vào prompt LLM.
 4. **Lớp 4: Cổng thực thi & Phê duyệt (Execution & HITL Gateway):**
    - Trả lời trực tiếp nếu thông tin đầy đủ và an toàn.
    - Cơ chế duyệt nháp (HITL): Gửi bản nháp dạng interactive card vào DM của người duyệt khi thiếu dữ liệu hoặc cần xác nhận.
@@ -43,6 +44,8 @@ Kiến trúc vận hành 4 lớp tuần tự:
 | Intent Classifier (JEV) | `server/services/jev.py` | Giao tiếp API JEV để phân loại mục tiêu tin nhắn | Đã xác minh |
 | Hybrid RAG | `server/services/weknora.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset | Đã xác minh |
 | Context Composer | `server/utils/context_composer.py` | Hợp nhất RAG chunks + Claims, ưu tiên Claims mới hơn tài liệu | Đã xác minh qua unit test |
+| Document Parsing Layer | `server/services/doc_parser_service.py` | Chuyển đổi file đính kèm & Lark Doc URL sang Markdown (EDL-0010) | Đang triển khai |
+| AnyDoc gRPC Client | `server/services/docreader_service.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đang triển khai |
 | Rule Engine | `server/utils/rule_engine.py` | Kiểm duyệt từ khóa nhạy cảm trên Chunks và Claims | Đã xác minh qua unit test |
 | Daily Digest & Staging | `server/services/digest_service.py` | Lưu staging tin nhắn, tổng hợp digest ngày, xuất báo cáo | Đã xác minh |
 | Chat Scope Isolation | `server/services/scope_service.py` | Quản lý quyền truy cập dataset và dữ liệu theo chat_id | Đã xác minh qua unit test |

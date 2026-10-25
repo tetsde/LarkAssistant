@@ -81,6 +81,11 @@ class Settings:
     CHAT_QUEUE_MAX_SIZE: int = int(os.getenv("CHAT_QUEUE_MAX_SIZE", "100"))
     CHAT_QUEUE_ENQUEUE_TIMEOUT: float = float(os.getenv("CHAT_QUEUE_ENQUEUE_TIMEOUT", "2.0"))
 
+    # WeKnora DocReader gRPC Settings (EDL-0010)
+    DOCREADER_GRPC_HOST: str = os.getenv("DOCREADER_GRPC_HOST", "127.0.0.1")
+    DOCREADER_GRPC_PORT: int = int(os.getenv("DOCREADER_GRPC_PORT", "50051"))
+    DOCREADER_TIMEOUT_SECONDS: int = int(os.getenv("DOCREADER_TIMEOUT_SECONDS", "60"))
+
 settings = Settings()
 
 

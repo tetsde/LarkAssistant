@@ -16,6 +16,9 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "reportlab>=5.0.1",
     "uvicorn>=0.54.0",
+    "grpcio>=1.68.0",
+    "protobuf>=5.29.0",
+    "grpcio-tools>=1.68.0",
 ]
 
 [tool.pyright]
