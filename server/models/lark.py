@@ -102,3 +102,43 @@ class LarkMessage:
             "root_id": self.root_id,
             "parent_id": self.parent_id,
         }
+
+    @property
+    def file_key(self) -> Optional[str]:
+        """Trích xuất file_key từ raw_content nếu tin nhắn là file."""
+        if self.message_type == "file" and self.raw_content:
+            try:
+                import json
+                data = json.loads(self.raw_content)
+                if isinstance(data, dict):
+                    return data.get("file_key")
+            except Exception:
+                pass
+        return None
+
+    @property
+    def file_name(self) -> Optional[str]:
+        """Trích xuất tên file từ raw_content nếu tin nhắn là file."""
+        if self.message_type == "file" and self.raw_content:
+            try:
+                import json
+                data = json.loads(self.raw_content)
+                if isinstance(data, dict):
+                    return data.get("file_name")
+            except Exception:
+                pass
+        return None
+
+    @property
+    def image_key(self) -> Optional[str]:
+        """Trích xuất image_key từ raw_content nếu tin nhắn là image."""
+        if self.message_type == "image" and self.raw_content:
+            try:
+                import json
+                data = json.loads(self.raw_content)
+                if isinstance(data, dict):
+                    return data.get("image_key")
+            except Exception:
+                pass
+        return None
+

@@ -40,12 +40,12 @@ Kiến trúc vận hành 4 lớp tuần tự:
 | Entry point | `server/main.py` | Khởi tạo FastAPI app, lifespan quản lý bot service, đăng ký routers | Đã xác minh |
 | Configuration | `server/core/config.py` | Load `.env` từ repo root, cấu hình MongoDB, Lark, WeKnora, JEV, Gemini | Đã xác minh |
 | Lark Bot Service | `server/services/bot_service.py` | Kết nối Lark WebSocket, lắng nghe event tin nhắn & card action | Đã xác minh |
-| Core Chat Orchestration | `server/services/chat_service.py` | Pipeline xử lý tin nhắn, gọi JEV, RAG, Claims, LLM, duyệt nháp | Đã xác minh |
+| Core Chat Orchestration | `server/services/chat_service.py` | Pipeline xử lý tin nhắn, gọi JEV, RAG, Claims, LLM, duyệt nháp, bóc tách tài liệu (EDL-0010) | Đã xác minh |
 | Intent Classifier (JEV) | `server/services/jev.py` | Giao tiếp API JEV để phân loại mục tiêu tin nhắn | Đã xác minh |
 | Hybrid RAG | `server/services/weknora.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset | Đã xác minh |
 | Context Composer | `server/utils/context_composer.py` | Hợp nhất RAG chunks + Claims, ưu tiên Claims mới hơn tài liệu | Đã xác minh qua unit test |
-| Document Parsing Layer | `server/services/doc_parser_service.py` | Chuyển đổi file đính kèm & Lark Doc URL sang Markdown (EDL-0010) | Đang triển khai |
-| AnyDoc gRPC Client | `server/services/docreader_service.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đang triển khai |
+| Document Parsing Layer | `server/services/doc_parser_service.py` | Chuyển đổi file đính kèm & Lark Doc URL sang Markdown (EDL-0010) | Đã xác minh qua unit test (11/11 pass) |
+| AnyDoc gRPC Client | `server/services/docreader_service.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đã xác minh qua unit test (8/8 pass) |
 | Rule Engine | `server/utils/rule_engine.py` | Kiểm duyệt từ khóa nhạy cảm trên Chunks và Claims | Đã xác minh qua unit test |
 | Daily Digest & Staging | `server/services/digest_service.py` | Lưu staging tin nhắn, tổng hợp digest ngày, xuất báo cáo | Đã xác minh |
 | Chat Scope Isolation | `server/services/scope_service.py` | Quản lý quyền truy cập dataset và dữ liệu theo chat_id | Đã xác minh qua unit test |
@@ -94,6 +94,6 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
   - Giả định MongoDB cục bộ hoặc cloud URI đã sẵn sàng khi chạy bot service thực tế.
 
 ## 9. Last verified
-- **Date:** 2026-10-24
-- **What was checked:** Cấu hình `server/core/config.py`, `.env`, kiểm thử Contextual Claim Gate (8/8 pass), Output Sanitizer (6/6 pass), Policy Sync (6/6 pass), Token Service (9/9 pass).
-- **By / source:** Antigravity Agent (phiên bàn giao kỹ thuật).
+- **Date:** 2026-10-25
+- **What was checked:** Cấu hình `server/core/config.py`, `.env`, hạ tầng AnyDoc gRPC `WeKnora-docreader:50051`, và toàn bộ 4 Giai đoạn của Quyết định Kỹ thuật `EDL-0010` (DocReader Service 8/8 pass, DocParser Service 11/11 pass, Claims Doc Pipeline 6/6 pass, E2E Document Knowledge Overlay 4/4 pass, Contextual Claim Gate 8/8 pass -> Tổng cộng 37/37 test cases passed 100%).
+- **By / source:** Antigravity Agent (phiên nghiệm thu hoàn thành EDL-0010).

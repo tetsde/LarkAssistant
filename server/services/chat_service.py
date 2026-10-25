@@ -27,7 +27,7 @@ from database import (
     get_all_facts as get_mongo_facts,
     save_extraction_to_mongo,
 )
-from models import ChatRequest
+from models import ChatRequest, DocParseResult
 from services.draft_store import PendingDraft, draft_store
 from services.jev import jev_service
 from services.lark import lark_service
@@ -204,6 +204,125 @@ async def process_memory_extraction(
         "superseded_claims": mongo_saved.get("superseded_facts", []),
         "total_stored_claims": total_facts,
     }
+
+
+async def process_document_to_claims(
+    doc_result: DocParseResult,
+    chat_id: str,
+    sender: str = "User",
+    sender_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+    project_tag: Optional[str] = None,
+    scope_type: str = "chat",
+) -> Dict[str, Any]:
+    """
+    Tiếp nhận tài liệu đã chuẩn hóa (DocParseResult từ AnyDoc gRPC hoặc Lark OpenAPI)
+    và bóc tách thành các Entities & Claims lưu bền vững vào MongoDB (EDL-0010).
+
+    Args:
+        doc_result: Kết quả phân giải Markdown sạch từ doc_parser_service.
+        chat_id: ID nhóm chat / cuộc hội thoại tiếp nhận tài liệu.
+        sender: Tên người gửi / tải lên tài liệu.
+        sender_id: ID người gửi (open_id / user_id).
+        message_id: ID tin nhắn đính kèm tệp hoặc chứa liên kết.
+        project_tag: Nhãn dự án (nếu có).
+        scope_type: Loại scope ('chat' mặc định).
+
+    Returns:
+        Dict chứa thông tin thống kê: số entities, số claims mới, claims superseded.
+    """
+    if not doc_result or not doc_result.success:
+        return {
+            "success": False,
+            "error": doc_result.error if doc_result else "DocParseResult rỗng",
+            "new_claims_count": 0,
+        }
+
+    markdown_text = (doc_result.markdown_content or "").strip()
+    if not markdown_text:
+        return {
+            "success": False,
+            "error": f"Tài liệu '{doc_result.doc_name}' không chứa nội dung văn bản sau khi phân giải.",
+            "new_claims_count": 0,
+        }
+
+    msg_id = message_id or f"doc_{uuid.uuid4().hex[:8]}"
+
+    try:
+        existing_entities = await get_mongo_entities()
+        existing_facts = await get_mongo_facts(chat_id=chat_id, project_tag=project_tag)
+    except Exception as e:
+        logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
+        existing_entities = []
+        existing_facts = []
+
+    from utils.llm_extractor import extract_async
+
+    asserted_by = {
+        "user_id": sender_id or "",
+        "user_name": sender or "User",
+        "channel": "document_upload",
+        "source_type": doc_result.source_type,
+        "doc_name": doc_result.doc_name,
+    }
+
+    extraction_result = await extract_async(
+        query=markdown_text,
+        workspace_id=chat_id or "default",
+        source_message_id=msg_id,
+        sender=sender,
+        asserted_by=asserted_by,
+        existing_entities=existing_entities,
+        existing_facts=existing_facts,
+    )
+
+    # Đính kèm metadata nguồn tài liệu vào từng fact
+    for fact in extraction_result.get("facts", []):
+        if isinstance(fact, dict):
+            fact["source_doc"] = doc_result.doc_name
+            fact["source_type"] = doc_result.source_type
+            if doc_result.metadata.get("document_id"):
+                fact["document_id"] = doc_result.metadata["document_id"]
+            elif doc_result.metadata.get("file_key"):
+                fact["file_key"] = doc_result.metadata["file_key"]
+
+    mongo_saved = await save_extraction_to_mongo(
+        extraction_result,
+        chat_id=chat_id,
+        project_tag=project_tag,
+        scope_type=scope_type,
+    )
+
+    new_facts = mongo_saved.get("facts", [])
+    superseded = mongo_saved.get("superseded_facts", [])
+    entities = mongo_saved.get("entities", [])
+    total_entities = mongo_saved.get("total_stored_entities", 0)
+    total_facts = mongo_saved.get("total_stored_facts", 0)
+
+    logger.info(
+        f"✔ [DOC CLAIMS PIPELINE] Tiếp thu thành công tài liệu '{doc_result.doc_name}': "
+        f"+{len(new_facts)} facts/claims mới, {len(superseded)} facts bị thay thế."
+    )
+
+    return {
+        "success": True,
+        "doc_name": doc_result.doc_name,
+        "source_type": doc_result.source_type,
+        "message_id": msg_id,
+        "entities": entities,
+        "facts": new_facts,
+        "superseded_facts": superseded,
+        "new_claims_count": len(new_facts),
+        "superseded_claims_count": len(superseded),
+        "total_stored_entities": total_entities,
+        "total_stored_facts": total_facts,
+        "saved_to_mongodb": True,
+        # Backward compatibility aliases
+        "memory": entities,
+        "claims": new_facts,
+        "superseded_claims": superseded,
+    }
+
 
 
 async def generate_grounded_answer(
@@ -828,6 +947,8 @@ class ChatService:
     process_pipeline = staticmethod(process_chat_pipeline)
     extract_memory = staticmethod(process_memory_extraction)
     generate_answer = staticmethod(generate_grounded_answer)
+    process_document = staticmethod(process_document_to_claims)
 
 
 chat_service = ChatService()
+

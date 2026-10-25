@@ -409,20 +409,21 @@ class LarkTokenService:
     # -------------------------------------------------------------------------
 
     async def init_token_on_startup(self) -> None:
-        """Nạp token từ MongoDB vào RAM và Lark Client khi server khởi động."""
+        """Nạp token từ MongoDB vào RAM và Lark Client khi server khởi động (tự động refresh nếu đã hết hạn)."""
         try:
+            valid_token = await self.get_valid_user_token()
             data = await self.get_stored_token_data()
-            if data and data.get("access_token"):
+            if valid_token and data:
                 self._sync_to_lark_client(
-                    data["access_token"],
+                    valid_token,
                     data.get("open_id", ""),
                     data.get("user_name", "User"),
                 )
-                logger.info(f"✅ Đã nạp User Token từ MongoDB vào RAM (User: {data.get('user_name')})")
+                logger.info(f"✅ Đã nạp và làm mới User Token từ MongoDB vào RAM (User: {data.get('user_name')})")
             else:
                 logger.info("ℹ️ Chưa có token trong MongoDB, hệ thống dùng cấu hình .env mặc định.")
         except Exception as e:
-            logger.warning(f"Lỗi khi đọc token từ MongoDB lúc startup: {e}")
+            logger.warning(f"Lỗi khi đọc/làm mới token từ MongoDB lúc startup: {e}")
 
     def _sync_to_lark_client(self, access_token: str, open_id: str, name: str) -> None:
         """Đồng bộ token trực tiếp vào singleton lark_service và lark_base_service nếu có."""

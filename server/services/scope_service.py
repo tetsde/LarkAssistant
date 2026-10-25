@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
 from database.db import get_chat_scopes_collection
@@ -32,7 +33,7 @@ BASE_FIELD_MAP: Dict[str, List[str]] = {
     "security_level": ["fldY4BvFLK", "Mức độ bảo mật", "security_level", "confidentiality"],
     "forbidden_labels": ["fldsexGPII", "Nhãn cấm xem", "forbidden_labels"],
     "allowed_labels": ["fldAYjcC5W", "Nhãn cho phép xem", "allowed_labels"],
-    "documents": ["fldHpn8M87", "Documents", "documents"],
+    "documents": ["fldHpn8M87", "Documents", "documents", "Link tài liệu", "Tài liệu", "doc_links", "Doc Links"],
     "dataset_id": ["fldKBId", "Knowledge Base ID", "dataset_id"],
     "wiki_dataset_id": ["fldWikiKB", "Wiki KB", "wiki_dataset_id", "wiki_kb_id"],
     "project_tag": ["fldProjTag", "Mã dự án", "Project Tag", "project_tag"],
@@ -45,6 +46,100 @@ def _get_base_field(raw_fields: Dict[str, Any], key: str) -> Any:
         if candidate in raw_fields:
             return raw_fields[candidate]
     return raw_fields.get(key)
+
+
+def _sanitize_filename(name: str) -> str:
+    """Loại bỏ các ký tự không hợp lệ trong tên tệp để an toàn khi lưu trữ."""
+    safe = re.sub(r'[\\/*?:"<>|]', '_', name).strip()
+    return safe or "lark_document"
+
+
+def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Trích xuất và phân loại tất cả các tài liệu từ trường 'Documents' của Lark Base.
+    Hỗ trợ cả 2 dạng:
+      1. Tệp đính kèm nhị phân (Attachment: PDF, docx, xlsx... có file_token/attachmentToken)
+      2. Liên kết đám mây Lark DocX / Wiki (Link URL dạng string, dict {'link': ..., 'text': ...}, hoặc list)
+
+    Returns:
+      Tuple[attachments, lark_links]:
+        - attachments: [{'file_token': ..., 'name': ..., 'type': ..., 'size': ...}]
+        - lark_links: [{'type': 'docx'|'wiki', 'token': ..., 'url': ..., 'title': ...}]
+    """
+    attachments: List[Dict[str, Any]] = []
+    lark_links: List[Dict[str, Any]] = []
+    seen_tokens: Set[str] = set()
+
+    if not docs_val:
+        return attachments, lark_links
+
+    raw_items = docs_val if isinstance(docs_val, list) else [docs_val]
+
+    for item in raw_items:
+        if not item:
+            continue
+
+        if isinstance(item, dict):
+            # 1. Kiểm tra nếu là Attachment tệp đính kèm từ Lark Base
+            ft = item.get("file_token") or item.get("attachmentToken") or item.get("id")
+            if ft and ("name" in item or "mimeType" in item or (item.get("type") not in ("url", "link") and "size" in item)):
+                attachments.append(item)
+                continue
+
+            # 2. Kiểm tra nếu là trường Hyperlink / Link dict: {'link': '...', 'text': '...'}
+            url = item.get("link") or item.get("url") or ""
+            text = item.get("text") or ""
+            title = text if text and not text.startswith("http") else None
+            combined_text = f"{url} {text}".strip()
+
+            from services.doc_parser_service import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            for match in DOCX_URL_PATTERN.finditer(combined_text):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "docx",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": title,
+                    })
+
+            for match in WIKI_URL_PATTERN.finditer(combined_text):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "wiki",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": title,
+                    })
+
+        elif isinstance(item, str):
+            from services.doc_parser_service import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            for match in DOCX_URL_PATTERN.finditer(item):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "docx",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": None,
+                    })
+
+            for match in WIKI_URL_PATTERN.finditer(item):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "wiki",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": None,
+                    })
+
+    return attachments, lark_links
 
 
 class ScopeService:
@@ -302,9 +397,9 @@ class ScopeService:
         raw_wiki = _extract_text_field(_get_base_field(raw_fields, "wiki_dataset_id"))
         wiki_dataset_id = raw_wiki or settings.WEKNORA_WIKI_DATASET_ID or ""
 
-        # 6. Đọc tài liệu đính kèm Documents
+        # 6. Đọc tài liệu đính kèm & liên kết Lark Docs từ trường Documents
         docs_val = _get_base_field(raw_fields, "documents")
-        raw_doc_list = docs_val if isinstance(docs_val, list) else []
+        attachments, lark_links = _extract_document_items(docs_val)
 
         existing_scope = await self.get_scope_by_chat_id(chat_id)
         existing_doc_map = {}
@@ -314,15 +409,18 @@ class ScopeService:
                 kid = d.get("knowledge_id")
                 if ft and kid:
                     existing_doc_map[ft] = d
+                u = d.get("url")
+                if u and kid:
+                    existing_doc_map[u] = d
 
         synced_docs: List[Dict[str, Any]] = []
         knowledge_ids: List[str] = []
 
         from services.larkbase import lark_base_service
+        from services.doc_parser_service import doc_parser_service
 
-        for d in raw_doc_list:
-            if not isinstance(d, dict):
-                continue
+        # 6.1. Xử lý tệp đính kèm nhị phân (PDF, Word, Excel...)
+        for d in attachments:
             file_token = d.get("file_token") or d.get("attachmentToken") or d.get("id") or ""
             file_name = d.get("name") or "document.pdf"
             mime_type = d.get("type") or d.get("mimeType") or "application/pdf"
@@ -354,8 +452,6 @@ class ScopeService:
                 except Exception as e:
                     logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý file '{file_name}': {e}", exc_info=True)
 
-            # Nếu k_id đã có nhưng chưa có summary (ví dụ lúc upload WeKnora đang parse bất đồng bộ),
-            # thử truy vấn metadata từ WeKnora để cập nhật đắp vào
             if k_id and not doc_summary:
                 try:
                     doc_info = await weknora_service.get_document_info(effective_dataset_id, k_id)
@@ -370,6 +466,80 @@ class ScopeService:
                     "name": file_name,
                     "size": file_size,
                     "type": mime_type,
+                    "knowledge_id": k_id,
+                    "summary": doc_summary,
+                })
+                knowledge_ids.append(k_id)
+
+        # 6.2. Xử lý liên kết tài liệu đám mây Lark DocX & Wiki
+        for link_info in lark_links:
+            link_type = link_info.get("type", "docx")
+            token = link_info.get("token", "")
+            url = link_info.get("url", "")
+            title = link_info.get("title")
+
+            if not token:
+                continue
+
+            doc_key = f"lark_{link_type}_{token}"
+            existing_doc = existing_doc_map.get(doc_key) or existing_doc_map.get(url)
+            k_id = existing_doc.get("knowledge_id") if existing_doc else None
+            doc_summary = existing_doc.get("summary") if existing_doc else None
+            doc_name = existing_doc.get("name") if existing_doc else None
+            doc_size = existing_doc.get("size", 0) if existing_doc else 0
+
+            if not k_id:
+                try:
+                    logger.info(f"📥 [ChatScope Sync] Đang phân giải liên kết Lark {link_type.upper()} ({token}) từ Base...")
+                    if link_type == "docx":
+                        doc_res = await doc_parser_service.parse_lark_docx(document_id=token, title=title)
+                    elif link_type == "wiki":
+                        doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=token)
+                    else:
+                        doc_res = None
+
+                    if doc_res and doc_res.success and doc_res.markdown_content:
+                        raw_name = doc_res.doc_name or title or f"Lark_{link_type.upper()}_{token}"
+                        safe_name = _sanitize_filename(raw_name)
+                        if not safe_name.lower().endswith(".md"):
+                            safe_name = f"{safe_name}.md"
+
+                        doc_bytes = doc_res.markdown_content.encode("utf-8")
+                        doc_name = safe_name
+                        doc_size = len(doc_bytes)
+
+                        logger.info(f"📤 [ChatScope Sync] Đang nạp Lark Doc '{doc_name}' ({doc_size} bytes) sang WeKnora KB {effective_dataset_id}...")
+                        upload_res = await weknora_service.upload_file(
+                            file_name=doc_name,
+                            file_bytes=doc_bytes,
+                            dataset_id=effective_dataset_id,
+                            mime_type="text/markdown",
+                        )
+                        k_id = upload_res.get("knowledge_id", "")
+                        doc_summary = upload_res.get("summary")
+                        if k_id:
+                            logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp Lark Doc thành công: knowledge_id={k_id}")
+                    else:
+                        err_msg = doc_res.error if doc_res else "Phân giải tài liệu không thành công"
+                        logger.warning(f"⚠️ [ChatScope Sync] Không thể phân giải Lark {link_type} ({token}): {err_msg}")
+                except Exception as e:
+                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý Lark Doc link '{url}': {e}", exc_info=True)
+
+            if k_id and not doc_summary:
+                try:
+                    doc_info = await weknora_service.get_document_info(effective_dataset_id, k_id)
+                    if doc_info and doc_info.get("summary"):
+                        doc_summary = doc_info["summary"]
+                except Exception as e:
+                    logger.debug(f"Chưa lấy được summary từ WeKnora cho Lark Doc {doc_name}: {e}")
+
+            if k_id:
+                synced_docs.append({
+                    "file_token": doc_key,
+                    "name": doc_name or f"Lark_{link_type.upper()}_{token}.md",
+                    "size": doc_size,
+                    "type": f"lark_{link_type}",
+                    "url": url,
                     "knowledge_id": k_id,
                     "summary": doc_summary,
                 })

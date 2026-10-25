@@ -16,6 +16,7 @@ Xử lý toàn bộ logic nghiệp vụ:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -244,6 +245,55 @@ class DigestService:
             logger.error(f"Lỗi khi truy vấn claims cho digest {chat_id}: {e}", exc_info=True)
             return []
 
+    async def get_previous_digest(
+        self,
+        chat_id: str,
+        before_date: Optional[str] = None,
+    ) -> Optional[DailyDigestRecord]:
+        """
+        Truy vấn bản ghi DailyDigestRecord gần nhất trước ngày `before_date` cho một nhóm chat.
+        Mục đích: Lấy overview_summary của ngày K-1 làm ngữ cảnh bối cảnh liên tục cho ngày K.
+        """
+        target_date = before_date or get_current_digest_date()
+        try:
+            coll = get_daily_digests_collection()
+            res = coll.find_one(
+                {
+                    "chat_id": chat_id,
+                    "date": {"$lt": target_date},
+                },
+                sort=[("date", -1)],
+            )
+            doc = await res if inspect.isawaitable(res) else None
+            if doc and isinstance(doc, dict):
+                return DailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.debug(f"Không thể tìm previous digest cho {chat_id} trước {target_date}: {e}")
+            return None
+
+    async def get_previous_master_digest(
+        self,
+        before_date: Optional[str] = None,
+    ) -> Optional[MasterDailyDigestRecord]:
+        """
+        Truy vấn bản ghi MasterDailyDigestRecord gần nhất trước ngày `before_date`.
+        """
+        target_date = before_date or get_current_digest_date()
+        try:
+            coll = get_master_daily_digests_collection()
+            res = coll.find_one(
+                {"date": {"$lt": target_date}},
+                sort=[("date", -1)],
+            )
+            doc = await res if inspect.isawaitable(res) else None
+            if doc and isinstance(doc, dict):
+                return MasterDailyDigestRecord(**doc)
+            return None
+        except Exception as e:
+            logger.debug(f"Không thể tìm previous master digest trước {target_date}: {e}")
+            return None
+
     async def extract_digest_from_messages(
         self,
         messages: List[StagingMessage],
@@ -252,23 +302,39 @@ class DigestService:
         date: Optional[str] = None,
         project_tag: Optional[str] = None,
         claims: Optional[List[Dict[str, Any]]] = None,
+        previous_overview_summary: Optional[str] = None,
+        previous_digest_date: Optional[str] = None,
     ) -> DailyDigestRecord:
         """Dùng LLM đọc danh sách tin nhắn và Claims để trích xuất thành đối tượng DailyDigestRecord."""
         target_date = date or get_current_digest_date()
         digest_id = f"digest_{target_date.replace('-', '')}_{chat_id}"
+
+        # Tự động nạp overview_summary của ngày trước (K-1) nếu chưa được chỉ định
+        if previous_overview_summary is None:
+            prev_digest = await self.get_previous_digest(chat_id=chat_id, before_date=target_date)
+            if prev_digest and prev_digest.overview_summary:
+                previous_overview_summary = prev_digest.overview_summary.strip()
+                previous_digest_date = prev_digest.date
 
         # Nếu claims chưa được truyền vào, tự động lấy từ MongoDB
         if claims is None:
             claims = await self.get_claims_for_digest(chat_id=chat_id, date=target_date, project_tag=project_tag)
 
         if not messages and not claims:
+            fallback_summary = (
+                f"Tiếp nối bối cảnh ngày trước: {previous_overview_summary}. Hôm nay không có trao đổi mới."
+                if previous_overview_summary
+                else "Không có tin nhắn trao đổi hay cập nhật tri thức nào trong ngày."
+            )
             return DailyDigestRecord(
                 id=digest_id,
                 date=target_date,
                 chat_id=chat_id,
                 chat_name=chat_name,
                 project_tag=project_tag,
-                overview_summary="Không có tin nhắn trao đổi hay cập nhật tri thức nào trong ngày.",
+                overview_summary=fallback_summary,
+                previous_overview_summary=previous_overview_summary,
+                previous_digest_date=previous_digest_date,
                 claims=[],
             )
 
@@ -294,17 +360,30 @@ class DigestService:
                 formatted_claims.append(f"[{idx}] Entity='{eid}' | [{st}] {prop} = {val} (khẳng định bởi: {spk})")
             claims_block = "\n\nDANH SÁCH MỆNH ĐỀ & SỰ THẬT ĐÃ BÓC TÁCH TRONG NGÀY (MONGODB CLAIMS):\n\"\"\"\n" + "\n".join(formatted_claims) + "\n\"\"\""
 
+        # Định dạng bối cảnh từ ngày trước (K-1)
+        prev_summary_block = ""
+        if previous_overview_summary:
+            p_date = f" ({previous_digest_date})" if previous_digest_date else ""
+            prev_summary_block = f"""\
+BỐI CẢNH TỔNG QUAN TỪ NGÀY TRƯỚC{p_date} (PREVIOUS OVERVIEW SUMMARY):
+\"\"\"
+{previous_overview_summary}
+\"\"\"
+
+"""
+
         user_prompt = f"""\
-HỘI THOẠI TRONG NGÀY ({target_date}) - NHÓM: {chat_name or chat_id} (Dự án: {project_tag or 'Nội bộ'}):
+{prev_summary_block}HỘI THOẠI TRONG NGÀY ({target_date}) - NHÓM: {chat_name or chat_id} (Dự án: {project_tag or 'Nội bộ'}):
 \"\"\"
 {msgs_block}
 \"\"\"{claims_block}
 
-Hãy phân tích kết hợp cả tin nhắn hội thoại và danh sách Claims đã bóc tách ở trên để trích xuất:
-1. Quyết định (Decisions): Các phương án, chính sách đã được chốt/thống nhất.
-2. Cam kết (Commitments: ai hứa gì, hạn nào, với ai).
-3. Thay đổi trạng thái (Status Changes: tiến độ, mốc, blocker).
-4. ĐẶC BIỆT LƯU Ý: Không bỏ sót các Đề xuất mới từ thành viên (Proposed Claims) hoặc các mâu thuẫn tranh luận dở dang chưa duyệt.
+Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn hội thoại và danh sách Claims đã bóc tách ở trên để trích xuất:
+1. overview_summary: 1-2 câu tóm tắt liên kết liền mạch diễn biến ngày hôm nay (tiếp nối bối cảnh ngày trước và cập nhật tình hình mới nhất hôm nay).
+2. Quyết định (Decisions): Các phương án, chính sách đã được chốt/thống nhất trong ngày hôm nay.
+3. Cam kết (Commitments: ai hứa gì, hạn nào, với ai).
+4. Thay đổi trạng thái (Status Changes: tiến độ, mốc, blocker).
+5. ĐẶC BIỆT LƯU Ý: Không bỏ sót các Đề xuất mới từ thành viên (Proposed Claims) hoặc các mâu thuẫn tranh luận dở dang chưa duyệt.
 Đảm bảo mỗi mục đều gán đúng message_id, speaker_name, timestamp từ tin nhắn gốc!
 """
 
@@ -402,6 +481,8 @@ Hãy phân tích kết hợp cả tin nhắn hội thoại và danh sách Claims
             chat_name=chat_name,
             project_tag=project_tag,
             overview_summary=parsed_data.get("overview_summary", ""),
+            previous_overview_summary=previous_overview_summary,
+            previous_digest_date=previous_digest_date,
             decisions=decisions,
             commitments=commitments,
             status_changes=status_changes,
@@ -677,10 +758,18 @@ Hãy phân tích kết hợp cả tin nhắn hội thoại và danh sách Claims
         self,
         group_digests: List[DailyDigestRecord],
         target_date: str,
+        previous_executive_summary: Optional[str] = None,
+        previous_master_date: Optional[str] = None,
     ) -> str:
         """Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành từ tóm tắt của các nhóm."""
         if not group_digests:
             return "Hôm nay không có hoạt động trao đổi đáng chú ý nào trên các nhóm dự án."
+
+        if previous_executive_summary is None:
+            prev_master = await self.get_previous_master_digest(before_date=target_date)
+            if prev_master and prev_master.executive_summary:
+                previous_executive_summary = prev_master.executive_summary.strip()
+                previous_master_date = prev_master.date
 
         lines = []
         for gd in group_digests:
@@ -692,11 +781,17 @@ Hãy phân tích kết hợp cả tin nhắn hội thoại và danh sách Claims
             blocker_str = f", {len(blockers)} blocker: {'; '.join(blockers)}" if blockers else ""
             lines.append(f"- Nhóm '{grp_name}': {summary} ({dec_cnt} quyết định, {cmt_cnt} cam kết{blocker_str})")
 
-        prompt = f"""Bạn là Giám đốc Điều hành (COO / Project Director). Hãy viết 1 đoạn văn ngắn (2-3 câu, tối đa 80 từ) tóm tắt bức tranh toàn cảnh cấp điều hành cho ngày {target_date} dựa trên báo cáo từ các nhóm sau:
+        prev_exec_block = ""
+        if previous_executive_summary:
+            p_date = f" ({previous_master_date})" if previous_master_date else ""
+            prev_exec_block = f"Bối cảnh điều hành ngày hôm trước{p_date}:\n\"{previous_executive_summary}\"\n\n"
+
+        prompt = f"""Bạn là Giám đốc Điều hành (COO / Project Director). Hãy viết 1 đoạn văn ngắn (2-3 câu, tối đa 80 từ) tóm tắt bức tranh toàn cảnh cấp điều hành cho ngày {target_date} dựa trên bối cảnh ngày trước (nếu có) và báo cáo từ các nhóm sau:
+{prev_exec_block}Báo cáo các nhóm hôm nay:
 {chr(10).join(lines)}
 
 Yêu cầu:
-- Nêu bật tiến độ chung, các cam kết/mốc quan trọng và các điểm nghẽn (blocker) cần ban lãnh đạo chú ý (nếu có).
+- Nêu bật tiến độ chung, các cam kết/mốc quan trọng và các điểm nghẽn (blocker) cần ban lãnh đạo chú ý (nếu có), đảm bảo mạch tiếp nối tự nhiên từ ngày hôm trước.
 - Ngắn gọn, súc tích, mang tính chỉ đạo điều hành, không liệt kê máy móc.
 - Trả về văn bản thuần túy không dấu ngoặc kép hay markdown header."""
         try:
@@ -830,7 +925,17 @@ Yêu cầu:
             except Exception as e:
                 logger.error(f"Lỗi khi tổng hợp digest cho nhóm {cid}: {e}", exc_info=True)
 
-        exec_summary = await self._generate_executive_overview(group_digests, target_date)
+        # Lấy thông tin master digest liền trước (nếu có)
+        prev_master = await self.get_previous_master_digest(before_date=target_date)
+        prev_exec_summary = prev_master.executive_summary.strip() if prev_master and prev_master.executive_summary else None
+        prev_master_date = prev_master.date if prev_master else None
+
+        exec_summary = await self._generate_executive_overview(
+            group_digests=group_digests,
+            target_date=target_date,
+            previous_executive_summary=prev_exec_summary,
+            previous_master_date=prev_master_date,
+        )
         master_id = f"master_digest_{target_date.replace('-', '')}"
 
         needs_approval = (
@@ -843,6 +948,8 @@ Yêu cầu:
             id=master_id,
             date=target_date,
             executive_summary=exec_summary,
+            previous_executive_summary=prev_exec_summary,
+            previous_master_date=prev_master_date,
             group_digests=group_digests,
             total_messages=total_msgs,
             total_groups=len(group_digests),

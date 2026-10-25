@@ -12,8 +12,24 @@ Mục đích:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 from pydantic import BaseModel, Field
+
+# Tập hợp các phần mở rộng tệp được hỗ trợ bởi AnyDoc (Tencent & MarkItDown)
+SUPPORTED_DOCUMENT_EXTENSIONS: Set[str] = {
+    # Văn bản
+    ".docx", ".doc", ".pdf", ".txt", ".md", ".markdown",
+    # Bảng tính
+    ".xlsx", ".xls", ".csv",
+    # Trình chiếu
+    ".pptx", ".ppt",
+    # Hình ảnh (biên bản họp viết tay, bảng trắng, sơ đồ)
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff",
+}
+
+# Giới hạn kích thước tệp tối đa: 50MB (bảo vệ bộ nhớ & kết nối)
+MAX_FILE_SIZE_BYTES: int = 50 * 1024 * 1024
+
 
 
 class DocReaderResult(BaseModel):

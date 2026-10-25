@@ -37,30 +37,14 @@ for p in (SERVER_ROOT, PROTO_DIR):
         sys.path.insert(0, p)
 
 from core.config import settings
-from models.docreader import DocReaderResult
+from models.docreader import (
+    DocReaderResult,
+    MAX_FILE_SIZE_BYTES,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+)
 from proto import docreader_pb2, docreader_pb2_grpc
 
 logger = logging.getLogger("hilark.docreader")
-
-
-# ==============================================================================
-# 2. FILE EXTENSION GATE (DANH SÁCH ĐỊNH DẠNG HỢP LỆ)
-# ==============================================================================
-
-# Tập hợp các phần mở rộng tệp được hỗ trợ bởi AnyDoc (Tencent & MarkItDown)
-SUPPORTED_DOCUMENT_EXTENSIONS: Set[str] = {
-    # Văn bản
-    ".docx", ".doc", ".pdf", ".txt", ".md", ".markdown",
-    # Bảng tính
-    ".xlsx", ".xls", ".csv",
-    # Trình chiếu
-    ".pptx", ".ppt",
-    # Hình ảnh (biên bản họp viết tay, bảng trắng, sơ đồ)
-    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff",
-}
-
-# Giới hạn kích thước tệp tối đa: 50MB
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 
 # ==============================================================================

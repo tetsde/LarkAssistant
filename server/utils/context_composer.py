@@ -161,11 +161,16 @@ class ContextComposer:
             if not item:
                 continue
 
+            if isinstance(item, RetrievedChunk):
+                chunks.append(item)
+                continue
+
             if isinstance(item, str):
                 text = item.strip()
                 if text:
                     chunks.append(RetrievedChunk(content=text))
                 continue
+
 
             if isinstance(item, dict):
                 content = (
@@ -309,6 +314,8 @@ class ContextComposer:
                 continue
 
             status = str(f.get("status") or "current").lower()
+            if status in ("accepted", "active", "approved"):
+                status = "current"
             if not self.include_superseded and status == "superseded":
                 continue
 
@@ -325,10 +332,10 @@ class ContextComposer:
             if not ename:
                 ename = f.get("project_tag") or f.get("entity_name")
 
-            src = f.get("source")
+            src = f.get("source") or f.get("source_doc")
             snippet = None
             if isinstance(src, dict):
-                snippet = src.get("snippet") or src.get("text")
+                snippet = src.get("snippet") or src.get("text") or src.get("source_doc")
             elif isinstance(src, str):
                 snippet = src
 
@@ -634,8 +641,8 @@ class ContextComposer:
         chunks = self.normalize_retriever_data(retriever_data)
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
 
-        # 2. Tự động so khớp chéo Thực thể (Entity Alignment) nếu bật auto_align
-        if auto_align and claims and (chunks or query):
+        # 2. Tự động so khớp chéo Thực thể (Entity Alignment) nếu bật auto_align và có query
+        if auto_align and claims and query:
             claims = self.align_claims_with_retriever(
                 chunks=chunks,
                 claims=claims,

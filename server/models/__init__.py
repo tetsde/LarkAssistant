@@ -33,12 +33,19 @@ from models.larkbase import (
 )
 
 from models.chat_queue import ChatQueueItem
-from models.docreader import DocReaderResult, DocParseResult
+from models.docreader import (
+    DocReaderResult,
+    DocParseResult,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    MAX_FILE_SIZE_BYTES,
+)
 
 __all__ = [
     "ChatQueueItem",
     "DocReaderResult",
     "DocParseResult",
+    "SUPPORTED_DOCUMENT_EXTENSIONS",
+    "MAX_FILE_SIZE_BYTES",
     "ChatRequest",
     "UserChatRequest",
     "ApproveDraftRequest",

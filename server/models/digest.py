@@ -135,6 +135,8 @@ class DailyDigestRecord(BaseModel):
     chat_name: str = Field(default="", description="Tên nhóm chat")
     project_tag: Optional[str] = Field(default=None, description="Mã dự án (nếu có)")
     overview_summary: str = Field(default="", description="Tóm tắt 1-2 câu tổng quan ngày")
+    previous_overview_summary: Optional[str] = Field(default=None, description="Tóm tắt tổng quan của ngày làm việc liền trước (K-1) để duy trì mạch ngữ cảnh liên tục")
+    previous_digest_date: Optional[str] = Field(default=None, description="Ngày ghi nhận của bản digest liền trước (YYYY-MM-DD)")
 
     # 3 danh mục bắt buộc
     decisions: List[DecisionItem] = Field(default_factory=list)
@@ -157,6 +159,21 @@ class DailyDigestRecord(BaseModel):
         project_name = self.project_tag or "Nội bộ"
         group_display = self.chat_name or f"Nhóm {self.chat_id}"
 
+        overview_section_lines: List[str] = []
+        if self.previous_overview_summary:
+            prev_date_tag = f" ({self.previous_digest_date})" if self.previous_digest_date else ""
+            overview_section_lines.extend([
+                f"> ⏳ **Bối cảnh tiếp nối từ ngày trước{prev_date_tag}:**",
+                f"> {self.previous_overview_summary.strip()}",
+                "",
+                f"**Diễn biến ngày hôm nay ({self.date}):**",
+                self.overview_summary.strip() or "Ghi nhận các trao đổi về quyết định, cam kết tiến độ và cập nhật trạng thái trong ngày.",
+            ])
+        else:
+            overview_section_lines.append(
+                self.overview_summary or "Ghi nhận các trao đổi về quyết định, cam kết tiến độ và cập nhật trạng thái trong ngày."
+            )
+
         lines = [
             f"# WIKI KNOWLEDGE BASE: [[DỰ ÁN {project_name.upper()}]]",
             f"**Nhóm trao đổi (Chat Group):** [[{group_display}]] (ID: `{self.chat_id}`)",
@@ -164,7 +181,7 @@ class DailyDigestRecord(BaseModel):
             f"**Ngày ghi nhận:** `{self.date}` | **Tin nhắn tổng hợp:** {self.message_count} | **Số lượng Claims:** {len(self.claims)}",
             "",
             "## 1. TỔNG QUAN DIỄN BIẾN (EXECUTIVE OVERVIEW)",
-            self.overview_summary or "Ghi nhận các trao đổi về quyết định, cam kết tiến độ và cập nhật trạng thái trong ngày.",
+            "\n".join(overview_section_lines),
             "",
             "---",
             "## 2. THỰC THỂ & MỆNH ĐỀ CẬP NHẬT (ENTITIES & CLAIMS)",
@@ -281,6 +298,8 @@ class MasterDailyDigestRecord(BaseModel):
     id: str = Field(..., description="Mã master digest: master_digest_YYYYMMDD")
     date: str = Field(..., description="Ngày ghi nhận: YYYY-MM-DD")
     executive_summary: str = Field(default="", description="Bức tranh toàn cảnh cấp điều hành về tất cả các dự án trong ngày")
+    previous_executive_summary: Optional[str] = Field(default=None, description="Tóm tắt điều hành cấp cao của ngày hôm trước (K-1)")
+    previous_master_date: Optional[str] = Field(default=None, description="Ngày của bản master digest liền trước (YYYY-MM-DD)")
     group_digests: List[DailyDigestRecord] = Field(default_factory=list, description="Danh sách digest chi tiết của từng nhóm chat")
     total_messages: int = Field(default=0, description="Tổng số tin nhắn staging đã xử lý trên toàn bộ các nhóm")
     total_groups: int = Field(default=0, description="Số lượng nhóm chat có hoạt động trong ngày")

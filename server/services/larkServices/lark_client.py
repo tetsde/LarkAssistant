@@ -231,3 +231,217 @@ class LarkClientMixin:
         if self.user_access_token:
             return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
         return None
+
+    # -------------------------------------------------------------------------
+    # TẢI TÀI NGUYÊN & PHÂN GIẢI TÀI LIỆU (DOCUMENT & RESOURCE ACCESS)
+    # -------------------------------------------------------------------------
+
+    async def adownload_message_resource(
+        self,
+        message_id: str,
+        file_key: str,
+        resource_type: str = "file",
+    ) -> Optional[bytes]:
+        """
+        Tải tài nguyên nhị phân (tệp đính kèm hoặc hình ảnh) từ tin nhắn Lark IM (async).
+
+        Args:
+            message_id: ID của tin nhắn chứa tệp.
+            file_key: Key của tệp (file_key cho file hoặc image_key cho ảnh).
+            resource_type: 'file' (mặc định) hoặc 'image'.
+
+        Returns:
+            bytes nếu tải thành công, None nếu thất bại.
+        """
+        if not message_id or not file_key:
+            logger.warning("adownload_message_resource: message_id hoặc file_key rỗng.")
+            return None
+
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest
+        opt = self._get_request_option(as_user=True)
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type(resource_type)
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.message_resource.aget(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if hasattr(resp, "file") and resp.file:
+                if hasattr(resp.file, "read"):
+                    return resp.file.read()
+                elif isinstance(resp.file, (bytes, bytearray)):
+                    return bytes(resp.file)
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK IM] Exception khi tải tài nguyên {file_key}: {e}", exc_info=True)
+            return None
+
+    def download_message_resource(
+        self,
+        message_id: str,
+        file_key: str,
+        resource_type: str = "file",
+    ) -> Optional[bytes]:
+        """Phiên bản đồng bộ của adownload_message_resource."""
+        if not message_id or not file_key:
+            return None
+
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest
+        opt = self._get_request_option(as_user=True)
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type(resource_type)
+            .build()
+        )
+        try:
+            resp = self.client.im.v1.message_resource.get(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if hasattr(resp, "file") and resp.file:
+                if hasattr(resp.file, "read"):
+                    return resp.file.read()
+                elif isinstance(resp.file, (bytes, bytearray)):
+                    return bytes(resp.file)
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK IM] Exception khi tải tài nguyên {file_key}: {e}", exc_info=True)
+            return None
+
+    async def aget_docx_raw_content(self, document_id: str) -> Optional[str]:
+        """
+        Lấy nội dung Markdown nguyên bản của tài liệu Lark DocX qua OpenAPI (async, 0 token cost).
+
+        Args:
+            document_id: ID của tài liệu DocX (document_id hoặc obj_token).
+
+        Returns:
+            Chuỗi Markdown thuần nếu thành công, None nếu thất bại.
+        """
+        if not document_id:
+            return None
+
+        from lark_oapi.api.docx.v1 import RawContentDocumentRequest
+        opt = self._get_request_option(as_user=True)
+        req = RawContentDocumentRequest.builder().document_id(document_id).build()
+        try:
+            resp = await self.client.docx.v1.document.araw_content(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if resp.data and hasattr(resp.data, "content"):
+                return resp.data.content or ""
+            return ""
+        except Exception as e:
+            logger.error(f"❌ [LARK DOCX] Exception khi lấy raw content document {document_id}: {e}", exc_info=True)
+            return None
+
+    def get_docx_raw_content(self, document_id: str) -> Optional[str]:
+        """Phiên bản đồng bộ của aget_docx_raw_content."""
+        if not document_id:
+            return None
+
+        from lark_oapi.api.docx.v1 import RawContentDocumentRequest
+        opt = self._get_request_option(as_user=True)
+        req = RawContentDocumentRequest.builder().document_id(document_id).build()
+        try:
+            resp = self.client.docx.v1.document.raw_content(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if resp.data and hasattr(resp.data, "content"):
+                return resp.data.content or ""
+            return ""
+        except Exception as e:
+            logger.error(f"❌ [LARK DOCX] Exception khi lấy raw content document {document_id}: {e}", exc_info=True)
+            return None
+
+    async def aresolve_wiki_token(self, wiki_token: str) -> Optional[Dict[str, str]]:
+        """
+        Giải mã wiki node token thành obj_token và obj_type (ví dụ: docx, sheet, bitable).
+
+        Args:
+            wiki_token: Token của trang Wiki.
+
+        Returns:
+            Dict {"obj_token": str, "obj_type": str, "title": str} nếu thành công, None nếu thất bại.
+        """
+        if not wiki_token:
+            return None
+
+        from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
+        opt = self._get_request_option(as_user=True)
+        req = GetNodeSpaceRequest.builder().token(wiki_token).build()
+        try:
+            resp = await self.client.wiki.v2.space.aget_node(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if resp.data and hasattr(resp.data, "node") and resp.data.node:
+                node = resp.data.node
+                return {
+                    "obj_token": getattr(node, "obj_token", "") or "",
+                    "obj_type": getattr(node, "obj_type", "") or "",
+                    "title": getattr(node, "title", "") or "",
+                }
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK WIKI] Exception khi tra cứu wiki node {wiki_token}: {e}", exc_info=True)
+            return None
+
+    def resolve_wiki_token(self, wiki_token: str) -> Optional[Dict[str, str]]:
+        """Phiên bản đồng bộ của aresolve_wiki_token."""
+        if not wiki_token:
+            return None
+
+        from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
+        opt = self._get_request_option(as_user=True)
+        req = GetNodeSpaceRequest.builder().token(wiki_token).build()
+        try:
+            resp = self.client.wiki.v2.space.get_node(req, opt)
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if resp.data and hasattr(resp.data, "node") and resp.data.node:
+                node = resp.data.node
+                return {
+                    "obj_token": getattr(node, "obj_token", "") or "",
+                    "obj_type": getattr(node, "obj_type", "") or "",
+                    "title": getattr(node, "title", "") or "",
+                }
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK WIKI] Exception khi tra cứu wiki node {wiki_token}: {e}", exc_info=True)
+            return None
+

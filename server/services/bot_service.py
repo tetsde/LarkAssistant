@@ -22,7 +22,8 @@ from typing import Optional
 from core.config import settings
 from models.lark import LarkMessage
 from models.memory import get_vietnam_now
-from services.chat_service import process_chat_pipeline
+from services.chat_service import process_chat_pipeline, process_document_to_claims
+from services.doc_parser_service import doc_parser_service
 from services.digest_service import digest_service
 from services.draft_service import draft_service
 from services.lark import lark_service
@@ -67,6 +68,98 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     if msg.is_bot:
         print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
         return
+
+    # -------------------------------------------------------------------------
+    # 1.5. XỬ LÝ TỆP ĐÍNH KÈM HOẶC HÌNH ẢNH (BINARY ATTACHMENTS - EDL-0010)
+    # -------------------------------------------------------------------------
+    if msg.message_type in ("file", "image"):
+        file_key = msg.file_key or msg.image_key
+        file_name = msg.file_name or ("image.png" if msg.message_type == "image" else "document")
+
+        if not file_key:
+            print(f"⚠️ [ATTACHMENT] Tin nhắn {msg.message_id} là {msg.message_type} nhưng không tìm thấy file_key/image_key.")
+            return
+
+        # Kiểm tra Extension Gate
+        if not doc_parser_service._docreader.is_supported_file(file_name):
+            print(f"🚫 [ATTACHMENT GATE] Bỏ qua file '{file_name}' vì không thuộc định dạng được hỗ trợ.")
+            if msg.chat_type == "p2p":
+                await lark_service.areply_text(
+                    msg.message_id,
+                    f"⚠️ Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh)."
+                )
+            return
+
+        print(f"📄 [ATTACHMENT DETECTED] Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
+        await lark_service.areply_text(
+            msg.message_id,
+            f"📄 Trợ lý đang đọc và trích xuất thông tin từ tài liệu \"{file_name}\"..."
+        )
+
+        doc_res = await doc_parser_service.parse_attachment(
+            message_id=msg.message_id,
+            file_key=file_key,
+            file_name=file_name,
+            resource_type=msg.message_type,
+        )
+
+        if not doc_res.success:
+            print(f"❌ [ATTACHMENT FAILED] Phân giải thất bại: {doc_res.error}")
+            await lark_service.areply_text(
+                msg.message_id,
+                f"⚠️ Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
+            )
+            return
+
+        # Trích xuất Claims & Entities vào MongoDB
+        claims_res = await process_document_to_claims(
+            doc_result=doc_res,
+            chat_id=msg.chat_id,
+            sender=msg.sender_id,
+            sender_id=msg.sender_id,
+            message_id=msg.message_id,
+        )
+
+        new_count = claims_res.get("new_claims_count", 0)
+        superseded_count = claims_res.get("superseded_claims_count", 0)
+        print(f"✅ [ATTACHMENT SUCCESS] Đã lưu {new_count} facts mới vào MongoDB từ {file_name}.")
+
+        reply_msg = f"✅ Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới vào bộ nhớ nhóm."
+        if superseded_count > 0:
+            reply_msg += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
+        await lark_service.areply_text(msg.message_id, reply_msg)
+        return
+
+    # -------------------------------------------------------------------------
+    # 1.6. XỬ LÝ LIÊN KẾT LARK CLOUD DOCX / WIKI (LARK DOC LINKS - EDL-0010)
+    # -------------------------------------------------------------------------
+    if msg.message_type == "text" and msg.text:
+        lark_links = doc_parser_service.extract_lark_links(msg.text)
+        if lark_links:
+            print(f"🔗 [LARK LINKS DETECTED] Tìm thấy {len(lark_links)} liên kết tài liệu Lark trong tin nhắn.")
+            for link in lark_links:
+                if link["type"] == "docx":
+                    doc_res = await doc_parser_service.parse_lark_docx(link["token"])
+                elif link["type"] == "wiki":
+                    doc_res = await doc_parser_service.parse_lark_wiki(link["token"])
+                else:
+                    continue
+
+                if doc_res.success:
+                    claims_res = await process_document_to_claims(
+                        doc_result=doc_res,
+                        chat_id=msg.chat_id,
+                        sender=msg.sender_id,
+                        sender_id=msg.sender_id,
+                        message_id=msg.message_id,
+                    )
+                    new_count = claims_res.get("new_claims_count", 0)
+                    superseded_count = claims_res.get("superseded_claims_count", 0)
+                    confirm_link_text = f"✅ Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới vào bộ nhớ."
+                    if superseded_count > 0:
+                        confirm_link_text += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
+                    await lark_service.areply_text(msg.message_id, confirm_link_text)
+
 
     # -------------------------------------------------------------------------
     # 2. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
