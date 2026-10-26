@@ -36,7 +36,7 @@ class JevService:
         # Nếu httpx.AsyncClient đã bị monkey-patch / mock trong unit test
         import sys
         target_httpx = httpx
-        jev_mod = sys.modules.get("services.jev")
+        jev_mod = sys.modules.get("services.ai_service") or sys.modules.get("services.jev")
         if jev_mod and hasattr(jev_mod, "httpx") and type(getattr(jev_mod.httpx, "AsyncClient", None)).__name__ in ("MagicMock", "AsyncMock"):
             target_httpx = jev_mod.httpx
 

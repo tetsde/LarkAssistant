@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
@@ -23,6 +24,13 @@ from services.lark.bitable import lark_base_service
 from services.knowledge.weknora_client import weknora_service
 
 logger = logging.getLogger("hilark.policy_sync")
+
+
+def _get_active_weknora():
+    shim = sys.modules.get("services.knowledge_service") or sys.modules.get("services.policy_sync_service")
+    if shim and hasattr(shim, "weknora_service"):
+        return shim.weknora_service
+    return weknora_service
 
 
 # =============================================================================
@@ -195,8 +203,10 @@ class PolicySyncService:
             new_tokens, attachments = self.parse_policy_tokens_and_attachments(records)
             logger.info(f"[PolicySync] Trích xuất được {len(new_tokens)} folder/doc tokens duy nhất: {new_tokens}")
 
+            active_weknora = _get_active_weknora()
+
             # 3. Lấy cấu hình WeKnora hiện tại để so sánh Diff
-            current_ds_info = await weknora_service.get_datasource_info(ds_id)
+            current_ds_info = await active_weknora.get_datasource_info(ds_id)
             current_tokens = []
             if current_ds_info and isinstance(current_ds_info, dict):
                 current_tokens = (current_ds_info.get("config") or {}).get("resource_ids") or []
@@ -221,7 +231,7 @@ class PolicySyncService:
             # 5. Cập nhật Data Source trên WeKnora nếu có thay đổi cấu hình resource_ids
             if has_diff:
                 logger.info(f"⚡ [PolicySync] Phát hiện thay đổi tokens: {current_set} -> {new_set}. Đang cập nhật WeKnora...")
-                update_ok = await weknora_service.update_datasource_resources(ds_id, new_tokens)
+                update_ok = await active_weknora.update_datasource_resources(ds_id, new_tokens)
                 if not update_ok:
                     logger.error("[PolicySync] Cập nhật resource_ids vào WeKnora Data Source thất bại.")
                     return {
@@ -235,7 +245,7 @@ class PolicySyncService:
 
             # 6. Kích hoạt đồng bộ trên WeKnora
             logger.info(f"🚀 [PolicySync] Đang kích hoạt đồng bộ WeKnora Data Source {ds_id}...")
-            sync_res = await weknora_service.trigger_datasource_sync(ds_id)
+            sync_res = await active_weknora.trigger_datasource_sync(ds_id)
 
             self._last_synced_tokens = new_set
 
@@ -250,7 +260,7 @@ class PolicySyncService:
                             lark_base_service.download_attachment, file_token, True
                         )
                         if file_bytes:
-                            up_res = await weknora_service.upload_file(
+                            up_res = await active_weknora.upload_file(
                                 file_bytes=file_bytes,
                                 filename=fname,
                                 dataset_id=settings.WEKNORA_POLICY_DATASET_ID,

@@ -186,7 +186,7 @@ class LarkClientMixin:
         Hỗ trợ cache để tránh spam network, force_ping=True để ping lại tức thì.
         """
         if not hasattr(self, "_last_token_check") or force_ping or not self._last_token_check:
-            from utils.lark_token import ping_user_access_token
+            from services.auth.token_verifier import ping_user_access_token
             self._last_token_check = ping_user_access_token(
                 token=self.user_access_token,
                 domain=self.domain,

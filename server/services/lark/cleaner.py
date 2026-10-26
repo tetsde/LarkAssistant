@@ -1,20 +1,25 @@
 """
-HiLark - Lark Base (Bitable) Field Cleaner Utilities
-====================================================
-Vị trí: server/utils/larkbase/cleaner.py
+HiLark - Lark Base (Bitable) Field Cleaner & Token Utilities
+===========================================================
+Vị trí: server/services/lark/cleaner.py
 
 Mục đích:
     Chuẩn hóa và làm sạch các giá trị thô phức tạp được trả về từ Lark Bitable API
     (như mảng text object, user array, attachment, url dict, timestamp mili-giây)
     về dạng dữ liệu Python cơ bản (str, int, float, list, datetime string)
     giúp dễ dàng hiển thị hoặc nạp vào LLM/Context.
+    Đồng thời cung cấp tiện ích giải mã và kiểm tra hạn sử dụng Lark Access Token.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+
+from services.auth.token_verifier import decode_jwt_token_payload
 
 VIETNAM_TZ = timezone(timedelta(hours=7))
 
@@ -89,3 +94,52 @@ def clean_record_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in fields.items():
         cleaned[k] = clean_field_value(v)
     return cleaned
+
+
+def inspect_bitable_token(token: str) -> Dict[str, Any]:
+    """
+    Kiểm tra chi tiết thông tin token Lark Bitable:
+      - Trạng thái hết hạn (expired/valid)
+      - Thời gian hết hạn (theo giờ Việt Nam)
+      - Danh sách quyền (scopes) và kiểm tra có quyền Bitable (bitable:app) hay không
+    """
+    if not token:
+        return {"status": "missing", "is_valid": False, "message": "Chưa có Token."}
+
+    payload = decode_jwt_token_payload(token)
+    if not payload:
+        return {
+            "status": "opaque_or_invalid",
+            "is_valid": True,
+            "message": "Token không phải JWT định dạng chuẩn hoặc là Opaque Token.",
+        }
+
+    exp = payload.get("exp")
+    iat = payload.get("iat")
+    scopes = payload.get("scope", "")
+    now = time.time()
+
+    is_expired = False
+    remaining_sec = None
+    if exp:
+        remaining_sec = int(exp - now)
+        is_expired = remaining_sec <= 0
+
+    exp_dt_str = ""
+    if exp:
+        exp_dt = datetime.fromtimestamp(exp, tz=VIETNAM_TZ)
+        exp_dt_str = exp_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    has_bitable_scope = "bitable:app" in scopes
+
+    return {
+        "status": "expired" if is_expired else "valid",
+        "is_valid": not is_expired,
+        "is_expired": is_expired,
+        "expires_at": exp_dt_str,
+        "remaining_seconds": remaining_sec,
+        "scopes": scopes,
+        "has_bitable_scope": has_bitable_scope,
+        "app_id": payload.get("client_id", ""),
+        "user_type": payload.get("user_type", ""),
+    }

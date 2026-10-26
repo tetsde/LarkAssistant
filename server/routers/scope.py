@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.config import settings
 from models.chat_scope import ChatScopeRecord
-from services.scope_service import scope_service
+from services.auth_service import scope_service
 
 router = APIRouter(prefix="/api/v1/scopes", tags=["Chat Scopes & Permissions"])
 

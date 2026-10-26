@@ -12,7 +12,7 @@ Mục đích:
       hệ thống khi token hết hạn.
 
 Sử dụng:
-    from utils.lark_token import ping_user_access_token, check_and_warn_token
+    from services.auth.token_verifier import ping_user_access_token, check_and_warn_token
 
     # 1. Ping kiểm tra nhanh:
     res = ping_user_access_token()

@@ -19,6 +19,7 @@ from services.ai.llm_extractor import (
     extract_facts,
     apply_and_save_extraction,
 )
+from services.ai.text_filter import TextFilter, text_filter
 
 __all__ = [
     "JEVError",
@@ -33,4 +34,6 @@ __all__ = [
     "extract_entities",
     "extract_facts",
     "apply_and_save_extraction",
+    "TextFilter",
+    "text_filter",
 ]

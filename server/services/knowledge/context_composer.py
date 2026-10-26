@@ -1,7 +1,7 @@
 """
 HiLark Context Composer Utility
 ===============================
-Vị trí: server/utils/context_composer.py
+Vị trí: server/services/knowledge/context_composer.py
 
 Mục đích:
     Đóng gói (compose) dữ liệu đa nguồn gồm:
@@ -14,7 +14,7 @@ Mục đích:
       - Chuẩn hóa trích dẫn nguồn (Citations metadata)
 
 Sử dụng:
-    from utils.context_composer import ContextComposer, compose_context
+    from services.knowledge.context_composer import ContextComposer, compose_context
 
     composer = ContextComposer()
     result = composer.compose(

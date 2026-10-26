@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from core.config import settings
 from core.http_client import get_http_client
 from models.chat import ChatRequest
-from utils.text_filter import text_filter
+from services.ai.text_filter import text_filter
 
 
 
@@ -30,8 +30,8 @@ class WeKnoraService:
                 yield client
             return
 
-        # Kiểm tra mock tại httpx hoặc tại transitional shim services.weknora.httpx
-        shim_mod = sys.modules.get("services.weknora")
+        # Kiểm tra mock tại httpx hoặc tại consolidated / transitional shim services.knowledge_service.httpx
+        shim_mod = sys.modules.get("services.knowledge_service") or sys.modules.get("services.weknora")
         shim_httpx = getattr(shim_mod, "httpx", None) if shim_mod else None
         target_httpx = shim_httpx or httpx
 
@@ -315,7 +315,7 @@ class WeKnoraService:
                     print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
                     return []
 
-                shim_mod = sys.modules.get("services.weknora")
+                shim_mod = sys.modules.get("services.knowledge_service") or sys.modules.get("services.weknora")
                 active_settings = getattr(shim_mod, "settings", settings) if shim_mod else settings
 
                 effective_vector_threshold = (

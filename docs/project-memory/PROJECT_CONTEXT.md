@@ -96,9 +96,11 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
 
 ## 9. Last verified
 - **Date:** 2026-10-26
-- **What was checked:** Hoàn thành trọn vẹn cả 3 Giai đoạn của Quyết định Kỹ thuật `EDL-0009`:
-  - Giai đoạn 1: Database Indexes (8 collections) & Bounded Caches (TTL + Size limits).
-  - Giai đoạn 2: Persistent HTTP Connection Pool (`core/http_client.py`), Clean Architecture (`JEVError`), Non-blocking Startup I/O.
-  - Giai đoạn 3: Phân rã `bot_service.py` Facade & tách các Handlers độc lập (`bot_handlers/`).
-  - Toàn bộ 96/96 test cases passed 100% trong 3.36s.
-- **By / source:** Antigravity Agent (phiên nghiệm thu hoàn thành toàn bộ EDL-0009).
+- **What was checked:** Hoàn thành Hợp nhất & Tinh gọn Services trong `server/services/`:
+  1. Gộp `jev.py` và `llm_client.py` thành `server/services/ai_service.py`.
+  2. Gộp `draft_store.py` và `draft_service.py` thành `server/services/draft_service.py`.
+  3. Gộp `token_service.py` và `scope_service.py` thành `server/services/auth_service.py`.
+  4. Gộp `weknora.py`, `doc_parser_service.py`, `docreader_service.py`, `policy_sync_service.py` thành `server/services/knowledge_service.py`.
+  5. Xóa hoàn toàn 10 file cũ (`jev.py`, `llm_client.py`, `draft_store.py`, `token_service.py`, `scope_service.py`, `weknora.py`, `doc_parser_service.py`, `docreader_service.py`, `policy_sync_service.py`, `larkbase.py`).
+  6. Toàn bộ các bài kiểm thử đơn vị cho các service được gộp (124/124 tests) PASSED 100%.
+- **By / source:** Antigravity Agent (hoàn tất tinh gọn cấu trúc module services theo yêu cầu người dùng).

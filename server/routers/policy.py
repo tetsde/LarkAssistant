@@ -6,8 +6,7 @@ Vị trí: server/routers/policy.py
 from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Query
 from core.config import settings
-from services.policy_sync_service import policy_sync_service
-from services.weknora import weknora_service
+from services.knowledge_service import policy_sync_service, weknora_service
 
 router = APIRouter(prefix="/policy", tags=["Company Policy Sync"])
 

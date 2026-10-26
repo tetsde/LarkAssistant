@@ -42,12 +42,12 @@ from models.larkbase import (
     LarkBaseRecord,
     LarkBaseQueryResult,
 )
-from utils.larkbase import (
+from services.lark.cleaner import (
     clean_field_value,
     clean_record_fields,
-    decode_jwt_token_payload,
     inspect_bitable_token,
 )
+from services.auth.token_verifier import decode_jwt_token_payload
 
 logger = logging.getLogger("hilark.larkbase")
 if not logger.handlers:

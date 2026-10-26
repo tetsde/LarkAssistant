@@ -75,6 +75,11 @@ from services.lark.bitable import (
     LarkBaseRecord,
     read_lark_base_records,
 )
+from services.lark.cleaner import (
+    clean_field_value,
+    clean_record_fields,
+    inspect_bitable_token,
+)
 from services.lark.bot_runner import (
     handle_lark_incoming_message,
     start_bot_service,
@@ -103,6 +108,9 @@ __all__ = [
     "lark_base_service",
     "LarkBaseRecord",
     "read_lark_base_records",
+    "clean_field_value",
+    "clean_record_fields",
+    "inspect_bitable_token",
     "handle_lark_incoming_message",
     "start_bot_service",
     "stop_bot_service",

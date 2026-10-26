@@ -22,7 +22,7 @@ from models.lark import LarkMessage
 from services.chat_service import process_chat_pipeline
 from services.digest_service import digest_service
 from services.lark import lark_service as default_lark_service
-from utils.chat_queue import chat_queue_service
+from services.workflows.chat_queue import chat_queue_service
 
 logger = logging.getLogger("hilark.bot.member_message_handler")
 

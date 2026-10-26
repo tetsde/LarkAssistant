@@ -1,4 +1,20 @@
+"""
+Syntactic Sanitizer & Input Validator
+=====================================
+Vị trí: server/services/ai/text_filter.py
+
+Nhiệm vụ:
+  - Loại bỏ ký tự spam lặp, chuẩn hóa khoảng trắng.
+  - Kiểm tra độ dài từ tối thiểu và tối đa.
+  - Loại bỏ định dạng markdown thô nếu cần trả lời văn bản thuần.
+  - Loại bỏ lời chào khách sáo ở đầu câu.
+  - Làm sạch các thẻ trích dẫn RAG/WeKnora trước khi gửi phản hồi.
+"""
+
+from __future__ import annotations
+
 import re
+from typing import Any, Dict, List, Optional
 
 
 class TextFilter:
@@ -180,4 +196,3 @@ class TextFilter:
 
 
 text_filter = TextFilter()
-

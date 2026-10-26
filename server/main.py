@@ -11,7 +11,7 @@ from core.http_client import init_http_client, close_http_client
 from database.db import ensure_database_indexes, close_mongo_connections
 from routers import health, chat, lark, digest, scope, policy, auth
 from services.bot_service import start_bot_service, stop_bot_service
-from services.token_service import token_service
+from services.auth_service import token_service
 
 
 @asynccontextmanager

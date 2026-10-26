@@ -203,7 +203,7 @@ def start_bot_service() -> None:
     start_digest_scheduler_daemon()
 
     # 3. Kiểm tra tính hợp lệ và Ping User Access Token (Chống Crash)
-    from utils.lark_token import check_and_warn_token
+    from services.auth.token_verifier import check_and_warn_token
     token_res = check_and_warn_token(token=lark_service.user_access_token)
 
     # 4. Thông tin người dùng
@@ -272,9 +272,9 @@ def start_bot_service() -> None:
                 loop = asyncio.get_running_loop()
                 loop.create_task(_async_bitable_bootstrap())
                 if getattr(settings, "POLICY_SYNC_ENABLED", True):
-                    from services.policy_sync_service import start_policy_sync_loop
-                    loop.create_task(start_policy_sync_loop())
-                from services.token_service import start_token_refresh_loop
+                    from services.knowledge_service import policy_sync_service
+                    loop.create_task(policy_sync_service.start_loop())
+                from services.auth_service import start_token_refresh_loop
                 loop.create_task(start_token_refresh_loop())
             except RuntimeError:
                 pass

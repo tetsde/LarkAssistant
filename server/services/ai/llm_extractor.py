@@ -351,7 +351,7 @@ CLAIM_EXTRACTION_PROMPT = FACT_EXTRACTION_PROMPT
 # 4. LLM API CLIENT (GEMINI VIA SERVICES.LLM_CLIENT)
 # ==============================================================================
 
-from services.llm_client import GeminiClient, LLMClient, llm_client
+from services.ai.gemini_client import GeminiClient, LLMClient, llm_client
 
 
 

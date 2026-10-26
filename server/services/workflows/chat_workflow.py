@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -30,15 +31,32 @@ from database import (
 from models import ChatRequest, DocParseResult
 from services.workflows.draft_store import PendingDraft, draft_store
 from services.ai.jev_classifier import jev_service
-from services.lark import lark_service
 from services.ai.gemini_client import LLMClient, llm_client
 from services.knowledge.chat_scopes import scope_service
 from services.knowledge.weknora_client import weknora_service
 from services.knowledge.context_composer import ContextComposer
 from services.knowledge.rule_engine import rule_engine
-from utils.text_filter import text_filter
+from services.ai.text_filter import text_filter
 
 logger = logging.getLogger("hilark.chat_service")
+
+
+def _resolve_dep(name: str, default_val: Any) -> Any:
+    shim = sys.modules.get("services.chat_service")
+    if shim and hasattr(shim, name):
+        val = getattr(shim, name)
+        if val is not default_val:
+            return val
+    return default_val
+
+
+def _get_lark_service():
+    shim = sys.modules.get("services.chat_service")
+    if shim and hasattr(shim, "lark_service"):
+        return shim.lark_service
+    from services.lark import lark_service
+    return lark_service
+
 
 # Giới hạn số lượng tác vụ gọi LLM đồng thời trên toàn server
 GLOBAL_LLM_SEMAPHORE = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_CHAT_PIPELINES", 3))
@@ -160,9 +178,13 @@ async def process_memory_extraction(
     """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope."""
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
+    _get_entities = _resolve_dep("get_mongo_entities", get_mongo_entities)
+    _get_facts = _resolve_dep("get_mongo_facts", get_mongo_facts)
+    _save_extraction = _resolve_dep("save_extraction_to_mongo", save_extraction_to_mongo)
+
     try:
-        existing_entities = await get_mongo_entities()
-        existing_facts = await get_mongo_facts(chat_id=chat_id, project_tag=project_tag)
+        existing_entities = await _get_entities()
+        existing_facts = await _get_facts(chat_id=chat_id, project_tag=project_tag)
     except Exception as e:
         logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
         existing_entities = []
@@ -180,7 +202,7 @@ async def process_memory_extraction(
         existing_facts=existing_facts,
     )
 
-    mongo_saved = await save_extraction_to_mongo(
+    mongo_saved = await _save_extraction(
         extraction_result,
         chat_id=chat_id,
         project_tag=project_tag,
@@ -248,9 +270,13 @@ async def process_document_to_claims(
 
     msg_id = message_id or f"doc_{uuid.uuid4().hex[:8]}"
 
+    _get_entities = _resolve_dep("get_mongo_entities", get_mongo_entities)
+    _get_facts = _resolve_dep("get_mongo_facts", get_mongo_facts)
+    _save_extraction = _resolve_dep("save_extraction_to_mongo", save_extraction_to_mongo)
+
     try:
-        existing_entities = await get_mongo_entities()
-        existing_facts = await get_mongo_facts(chat_id=chat_id, project_tag=project_tag)
+        existing_entities = await _get_entities()
+        existing_facts = await _get_facts(chat_id=chat_id, project_tag=project_tag)
     except Exception as e:
         logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
         existing_entities = []
@@ -286,7 +312,7 @@ async def process_document_to_claims(
             elif doc_result.metadata.get("file_key"):
                 fact["file_key"] = doc_result.metadata["file_key"]
 
-    mongo_saved = await save_extraction_to_mongo(
+    mongo_saved = await _save_extraction(
         extraction_result,
         chat_id=chat_id,
         project_tag=project_tag,
@@ -399,6 +425,17 @@ async def process_chat_pipeline(
          - REPLY_ONLY: Tra cứu WeKnora Chunks + MongoDB Claims -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
          - MEMORY_AND_DRAFT: Lưu memory -> tra cứu context -> soạn draft, chờ chủ nhân duyệt trước khi reply.
     """
+    _jev = _resolve_dep("jev_service", jev_service)
+    _weknora = _resolve_dep("weknora_service", weknora_service)
+    _scope = _resolve_dep("scope_service", scope_service)
+    _draft_store = _resolve_dep("draft_store", draft_store)
+    _lark = _resolve_dep("lark_service", _get_lark_service())
+    _Composer = _resolve_dep("ContextComposer", ContextComposer)
+    _process_memory = _resolve_dep("process_memory_extraction", process_memory_extraction)
+    _generate_answer = _resolve_dep("generate_grounded_answer", generate_grounded_answer)
+    _get_facts = _resolve_dep("get_mongo_facts", get_mongo_facts)
+    _get_entities = _resolve_dep("get_mongo_entities", get_mongo_entities)
+
     # ── Bước 1: Dọn dẹp ký tự và validate độ dài ──
     try:
         clean_query = text_filter.validate_and_clean(query)
@@ -432,7 +469,7 @@ async def process_chat_pipeline(
     scope_record = None
     if chat_id:
         try:
-            scope_record = await scope_service.get_scope_by_chat_id(chat_id)
+            scope_record = await _scope.get_scope_by_chat_id(chat_id)
         except Exception as e:
             logger.warning(f"Lỗi khi tra cứu scope_record cho chat_id={chat_id}: {e}")
 
@@ -461,7 +498,7 @@ async def process_chat_pipeline(
     # ── [CHỐT CHẶN 2: KIỂM TRA NHÃN CẤM XEM BẰNG JEV] (Forbidden Intent Gating) ──
     if scope_record and scope_record.forbidden_labels:
         try:
-            forbidden_res = await jev_service.check_forbidden_query(
+            forbidden_res = await _jev.check_forbidden_query(
                 query=clean_query,
                 forbidden_labels=scope_record.forbidden_labels,
             )
@@ -490,7 +527,7 @@ async def process_chat_pipeline(
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                     )
                     try:
-                        await lark_service.send_bot_dm_to_owner(alert_text)
+                        await _lark.send_bot_dm_to_owner(alert_text)
                     except Exception as e:
                         logger.debug(f"Không thể gửi alert DM cho chủ nhân: {e}")
 
@@ -510,7 +547,7 @@ async def process_chat_pipeline(
     jev_domain = "HYBRID"
     jev_domain_conf = 0.50
     try:
-        jev_result = await jev_service.classify_message(clean_query)
+        jev_result = await _jev.classify_message(clean_query)
         jev_action = jev_result.get("action", "IGNORE")
         jev_confidence = jev_result.get("confidence", 0.0)
         jev_domain = jev_result.get("knowledge_domain", "HYBRID")
@@ -560,7 +597,7 @@ async def process_chat_pipeline(
     # Bước 3: Lưu memory cho các intent cần ghi nhớ theo scope nhóm
     extraction_data = None
     if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
-        extraction_data = await process_memory_extraction(
+        extraction_data = await _process_memory(
             query_text=clean_query,
             sender=sender,
             asserted_by=asserted_by,
@@ -588,11 +625,11 @@ async def process_chat_pipeline(
     all_facts = []
     entity_map: Dict[str, Any] = {}
     try:
-        facts_coro = get_mongo_facts(
+        facts_coro = _get_facts(
             chat_id=chat_id,
             project_tag=proj_context_name,
         )
-        entities_coro = get_mongo_entities(workspace_id=None)
+        entities_coro = _get_entities(workspace_id=None)
         facts_res, entities_res = await asyncio.gather(facts_coro, entities_coro, return_exceptions=True)
 
         if isinstance(facts_res, list):
@@ -619,7 +656,7 @@ async def process_chat_pipeline(
     chunks = []
     try:
         if not scope_record and chat_id:
-            scope_record = await scope_service.get_scope_by_chat_id(chat_id)
+            scope_record = await _scope.get_scope_by_chat_id(chat_id)
 
         # 1. Kho dự án chuyên biệt của nhóm chat (chứa tài liệu dự án theo phân quyền)
         project_dataset_id = scope_record.dataset_id if scope_record else (settings.WEKNORA_DATASET_ID or None)
@@ -653,7 +690,7 @@ async def process_chat_pipeline(
             logger.info(
                 f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Policy KBs ({global_policy_kbs}) | Confidence: {jev_domain_conf:.2f}"
             )
-            chunks = await weknora_service.retrieve(
+            chunks = await _weknora.retrieve(
                 query=clean_query,
                 knowledge_base_ids=global_policy_kbs,
                 knowledge_ids=None,
@@ -663,7 +700,7 @@ async def process_chat_pipeline(
             logger.info(
                 f"📁 [RAG Routing] Định tuyến đơn kho -> Project Scoped KB ({project_dataset_id}) | Confidence: {jev_domain_conf:.2f}"
             )
-            chunks = await weknora_service.retrieve(
+            chunks = await _weknora.retrieve(
                 query=retrieval_query,
                 knowledge_base_ids=[project_dataset_id],
                 knowledge_ids=target_knowledge_ids,
@@ -676,13 +713,13 @@ async def process_chat_pipeline(
                     f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Policy KBs: {global_policy_kbs})"
                 )
                 tasks = [
-                    weknora_service.retrieve(
+                    _weknora.retrieve(
                         query=retrieval_query,
                         knowledge_base_ids=[project_dataset_id],
                         knowledge_ids=target_knowledge_ids,
                         match_count=retrieve_count,
                     ),
-                    weknora_service.retrieve(
+                    _weknora.retrieve(
                         query=clean_query,
                         knowledge_base_ids=global_policy_kbs,
                         knowledge_ids=None,
@@ -703,14 +740,14 @@ async def process_chat_pipeline(
                         merged_chunks.append(c)
                 chunks = merged_chunks[:retrieve_count]
             elif project_dataset_id:
-                chunks = await weknora_service.retrieve(
+                chunks = await _weknora.retrieve(
                     query=retrieval_query,
                     knowledge_base_ids=[project_dataset_id],
                     knowledge_ids=target_knowledge_ids,
                     match_count=retrieve_count,
                 )
             elif global_policy_kbs:
-                chunks = await weknora_service.retrieve(
+                chunks = await _weknora.retrieve(
                     query=clean_query,
                     knowledge_base_ids=global_policy_kbs,
                     knowledge_ids=None,
@@ -766,7 +803,7 @@ async def process_chat_pipeline(
     if clean_chunks and len(clean_chunks) > 1:
         try:
             proj_ctx = proj_context_name or (scope_record.dataset_name if scope_record else None) or (scope_record.chat_name if scope_record else None)
-            clean_chunks = await jev_service.filter_chunks_relevance(
+            clean_chunks = await _jev.filter_chunks_relevance(
                 clean_query,
                 clean_chunks,
                 project_context=proj_ctx,
@@ -813,7 +850,7 @@ async def process_chat_pipeline(
             "documents": documents,
         }
 
-    composer = ContextComposer()
+    composer = _Composer()
     composed = composer.compose(
         retriever_data=clean_chunks if clean_chunks else None,
         claims_data=clean_claims if clean_claims else None,
@@ -825,7 +862,7 @@ async def process_chat_pipeline(
 
     # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh)
     target_user = user_name or (sender if sender and sender not in ("User", "api", "system") else None)
-    answer = await generate_grounded_answer(
+    answer = await _generate_answer(
         query=clean_query,
         context_text=composed.get("context_text", ""),
         user_name=target_user,
@@ -836,7 +873,7 @@ async def process_chat_pipeline(
     # Fallback WeKnora chat nếu LLM answer trống
     if not answer:
         try:
-            fallback = await weknora_service.get_chat_response(ChatRequest(query=clean_query))
+            fallback = await _weknora.get_chat_response(ChatRequest(query=clean_query))
             if isinstance(fallback, dict) and "answer" in fallback:
                 answer = fallback["answer"]
         except Exception as e:
@@ -849,11 +886,18 @@ async def process_chat_pipeline(
     if jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
         dm_notice = None
 
-        owner_open_id = lark_service.owner_open_id
+        owner_open_id = getattr(_lark, "owner_open_id", None)
+        if not owner_open_id and hasattr(_lark, "get_current_user"):
+            try:
+                curr_user = _lark.get_current_user()
+                if isinstance(curr_user, dict):
+                    owner_open_id = curr_user.get("open_id") or curr_user.get("user_id")
+            except Exception:
+                pass
         if not owner_open_id:
             raise RuntimeError("Thiếu LARK_USER_OPEN_ID để lưu draft chờ duyệt.")
 
-        await draft_store.create(
+        await _draft_store.create(
             PendingDraft(
                 owner_id=owner_open_id,
                 message_id=message_id or "",
@@ -888,7 +932,7 @@ async def process_chat_pipeline(
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
             try:
-                dm_notice = await lark_service.send_bot_dm_to_owner(draft_card_text)
+                dm_notice = await _lark.send_bot_dm_to_owner(draft_card_text)
                 logger.info(f"Đã lưu draft vào MongoDB và gửi thông báo duyệt (Message ID: {message_id})")
             except Exception as e:
                 logger.error(f"Lỗi gửi bản nháp cho chủ nhân: {e}")
@@ -916,7 +960,7 @@ async def process_chat_pipeline(
     lark_reply_result = None
     if reply_to_lark and message_id:
         try:
-            lark_reply_result = await lark_service.areply_text(
+            lark_reply_result = await _lark.areply_text(
                 message_id=message_id,
                 text=answer,
                 as_user=True,
@@ -951,4 +995,29 @@ class ChatService:
 
 
 chat_service = ChatService()
+
+
+def __getattr__(name: str):
+    if name == "lark_service":
+        return _get_lark_service()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+__all__ = [
+    "ChatService",
+    "chat_service",
+    "process_chat_pipeline",
+    "process_document_to_claims",
+    "process_memory_extraction",
+    "generate_grounded_answer",
+    "GLOBAL_LLM_SEMAPHORE",
+    "ContextComposer",
+    "draft_store",
+    "jev_service",
+    "lark_service",
+    "weknora_service",
+    "rule_engine",
+    "scope_service",
+    "llm_client",
+]
 

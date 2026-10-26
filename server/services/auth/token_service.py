@@ -74,8 +74,8 @@ class LarkTokenService:
         self._app_access_token_expires_at: float = 0.0
 
     def _get_auth_col(self):
-        """Lấy auth collection từ MongoDB, hỗ trợ mock từ services.token_service nếu test patch vào đó."""
-        shim_mod = sys.modules.get("services.token_service")
+        """Lấy auth collection từ MongoDB, hỗ trợ mock từ services.auth_service hoặc services.token_service nếu test patch vào đó."""
+        shim_mod = sys.modules.get("services.auth_service") or sys.modules.get("services.token_service")
         if shim_mod and hasattr(shim_mod, "get_auth_collection"):
             fn = getattr(shim_mod, "get_auth_collection")
             if fn is not get_auth_collection:
@@ -91,8 +91,8 @@ class LarkTokenService:
             yield client
             return
 
-        # Kiểm tra mock tại httpx module hoặc mock tại transitional shim services.token_service
-        shim_mod = sys.modules.get("services.token_service")
+        # Kiểm tra mock tại httpx module hoặc mock tại transitional shim services.auth_service
+        shim_mod = sys.modules.get("services.auth_service") or sys.modules.get("services.token_service")
         shim_httpx = getattr(shim_mod, "httpx", None) if shim_mod else None
         target_httpx = shim_httpx or httpx
 
@@ -491,8 +491,7 @@ class LarkTokenService:
     def _clear_lark_client_token(self) -> None:
         """Xóa sạch user token trong Lark client khi token đã chết."""
         try:
-            from services.lark import lark_service
-            from services.larkbase import lark_base_service
+            from services.lark import lark_service, lark_base_service
             if lark_service:
                 lark_service.user_access_token = ""
                 lark_service._last_token_check = None
@@ -504,8 +503,7 @@ class LarkTokenService:
     def _sync_to_lark_client(self, access_token: str, open_id: str, name: str) -> None:
         """Đồng bộ token trực tiếp vào singleton lark_service và lark_base_service nếu có."""
         try:
-            from services.lark import lark_service
-            from services.larkbase import lark_base_service
+            from services.lark import lark_service, lark_base_service
             if lark_service:
                 lark_service.user_access_token = access_token
                 lark_service._last_token_check = None

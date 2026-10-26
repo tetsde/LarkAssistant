@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from core.config import settings
-from services.token_service import token_service
+from services.auth_service import token_service
 
 logger = logging.getLogger("hilark.router.auth")
 router = APIRouter(prefix="/auth/lark", tags=["auth"])

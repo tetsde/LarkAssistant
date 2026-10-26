@@ -15,7 +15,7 @@ from models.memory import get_vietnam_now_iso
 
 
 def _get_collection():
-    shim = sys.modules.get("services.draft_store")
+    shim = sys.modules.get("services.draft_service") or sys.modules.get("services.draft_store")
     if shim and hasattr(shim, "get_draft_logs_collection"):
         return shim.get_draft_logs_collection()
     return default_get_collection()

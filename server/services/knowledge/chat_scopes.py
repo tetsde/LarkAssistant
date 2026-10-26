@@ -22,20 +22,20 @@ from database.db import get_chat_scopes_collection
 from models.chat_scope import ChatScopeRecord
 from models.memory import get_vietnam_now_iso
 import sys
-from services.knowledge.weknora_client import weknora_service
 
 logger = logging.getLogger(__name__)
 
 
 def _get_active_weknora():
-    shim = sys.modules.get("services.scope_service")
+    shim = sys.modules.get("services.auth_service") or sys.modules.get("services.scope_service")
     if shim and hasattr(shim, "weknora_service"):
         return shim.weknora_service
+    from services.knowledge.weknora_client import weknora_service
     return weknora_service
 
 
 def _get_active_scopes_col():
-    shim = sys.modules.get("services.scope_service")
+    shim = sys.modules.get("services.auth_service") or sys.modules.get("services.scope_service")
     if shim and hasattr(shim, "get_chat_scopes_collection"):
         fn = getattr(shim, "get_chat_scopes_collection")
         if fn is not get_chat_scopes_collection:
@@ -109,7 +109,7 @@ def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[D
             title = text if text and not text.startswith("http") else None
             combined_text = f"{url} {text}".strip()
 
-            from services.doc_parser_service import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN
             for match in DOCX_URL_PATTERN.finditer(combined_text):
                 token = match.group(1)
                 if token not in seen_tokens:
@@ -133,7 +133,7 @@ def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[D
                     })
 
         elif isinstance(item, str):
-            from services.doc_parser_service import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN
             for match in DOCX_URL_PATTERN.finditer(item):
                 token = match.group(1)
                 if token not in seen_tokens:
@@ -433,8 +433,8 @@ class ScopeService:
         synced_docs: List[Dict[str, Any]] = []
         knowledge_ids: List[str] = []
 
-        from services.larkbase import lark_base_service
-        from services.doc_parser_service import doc_parser_service
+        from services.lark.bitable import lark_base_service
+        from services.knowledge.doc_parser import doc_parser_service
 
         # 6.1. Xử lý tệp đính kèm nhị phân (PDF, Word, Excel...)
         for d in attachments:
@@ -604,7 +604,7 @@ class ScopeService:
     async def sync_all_groups_from_base(self) -> List[ChatScopeRecord]:
         """Quét và đồng bộ toàn bộ bảng Lark Base sang MongoDB và WeKnora."""
         try:
-            from services.larkbase import lark_base_service
+            from services.lark.bitable import lark_base_service
             if not lark_base_service.app_token:
                 logger.debug("[ChatScope Sync] LARK_BASE_APP_TOKEN chưa được cấu hình, bỏ qua sync toàn bảng.")
                 return []
@@ -643,12 +643,12 @@ class ScopeService:
             # Kiểm tra nếu sự kiện xuất phát từ Bảng Chính Sách Công Ty
             if table_id and table_id == settings.LARK_BASE_POLICY_TABLE_ID:
                 logger.info(f"🏛️ [Bitable Realtime Event] Phát hiện thay đổi trong Bảng Chính Sách ({table_id}) -> Kích hoạt Policy Sync!")
-                from services.policy_sync_service import policy_sync_service
+                from services.knowledge.policy_sync import policy_sync_service
                 await policy_sync_service.sync_policies()
                 return
 
             logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi, tiến hành đồng bộ: {record_ids}")
-            from services.larkbase import lark_base_service
+            from services.lark.bitable import lark_base_service
             records = await lark_base_service.aget_all_records(use_tenant_token=True)
             record_map = {r.record_id: r for r in records}
 
@@ -660,8 +660,8 @@ class ScopeService:
             logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
 
 
-from utils.larkbase.cleaner import clean_field_value
-from utils.rule_engine import parse_labels
+from services.lark.cleaner import clean_field_value
+from services.knowledge.rule_engine import parse_labels
 
 
 def _extract_text_field(val: Any) -> str:
