@@ -6,14 +6,13 @@ Vị trí: server/services/bot_service.py
 Mục đích:
     - Điều phối toàn bộ vòng đời của Lark Bot (WebSocket Connection, Handlers, Scheduler).
     - Tích hợp trực tiếp vào FastAPI Lifespan để chạy trên 1 tiến trình duy nhất.
-    - Hỗ trợ chạy độc lập qua run_lark_bot.py nếu cần.
+    - Cung cấp Root Dispatcher thanh lịch điều phối tới các bot_handlers chuyên biệt.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import threading
 import time
 from datetime import datetime
@@ -22,6 +21,8 @@ from typing import Optional
 from core.config import settings
 from models.lark import LarkMessage
 from models.memory import get_vietnam_now
+
+# Re-exports for backward compatibility and test mock patching
 from services.chat_service import process_chat_pipeline, process_document_to_claims
 from services.doc_parser_service import doc_parser_service
 from services.digest_service import digest_service
@@ -31,6 +32,13 @@ from services.larkbase import lark_base_service
 from services.scope_service import scope_service
 from utils.chat_queue import chat_queue_service
 from utils.digest import get_current_digest_date
+
+# Modular Handlers (EDL-0009 Phase 3 Refactoring)
+from services.bot_handlers import (
+    handle_document_or_links,
+    handle_member_message,
+    handle_owner_dm_command,
+)
 
 logger = logging.getLogger("hilark.bot")
 
@@ -48,9 +56,10 @@ _bot_started = False
 async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     """
     Dispatcher xử lý mọi tin nhắn đến từ Lark (cả WebSocket lẫn Webhook):
-      1. Bỏ qua tin nhắn từ Bot / App
-      2. Điều phối tin nhắn của Chủ nhân (Owner) trong Group (Staging) hoặc DM (Duyệt Draft / Digest)
-      3. Xử lý tin nhắn của Thành viên qua Chat Pipeline (JEV Routing -> Grounded QA -> Reply)
+      1. Bỏ qua tin nhắn từ Bot / App.
+      2. Phân giải tệp đính kèm nhị phân hoặc liên kết tài liệu Lark (document_handler).
+      3. Điều phối câu lệnh điều hành của Chủ nhân trong DM 1-1 (owner_command_handler).
+      4. Điều phối tin nhắn thông thường vào Staging và Chat Pipeline / Queue (member_message_handler).
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -69,391 +78,21 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
         return
 
-    # -------------------------------------------------------------------------
-    # 1.5. XỬ LÝ TỆP ĐÍNH KÈM HOẶC HÌNH ẢNH (BINARY ATTACHMENTS - EDL-0010)
-    # -------------------------------------------------------------------------
-    if msg.message_type in ("file", "image"):
-        file_key = msg.file_key or msg.image_key
-        file_name = msg.file_name or ("image.png" if msg.message_type == "image" else "document")
-
-        if not file_key:
-            print(f"⚠️ [ATTACHMENT] Tin nhắn {msg.message_id} là {msg.message_type} nhưng không tìm thấy file_key/image_key.")
-            return
-
-        # Kiểm tra Extension Gate
-        if not doc_parser_service._docreader.is_supported_file(file_name):
-            print(f"🚫 [ATTACHMENT GATE] Bỏ qua file '{file_name}' vì không thuộc định dạng được hỗ trợ.")
-            if msg.chat_type == "p2p":
-                await lark_service.areply_text(
-                    msg.message_id,
-                    f"⚠️ Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh)."
-                )
-            return
-
-        print(f"📄 [ATTACHMENT DETECTED] Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
-        await lark_service.areply_text(
-            msg.message_id,
-            f"📄 Trợ lý đang đọc và trích xuất thông tin từ tài liệu \"{file_name}\"..."
-        )
-
-        doc_res = await doc_parser_service.parse_attachment(
-            message_id=msg.message_id,
-            file_key=file_key,
-            file_name=file_name,
-            resource_type=msg.message_type,
-        )
-
-        if not doc_res.success:
-            print(f"❌ [ATTACHMENT FAILED] Phân giải thất bại: {doc_res.error}")
-            await lark_service.areply_text(
-                msg.message_id,
-                f"⚠️ Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
-            )
-            return
-
-        # Trích xuất Claims & Entities vào MongoDB
-        claims_res = await process_document_to_claims(
-            doc_result=doc_res,
-            chat_id=msg.chat_id,
-            sender=msg.sender_id,
-            sender_id=msg.sender_id,
-            message_id=msg.message_id,
-        )
-
-        new_count = claims_res.get("new_claims_count", 0)
-        superseded_count = claims_res.get("superseded_claims_count", 0)
-        print(f"✅ [ATTACHMENT SUCCESS] Đã lưu {new_count} facts mới vào MongoDB từ {file_name}.")
-
-        reply_msg = f"✅ Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới vào bộ nhớ nhóm."
-        if superseded_count > 0:
-            reply_msg += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
-        await lark_service.areply_text(msg.message_id, reply_msg)
+    # 2. Xử lý tệp đính kèm hoặc liên kết tài liệu Lark (EDL-0010)
+    if await handle_document_or_links(msg):
         return
 
-    # -------------------------------------------------------------------------
-    # 1.6. XỬ LÝ LIÊN KẾT LARK CLOUD DOCX / WIKI (LARK DOC LINKS - EDL-0010)
-    # -------------------------------------------------------------------------
-    if msg.message_type == "text" and msg.text:
-        lark_links = doc_parser_service.extract_lark_links(msg.text)
-        if lark_links:
-            print(f"🔗 [LARK LINKS DETECTED] Tìm thấy {len(lark_links)} liên kết tài liệu Lark trong tin nhắn.")
-            for link in lark_links:
-                if link["type"] == "docx":
-                    doc_res = await doc_parser_service.parse_lark_docx(link["token"])
-                elif link["type"] == "wiki":
-                    doc_res = await doc_parser_service.parse_lark_wiki(link["token"])
-                else:
-                    continue
-
-                if doc_res.success:
-                    claims_res = await process_document_to_claims(
-                        doc_result=doc_res,
-                        chat_id=msg.chat_id,
-                        sender=msg.sender_id,
-                        sender_id=msg.sender_id,
-                        message_id=msg.message_id,
-                    )
-                    new_count = claims_res.get("new_claims_count", 0)
-                    superseded_count = claims_res.get("superseded_claims_count", 0)
-                    confirm_link_text = f"✅ Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới vào bộ nhớ."
-                    if superseded_count > 0:
-                        confirm_link_text += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
-                    await lark_service.areply_text(msg.message_id, confirm_link_text)
-
-
-    # -------------------------------------------------------------------------
-    # 2. XỬ LÝ TIN NHẮN TỪ CHÍNH BẠN (CHỦ NHÂN) TRONG DM 1-1
-    # -------------------------------------------------------------------------
+    # 3. Xử lý lệnh của Chủ nhân trong DM 1-1
     is_owner = bool(
         msg.is_self
         or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
     )
     if is_owner and msg.chat_type == "p2p":
-        # [LUỒNG CHÍNH - USER FACING] Chủ nhân chat/ra lệnh trực tiếp cho Bot trong DM 1-1 trên Lark:
-        # Không cần dùng REST API: duyệt bằng cách nhắn "duyệt digest", "hủy digest", hoặc duyệt nháp "Gửi", "Sửa", "Bỏ".
-        clean_text = msg.text.strip()
-        text_lower = clean_text.lower()
-        print(f"👑 [LARK DM CHỦ NHÂN] Nhận lệnh từ chủ nhân: '{clean_text}'")
-
-        # --- A. LỆNH DUYỆT / HỦY / XEM DAILY DIGEST (MASTER DIGEST HOẶC ĐƠN LẺ) ---
-        if "xem digest" in text_lower or "chi tiết digest" in text_lower:
-            latest_master = await digest_service.get_latest_pending_master_digest()
-            if latest_master:
-                dm_text = latest_master.to_executive_dm_text()
-                await lark_service.send_bot_dm_to_owner(dm_text)
-                return
-
-            latest_pending = await digest_service.get_latest_pending_approval_digest()
-            if not latest_pending:
-                await lark_service.send_bot_dm_to_owner("ℹ️ Hiện không có bản Daily Digest nào đang chờ duyệt.")
-            else:
-                md_preview = latest_pending.to_weknora_markdown()
-                preview_text = md_preview[:1500] + ("\n...(còn tiếp)" if len(md_preview) > 1500 else "")
-                await lark_service.send_bot_dm_to_owner(
-                    f"CHI TIẾT DAILY DIGEST: {latest_pending.id}]\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{preview_text}\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "👉 Nhắn 'Duyệt digest' để nạp vào WeKnora hoặc 'Hủy digest' để từ chối."
-                )
+        if await handle_owner_dm_command(msg):
             return
 
-        digest_approve_keywords = ("duyệt digest", "duyet digest", "ok digest", "duyệt kb", "duyet kb", "ok kb", "approve digest")
-        if any(kw in text_lower for kw in digest_approve_keywords):
-            parts = clean_text.split()
-            target_id = parts[2] if len(parts) >= 3 and (parts[2].startswith("digest_") or parts[2].startswith("master_digest_")) else None
-
-            # Ưu tiên duyệt Master Daily Digest nếu có hoặc nếu chỉ định ID master
-            if (target_id and target_id.startswith("master_digest_")) or (not target_id and await digest_service.get_latest_pending_master_digest()):
-                print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Master Daily Digest ({target_id or 'bản gần nhất'})...")
-                ok, msg_reply, mrec = await digest_service.approve_and_sync_master_digest(target_id, approver_open_id=msg.sender_id)
-                if ok and mrec:
-                    reply_confirm = (
-                        "✔ ĐÃ DUYỆT VÀ ĐỒNG BỘ TOÀN BỘ MASTER DAILY DIGEST THÀNH CÔNG!\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📅 Ngày ghi nhận : {mrec.date}\n"
-                        f"🆔 Mã Master     : {mrec.id}\n"
-                        f"👥 Số nhóm duyệt : {mrec.total_groups} nhóm ({mrec.total_messages} tin nhắn)\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "Tri thức của từng nhóm đã được phân phối nạp chính xác vào đúng Knowledge Base WeKnora tương ứng!"
-                    )
-                    await lark_service.send_bot_dm_to_owner(reply_confirm)
-                else:
-                    await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
-                return
-
-            print(f"🚀 [DM APPROVAL] Tiến hành DUYỆT Daily Digest đơn lẻ ({target_id or 'bản gần nhất'})...")
-            ok, msg_reply, rec = await digest_service.approve_and_sync_digest(target_id)
-            if ok and rec:
-                reply_confirm = (
-                    "✔ ĐÃ DUYỆT VÀ ĐỒNG BỘ DAILY DIGEST LÊN WEKNORA THÀNH CÔNG!\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📅 Ngày ghi nhận : {rec.date}\n"
-                    f"💬 Nhóm chat     : {rec.chat_name or rec.chat_id}\n"
-                    f"🆔 Mã Digest     : {rec.id}\n"
-                    f"📚 WeKnora Doc ID: {rec.weknora_doc_id}\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "Knowledge Base đã được cập nhật tri thức mới sẵn sàng cho RAG!"
-                )
-                await lark_service.send_bot_dm_to_owner(reply_confirm)
-            else:
-                await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
-            return
-
-        digest_reject_keywords = ("hủy digest", "huy digest", "bỏ digest", "bo digest", "reject digest")
-        if any(kw in text_lower for kw in digest_reject_keywords):
-            parts = clean_text.split()
-            target_id = parts[2] if len(parts) >= 3 and (parts[2].startswith("digest_") or parts[2].startswith("master_digest_")) else None
-
-            if (target_id and target_id.startswith("master_digest_")) or (not target_id and await digest_service.get_latest_pending_master_digest()):
-                print(f"🗑 [DM APPROVAL] Tiến hành HỦY Master Daily Digest ({target_id or 'bản gần nhất'})...")
-                ok, msg_reply, mrec = await digest_service.reject_master_digest(target_id)
-                if ok and mrec:
-                    reply_confirm = (
-                        "🗑 ĐÃ TỪ CHỐI BẢN MASTER DAILY DIGEST!\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🆔 Mã Master : {mrec.id}\n"
-                        f"📅 Ngày      : {mrec.date}\n"
-                        "Trạng thái đã chuyển sang 'rejected'. Toàn bộ dữ liệu các nhóm KHÔNG được nạp vào WeKnora."
-                    )
-                    await lark_service.send_bot_dm_to_owner(reply_confirm)
-                else:
-                    await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
-                return
-
-            print(f"🗑 [DM APPROVAL] Tiến hành HỦY Daily Digest đơn lẻ ({target_id or 'bản gần nhất'})...")
-            ok, msg_reply, rec = await digest_service.reject_digest(target_id)
-            if ok and rec:
-                reply_confirm = (
-                    "🗑 ĐÃ TỪ CHỐI BẢN DAILY DIGEST!\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🆔 Mã Digest : {rec.id}\n"
-                    "Trạng thái đã chuyển sang 'rejected'. Dữ liệu KHÔNG được nạp vào WeKnora."
-                )
-                await lark_service.send_bot_dm_to_owner(reply_confirm)
-            else:
-                await lark_service.send_bot_dm_to_owner(f"❌ {msg_reply}")
-            return
-
-        # --- B. LỆNH DUYỆT & GỬI BẢN NHÁP CÂU TRẢ LỜI: [Gửi] / [Duyệt] / [OK] ---
-        send_keywords = ("gửi", "gui", "ok", "duyệt", "duyet", "gửi đi", "gui di", "send", "yes", "1")
-        if text_lower in send_keywords or text_lower.startswith(("gửi ", "gui ", "duyệt ")):
-            ok, detail, draft, _ = await draft_service.send_latest(msg.sender_id)
-            if not draft:
-                await lark_service.send_bot_dm_to_owner(f"⚠️ {detail}")
-                return
-            if ok:
-                confirm_text = (
-                    "✔ ĐÃ GỬI CÂU TRẢ LỜI VÀO NHÓM!\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 Người trả lời: {draft.responder_name or 'User'}\n"
-                    f"💬 Câu hỏi gốc: \"{draft.query}\"\n\n"
-                    f"📄 Nội dung đã gửi:\n\"{draft.approved_content}\"\n"
-                    "📌 Trạng thái: sent\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                await lark_service.send_bot_dm_to_owner(confirm_text)
-            else:
-                await lark_service.send_bot_dm_to_owner(
-                    f"❌ Chưa xác nhận gửi thành công. Draft vẫn chờ xử lý. Lỗi: {detail}"
-                )
-            return
-
-        # --- C. LỆNH BỎ BẢN NHÁP: [Bỏ] / [Hủy] ---
-        discard_keywords = ("bỏ", "bo", "hủy", "huy", "bỏ qua", "bo qua", "discard", "cancel", "no", "0")
-        if text_lower in discard_keywords:
-            draft = await draft_service.discard_latest(msg.sender_id)
-            if draft:
-                print(f"🗑 [DM APPROVAL] Chủ nhân đã BỎ bản nháp cho message_id={draft.message_id}")
-                await lark_service.send_bot_dm_to_owner(
-                    "🗑 ĐÃ HỦY BỎ BẢN NHÁP THÀNH CÔNG!\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Bản nháp cho câu hỏi \"{draft.query}\" đã bị hủy.\n"
-                    "Không có tin nhắn nào được gửi vào nhóm."
-                )
-            else:
-                await lark_service.send_bot_dm_to_owner("⚠️ Hiện không có bản nháp nào đang chờ duyệt để hủy.")
-            return
-
-        # --- D. LỆNH SỬA BẢN NHÁP: [Sửa: <nội dung>] ---
-        if text_lower.startswith(("sửa:", "sua:", "sửa ", "sua ", "edit:")):
-            separator = ":" if ":" in clean_text else " "
-            parts = clean_text.split(separator, 1)
-            edited_content = parts[1].strip() if len(parts) > 1 else ""
-            if not edited_content:
-                await lark_service.send_bot_dm_to_owner(
-                    "⚠️ Vui lòng nhập nội dung chỉnh sửa sau dấu hai chấm. Ví dụ:\n"
-                    "Sửa: Dự án này do Tuấn PM lead."
-                )
-                return
-
-            print(f"✏️ [DM APPROVAL] Chỉnh sửa và gửi nội dung mới vào nhóm: \"{edited_content[:80]}...\"")
-            ok, detail, draft, _ = await draft_service.send_latest(
-                msg.sender_id,
-                approved_content=edited_content,
-            )
-            if not draft:
-                await lark_service.send_bot_dm_to_owner(f"⚠️ {detail}")
-                return
-            if ok:
-                confirm_text = (
-                    "✔ ĐÃ GỬI BẢN CHỈNH SỬA VÀO NHÓM!\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 Người trả lời: {draft.responder_name or 'User'}\n"
-                    f"📄 Nội dung đã gửi:\n\"{edited_content}\"\n"
-                    "📌 Trạng thái: sent\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
-                await lark_service.send_bot_dm_to_owner(confirm_text)
-            else:
-                await lark_service.send_bot_dm_to_owner(
-                    f"❌ Chưa xác nhận gửi thành công. Draft vẫn chờ xử lý. Lỗi: {detail}"
-                )
-            return
-
-    # -------------------------------------------------------------------------
-    # 4. XỬ LÝ TIN NHẮN TỪ THÀNH VIÊN KHÁC (CHAT PIPELINE)
-    # -------------------------------------------------------------------------
-    channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
-    print(f"📡 Kênh tiếp nhận : {channel_type}")
-
-    # Dùng danh tính và chức danh từ hồ sơ/cấu hình nếu có.
-    user_info = lark_service.get_current_user()
-    responder_name = user_info.get("name") or settings.LARK_USER_NAME or None
-    responder_label = responder_name or "User"
-    print(f"👤 Danh tính phản hồi: {responder_label}")
-
-    # Nhận diện tên đích danh người hỏi
-    target_user_name = None
-    if msg.mentions:
-        for m in msg.mentions:
-            m_name = m.get("name", "")
-            if m_name and not (
-                "bot" in m_name.lower()
-                or "hilark" in m_name.lower()
-                or (responder_name and m_name.lower() in responder_name.lower())
-                or (responder_name and responder_name.lower() in m_name.lower())
-            ):
-                target_user_name = m_name
-                break
-
-    if not target_user_name and msg.sender_id:
-        sender_real_name = lark_service.get_user_name(msg.sender_id)
-        if sender_real_name:
-            target_user_name = sender_real_name
-
-    target_user_name = target_user_name or "bạn"
-
-    # Tự động lưu tin nhắn vào staging cho Daily Digest
-    if msg.chat_type == "group" and msg.text:
-        try:
-            speaker = target_user_name if target_user_name != "bạn" else "Thành viên"
-            await digest_service.add_staging_message(
-                message_id=msg.message_id,
-                chat_id=msg.chat_id,
-                text=msg.text,
-                speaker_name=speaker,
-                speaker_id=msg.sender_id,
-                chat_name=msg.chat_id,
-            )
-            print(f"📥 [STAGING] Đã lưu tin nhắn thành viên vào conversation_staging ({msg.message_id})")
-        except Exception as e:
-            print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
-
-    # Chuyển vào Unified Chat Pipeline
-    if is_owner:
-        print(f"👑 [LARK GROUP CHỦ NHÂN] Tin nhắn của chủ nhân -> Chat Pipeline (chế độ chỉ ghi nhớ/ignore, cấm reply)...")
-        try:
-            result = await process_chat_pipeline(
-                query=msg.text,
-                sender=msg.sender_id,
-                channel=f"lark_{msg.chat_type}",
-                message_id=msg.message_id,
-                chat_id=msg.chat_id,
-                reply_to_lark=False,
-                user_name=target_user_name,
-                responder_name=responder_name,
-                role=settings.LARK_USER_ROLE or None,
-                is_owner=True,
-            )
-        except Exception as e:
-            print(f"❌ Lỗi khi thực thi pipeline: {e}")
-            logger.error(f"Lỗi pipeline: {e}", exc_info=True)
-            return
-
-        # Hiển thị kết quả định tuyến của JEV cho chủ nhân
-        jev_action = result.get("jev_action", "IGNORE")
-        confidence = result.get("jev_confidence", 0.0)
-        status = result.get("status", "")
-
-        print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
-        print(f"📊 Trạng thái     : {status}")
-
-        if status == "forbidden_query":
-            chk = result.get("forbidden_check") or {}
-            matched = chk.get("matched_label") or "Chủ đề bị cấm"
-            print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
-        elif status == "group_inactive":
-            print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
-        elif jev_action == "IGNORE":
-            print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
-        elif jev_action == "MEMORY_ONLY":
-            ext = result.get("extraction") or {}
-            num_ent = len(ext.get("entities", []))
-            num_facts = len(ext.get("facts", []))
-            print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB.")
-            print(f"   • Thực thể mới : {num_ent}")
-            print(f"   • Facts mới    : {num_facts}")
-        print("=" * 65 + "\n")
-    else:
-        # Thành viên trong nhóm: đưa vào Smart Debouncer (1.75s) và Throttled Queue
-        print(f"📥 [DEBOUNCE BUFFER] Đưa tin nhắn của '{target_user_name}' vào bộ đệm gom 1.75s...")
-        await chat_queue_service.push_incoming_message(
-            msg=msg,
-            user_name=target_user_name,
-            responder_name=responder_name,
-            role=settings.LARK_USER_ROLE or None,
-        )
+    # 4. Điều phối tin nhắn thành viên/chủ nhân trong nhóm chat
+    await handle_member_message(msg, is_owner=is_owner)
 
 
 # =============================================================================
@@ -604,24 +243,34 @@ def start_bot_service() -> None:
     # 5. Khởi động Lark Base (Bitable) Sync & Subscribe Service
     if lark_base_service.app_token:
         try:
-            # A. Đăng ký subscribe sự kiện trên Lark Cloud
-            sub_ok = lark_base_service.subscribe_events()
-            if sub_ok:
-                print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {lark_base_service.app_token})")
-
-            # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base
-            sync_res = lark_base_service.sync_bot_chats()
-            items = sync_res.get("added", []) + sync_res.get("updated", [])
-            if items:
-                print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
-
             # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
             lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
 
-            # E. Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
+            # E. Non-blocking Bootstrap: Chuyển các network call đồng bộ lúc startup sang background task
+            async def _async_bitable_bootstrap():
+                try:
+                    # A. Đăng ký subscribe sự kiện trên Lark Cloud trong threadpool
+                    sub_ok = await asyncio.to_thread(lark_base_service.subscribe_events)
+                    if sub_ok:
+                        print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {lark_base_service.app_token})")
+
+                    # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base trong threadpool
+                    sync_res = await asyncio.to_thread(lark_base_service.sync_bot_chats)
+                    items = sync_res.get("added", []) + sync_res.get("updated", [])
+                    if items:
+                        print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
+                except Exception as ex:
+                    logger.warning(f"Lỗi trong background bitable bootstrap: {ex}")
+
+                # Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
+                try:
+                    await scope_service.sync_all_groups_from_base()
+                except Exception as ex:
+                    logger.warning(f"Lỗi trong sync_all_groups_from_base: {ex}")
+
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(scope_service.sync_all_groups_from_base())
+                loop.create_task(_async_bitable_bootstrap())
                 if getattr(settings, "POLICY_SYNC_ENABLED", True):
                     from services.policy_sync_service import start_policy_sync_loop
                     loop.create_task(start_policy_sync_loop())

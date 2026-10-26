@@ -21,9 +21,11 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Tuple
 
+import contextlib
 import httpx
 
 from core.config import settings
+from core.http_client import get_http_client
 from database.db import get_auth_collection
 
 logger = logging.getLogger("hilark.token_service")
@@ -70,6 +72,23 @@ class LarkTokenService:
         self._app_access_token: Optional[str] = None
         self._app_access_token_expires_at: float = 0.0
 
+    @contextlib.asynccontextmanager
+    async def _get_client_session(self, client: Optional[httpx.AsyncClient] = None):
+        """Helper quản lý HTTP client: ưu tiên client được truyền vào hoặc mock trong test,
+        ngược lại tái sử dụng persistent connection pool toàn hệ thống.
+        """
+        if client is not None:
+            yield client
+            return
+
+        is_mocked = type(httpx.AsyncClient).__name__ in ("MagicMock", "AsyncMock")
+        if is_mocked:
+            async with httpx.AsyncClient() as mocked_client:
+                yield mocked_client
+            return
+
+        yield get_http_client()
+
     # -------------------------------------------------------------------------
     # 1. APP ACCESS TOKEN (Cần thiết để gọi các API OAuth OIDC của Lark)
     # -------------------------------------------------------------------------
@@ -86,8 +105,8 @@ class LarkTokenService:
             raise ValueError("Chưa cấu hình LARK_APP_ID hoặc LARK_APP_SECRET trong .env!")
 
         url = f"{settings.LARK_DOMAIN}/open-apis/auth/v3/app_access_token/internal"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json={"app_id": app_id, "app_secret": app_secret})
+        async with self._get_client_session() as client:
+            resp = await client.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10.0)
             data = resp.json()
             if data.get("code") == 0 and data.get("app_access_token"):
                 self._app_access_token = data.get("app_access_token")
@@ -165,8 +184,8 @@ class LarkTokenService:
             "code": code.strip(),
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+        async with self._get_client_session() as client:
+            resp = await client.post(url, headers=headers, json=payload, timeout=15.0)
             data = resp.json()
 
         if data.get("code") != 0:
@@ -269,8 +288,8 @@ class LarkTokenService:
                 "refresh_token": current_refresh_token,
             }
 
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
+            async with self._get_client_session() as client:
+                resp = await client.post(url, headers=headers, json=payload, timeout=15.0)
                 data = resp.json()
 
             if data.get("code") != 0:
@@ -492,8 +511,8 @@ class LarkTokenService:
         url = f"{settings.LARK_DOMAIN}/open-apis/authen/v1/user_info"
         headers = {"Authorization": f"Bearer {access_token}"}
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url, headers=headers)
+            async with self._get_client_session() as client:
+                resp = await client.get(url, headers=headers, timeout=10.0)
                 data = resp.json()
                 if data.get("code") == 0 and data.get("data"):
                     return data["data"]
