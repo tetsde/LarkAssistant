@@ -119,7 +119,11 @@ class LarkTokenService:
             "im:chat "
             "im:message "
             "bitable:app "
-            "contact:user.base:readonly"
+            "contact:user.base:readonly "
+            "wiki:node:read "
+            "wiki:wiki:readonly "
+            "docx:document:readonly "
+            "drive:drive:readonly"
         )
         target_scope = scope or default_scopes
 
@@ -270,9 +274,23 @@ class LarkTokenService:
                 data = resp.json()
 
             if data.get("code") != 0:
+                err_code = data.get("code")
                 err_msg = data.get("message") or data.get("msg") or "Refresh token error"
-                logger.error(f"Lỗi khi refresh token: code={data.get('code')}, msg={err_msg}")
-                raise RuntimeError(f"Lark từ chối refresh token: {err_msg} (Mã lỗi {data.get('code')})")
+                logger.error(f"Lỗi khi refresh token: code={err_code}, msg={err_msg}")
+                if err_code == 20038:
+                    try:
+                        col = get_auth_collection()
+                        await col.update_one(
+                            {"_id": PRIMARY_TOKEN_DOC_ID},
+                            {"$set": {
+                                "status": "invalid_refresh_token",
+                                "invalid_reason": err_msg,
+                                "updated_at": datetime.now(timezone.utc).isoformat()
+                            }},
+                        )
+                    except Exception:
+                        pass
+                raise RuntimeError(f"Lark từ chối refresh token: {err_msg} (Mã lỗi {err_code})")
 
             token_info = data.get("data", {})
             new_access_token = token_info.get("access_token", "")
@@ -330,6 +348,7 @@ class LarkTokenService:
         """
         Lấy access_token còn hiệu lực.
         Tự động kiểm tra thời hạn và tự refresh ngầm nếu còn dưới 10 phút.
+        Nếu access_token đã hết hạn và refresh thất bại, trả về None (không trả về token chết).
         """
         now = time.time()
         stored_data = await self.get_stored_token_data()
@@ -349,10 +368,19 @@ class LarkTokenService:
                 res = await self.refresh_user_token()
                 return res.get("access_token")
             except Exception as e:
-                logger.warning(f"Tự động refresh token thất bại: {e}. Sử dụng token hiện có làm fallback.")
-                return stored_data.get("access_token")
+                logger.warning(f"Tự động refresh token thất bại: {e}.")
+                # Nếu access token vẫn chưa hết hạn (còn < 10 phút nhưng expires_at > now), dùng tạm
+                if expires_at > now:
+                    logger.info("Access token sắp hết hạn nhưng vẫn còn hiệu lực tạm thời, tiếp tục sử dụng.")
+                    return stored_data.get("access_token")
+                # Đã hết hạn hoàn toàn và refresh thất bại -> không trả về token chết
+                logger.error("❌ Access token đã hết hạn hoàn toàn và refresh thất bại. Cần đăng nhập lại qua /auth/lark/login.")
+                return None
 
-        return stored_data.get("access_token")
+        # Không có refresh_token: kiểm tra hạn trực tiếp
+        if expires_at > now:
+            return stored_data.get("access_token")
+        return None
 
     # -------------------------------------------------------------------------
     # 6. TRUY VẤN THÔNG TIN TRẠNG THÁI (STATUS / HEALTH)
@@ -421,9 +449,23 @@ class LarkTokenService:
                 )
                 logger.info(f"✅ Đã nạp và làm mới User Token từ MongoDB vào RAM (User: {data.get('user_name')})")
             else:
-                logger.info("ℹ️ Chưa có token trong MongoDB, hệ thống dùng cấu hình .env mặc định.")
+                self._clear_lark_client_token()
+                logger.info("ℹ️ User Token chưa hợp lệ hoặc đã hết hạn, hệ thống ưu tiên Bot token / chờ cấp quyền qua /auth/lark/login.")
         except Exception as e:
             logger.warning(f"Lỗi khi đọc/làm mới token từ MongoDB lúc startup: {e}")
+
+    def _clear_lark_client_token(self) -> None:
+        """Xóa sạch user token trong Lark client khi token đã chết."""
+        try:
+            from services.lark import lark_service
+            from services.larkbase import lark_base_service
+            if lark_service:
+                lark_service.user_access_token = ""
+                lark_service._last_token_check = None
+            if lark_base_service:
+                lark_base_service.user_access_token = ""
+        except Exception:
+            pass
 
     def _sync_to_lark_client(self, access_token: str, open_id: str, name: str) -> None:
         """Đồng bộ token trực tiếp vào singleton lark_service và lark_base_service nếu có."""
@@ -467,17 +509,23 @@ token_service = LarkTokenService()
 async def start_token_refresh_loop() -> None:
     """
     Vòng lặp chạy nền định kỳ kiểm tra và tự động refresh token trước khi hết hạn.
-    Mỗi 30 phút kiểm tra một lần. Nếu access_token còn < 15 phút, tiến hành làm mới.
+    Mỗi 15 phút kiểm tra một lần. Nếu access_token còn < 15 phút, tiến hành làm mới.
     """
-    logger.info("🔄 [TOKEN LOOP] Khởi động vòng lặp kiểm tra và refresh User Token định kỳ (mỗi 30m).")
+    logger.info("🔄 [TOKEN LOOP] Khởi động vòng lặp kiểm tra và refresh User Token định kỳ.")
+    # Chờ 5s sau khi server startup xong rồi kiểm tra ngay lần đầu
+    await asyncio.sleep(5)
     while True:
         try:
-            await asyncio.sleep(1800)  # 30 phút
             token_data = await token_service.get_stored_token_data()
+            if token_data and token_data.get("status") == "invalid_refresh_token":
+                # Refresh token đã bị hỏng từ phía Lark, chờ người dùng đăng nhập lại qua /auth/lark/login
+                await asyncio.sleep(900)
+                continue
+
             if token_data and token_data.get("refresh_token"):
                 now = time.time()
                 expires_at = token_data.get("expires_at", 0)
-                if expires_at - now < 900:  # còn dưới 15 phút
+                if expires_at - now < 900:  # còn dưới 15 phút hoặc đã hết hạn
                     logger.info("⏰ [TOKEN LOOP] User Token sắp hết hạn (< 15 phút), tiến hành tự động refresh...")
                     await token_service.refresh_user_token()
         except asyncio.CancelledError:
@@ -485,3 +533,4 @@ async def start_token_refresh_loop() -> None:
             break
         except Exception as e:
             logger.warning(f"⚠️ [TOKEN LOOP] Lỗi trong chu kỳ refresh token: {e}")
+        await asyncio.sleep(900)  # Kiểm tra mỗi 15 phút

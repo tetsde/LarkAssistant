@@ -18,6 +18,7 @@ from pymongo.database import Database
 
 from core.config import settings
 from models.memory import FactStatus, get_vietnam_now_iso
+from database.indexes import ensure_database_indexes, get_index_specifications
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,31 @@ logger = logging.getLogger(__name__)
 _async_client: Optional[AsyncIOMotorClient] = None
 # Singleton cho Sync PyMongo client
 _sync_client: Optional[MongoClient] = None
+
+
+async def close_mongo_connections() -> None:
+    """Đóng sạch sẽ các kết nối MongoDB (Async Motor và Sync PyMongo) khi tắt server."""
+    global _async_client, _sync_client
+    closed_any = False
+    if _async_client is not None:
+        try:
+            _async_client.close()
+            closed_any = True
+        except Exception as e:
+            logger.debug(f"Lỗi khi đóng Async Motor Client: {e}")
+        _async_client = None
+
+    if _sync_client is not None:
+        try:
+            _sync_client.close()
+            closed_any = True
+        except Exception as e:
+            logger.debug(f"Lỗi khi đóng Sync PyMongo Client: {e}")
+        _sync_client = None
+
+    if closed_any:
+        logger.info("✔ Đã đóng toàn bộ kết nối MongoDB an toàn.")
+
 
 
 def get_async_client() -> AsyncIOMotorClient:

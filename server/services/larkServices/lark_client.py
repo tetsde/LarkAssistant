@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections import OrderedDict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import lark_oapi as lark
 from lark_oapi.api.authen.v1 import GetUserInfoRequest
@@ -53,16 +54,20 @@ class LarkClientMixin:
         if config is not None:
             self.config = config
         else:
-            # Ưu tiên lấy token sống từ MongoDB lark_auth nếu có
+            # Ưu tiên lấy token sống từ MongoDB lark_auth nếu có và còn hạn
             stored_user_token = ""
             stored_open_id = ""
             try:
+                import time
                 from database.db import get_sync_db
                 db = get_sync_db()
                 doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
-                if doc and doc.get("access_token"):
-                    stored_user_token = doc["access_token"]
+                if doc:
                     stored_open_id = doc.get("open_id", "")
+                    if doc.get("access_token") and doc.get("expires_at", 0) > time.time():
+                        stored_user_token = doc["access_token"]
+                    else:
+                        logger.info("ℹ️ User Token trong MongoDB đã hết hạn, bỏ qua lúc init client.")
             except Exception:
                 pass
 
@@ -104,6 +109,8 @@ class LarkClientMixin:
 
         # Danh sách các message_id do chính hệ thống gửi đi (chống vòng lặp tự reply)
         self._sent_message_ids: OrderedDict[str, float] = OrderedDict()
+        # Cache tên người dùng với giới hạn bộ nhớ (user_id -> (name, cached_at))
+        self._user_name_cache: OrderedDict[str, Tuple[str, float]] = OrderedDict()
 
     # -------------------------------------------------------------------------
     # QUẢN LÝ DANH TÍNH USER (USER IDENTITY MANAGEMENT)
@@ -192,22 +199,38 @@ class LarkClientMixin:
         return bool(res and res.is_valid)
 
     def get_user_name(self, user_id: str) -> Optional[str]:
-        """Lấy họ tên hiển thị của một người dùng theo open_id/user_id."""
+        """Lấy họ tên hiển thị của một người dùng theo open_id/user_id (kèm TTL 1h & max size 1000)."""
         if not user_id:
             return None
-        if not hasattr(self, "_user_name_cache"):
-            self._user_name_cache = {}
+        if not hasattr(self, "_user_name_cache") or self._user_name_cache is None:
+            self._user_name_cache = OrderedDict()
+
+        now = time.time()
+        # Kiểm tra cache còn hạn (TTL 3600s = 1 giờ)
         if user_id in self._user_name_cache:
-            return self._user_name_cache[user_id]
+            name, cached_at = self._user_name_cache[user_id]
+            if now - cached_at < 3600:
+                return name
+            del self._user_name_cache[user_id]
+
         try:
             from lark_oapi.api.contact.v3 import GetUserRequest
             opt = self._get_request_option(as_user=True)
             req = GetUserRequest.builder().user_id(user_id).user_id_type("open_id").build()
             resp = self.client.contact.v3.user.get(req, opt)
+            if not resp.success() and opt is not None:
+                req_bot = GetUserRequest.builder().user_id(user_id).user_id_type("open_id").build()
+                resp = self.client.contact.v3.user.get(req_bot)
             if resp.success() and resp.data and resp.data.user:
                 name = resp.data.user.name
                 if name:
-                    self._user_name_cache[user_id] = name
+                    # Dọn dẹp cache quá hạn 1 giờ
+                    while self._user_name_cache and (now - next(iter(self._user_name_cache.values()))[1] > 3600):
+                        self._user_name_cache.popitem(last=False)
+                    self._user_name_cache[user_id] = (name, now)
+                    # Bounded size tối đa 1000 người dùng
+                    while len(self._user_name_cache) > 1000:
+                        self._user_name_cache.popitem(last=False)
                     return name
         except Exception:
             pass
@@ -227,8 +250,8 @@ class LarkClientMixin:
         return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
 
     def _get_request_option(self, as_user: bool = True) -> Optional[lark.RequestOption]:
-        """Tạo RequestOption mang User Token nếu as_user=True."""
-        if self.user_access_token:
+        """Tạo RequestOption mang User Token nếu as_user=True và token khả dụng."""
+        if as_user and self.user_access_token:
             return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
         return None
 
@@ -268,6 +291,19 @@ class LarkClientMixin:
         )
         try:
             resp = await self.client.im.v1.message_resource.aget(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK IM] Tải tài nguyên bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = (
+                    GetMessageResourceRequest.builder()
+                    .message_id(message_id)
+                    .file_key(file_key)
+                    .type(resource_type)
+                    .build()
+                )
+                resp = await self.client.im.v1.message_resource.aget(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
@@ -306,6 +342,19 @@ class LarkClientMixin:
         )
         try:
             resp = self.client.im.v1.message_resource.get(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK IM] Tải tài nguyên bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = (
+                    GetMessageResourceRequest.builder()
+                    .message_id(message_id)
+                    .file_key(file_key)
+                    .type(resource_type)
+                    .build()
+                )
+                resp = self.client.im.v1.message_resource.get(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
@@ -341,6 +390,13 @@ class LarkClientMixin:
         req = RawContentDocumentRequest.builder().document_id(document_id).build()
         try:
             resp = await self.client.docx.v1.document.araw_content(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK DOCX] Lấy raw content bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = RawContentDocumentRequest.builder().document_id(document_id).build()
+                resp = await self.client.docx.v1.document.araw_content(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
@@ -365,6 +421,13 @@ class LarkClientMixin:
         req = RawContentDocumentRequest.builder().document_id(document_id).build()
         try:
             resp = self.client.docx.v1.document.raw_content(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK DOCX] Lấy raw content bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = RawContentDocumentRequest.builder().document_id(document_id).build()
+                resp = self.client.docx.v1.document.raw_content(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
@@ -397,6 +460,13 @@ class LarkClientMixin:
         req = GetNodeSpaceRequest.builder().token(wiki_token).build()
         try:
             resp = await self.client.wiki.v2.space.aget_node(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK WIKI] Tra cứu wiki node bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = GetNodeSpaceRequest.builder().token(wiki_token).build()
+                resp = await self.client.wiki.v2.space.aget_node(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "
@@ -426,6 +496,13 @@ class LarkClientMixin:
         req = GetNodeSpaceRequest.builder().token(wiki_token).build()
         try:
             resp = self.client.wiki.v2.space.get_node(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK WIKI] Tra cứu wiki node bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                req_bot = GetNodeSpaceRequest.builder().token(wiki_token).build()
+                resp = self.client.wiki.v2.space.get_node(req_bot)
+
             if not resp.success():
                 logger.error(
                     f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "

@@ -7,6 +7,8 @@ if SERVER_ROOT not in sys.path:
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from core.http_client import init_http_client, close_http_client
+from database.db import ensure_database_indexes, close_mongo_connections
 from routers import health, chat, lark, digest, scope, policy, auth
 from services.bot_service import start_bot_service, stop_bot_service
 from services.token_service import token_service
@@ -14,13 +16,19 @@ from services.token_service import token_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Nạp Token User còn hiệu lực từ MongoDB vào RAM
+    # 1. Khởi tạo chỉ mục Database tối ưu tốc độ truy vấn & toàn vẹn
+    await ensure_database_indexes()
+    # 2. Khởi tạo Persistent HTTP Client Connection Pool
+    await init_http_client()
+    # 3. Nạp Token User còn hiệu lực từ MongoDB vào RAM
     await token_service.init_token_on_startup()
-    # Khởi động Lark Bot Service (WebSocket Client, Event Handlers, Daily Digest Scheduler)
+    # 4. Khởi động Lark Bot Service (WebSocket Client, Event Handlers, Daily Digest Scheduler)
     start_bot_service()
     yield
     # Dọn dẹp an toàn khi tắt server
     stop_bot_service()
+    await close_http_client()
+    await close_mongo_connections()
 
 
 app = FastAPI(

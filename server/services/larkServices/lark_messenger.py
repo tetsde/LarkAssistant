@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 import lark_oapi as lark
@@ -126,9 +128,25 @@ class LarkMessengerMixin:
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         return opt, content_json, None
 
+    def _record_sent_message_id(self, message_id: str, ttl_seconds: float = 600.0, max_size: int = 1000) -> None:
+        """Ghi nhận message_id vừa gửi và dọn dẹp cache quá hạn / vượt kích thước tối đa."""
+        if not message_id:
+            return
+        if not hasattr(self, "_sent_message_ids") or self._sent_message_ids is None:
+            self._sent_message_ids = OrderedDict()
+
+        now = time.time()
+        # Dọn dẹp tin nhắn quá hạn TTL (mặc định 10 phút)
+        while self._sent_message_ids and (now - next(iter(self._sent_message_ids.values())) > ttl_seconds):
+            self._sent_message_ids.popitem(last=False)
+
+        self._sent_message_ids[message_id] = now
+        # Giới hạn kích thước tối đa (FIFO)
+        while len(self._sent_message_ids) > max_size:
+            self._sent_message_ids.popitem(last=False)
+
     def _handle_im_response(self, response: Any, action_desc: str) -> Dict[str, Any]:
         """Xử lý response từ Lark IM, ghi nhận cache message_id chống loop và log lỗi."""
-        import time
         if not response.success():
             logger.error(f"Lỗi {action_desc}: code={response.code}, msg={response.msg}")
             return {
@@ -137,10 +155,10 @@ class LarkMessengerMixin:
                 "msg": f"Lỗi {action_desc} nhân danh User: {response.msg}",
             }
 
-        # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình
+        # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình (có TTL & Bounded Cache)
         if response.data and getattr(response.data, "message_id", None):
             sent_mid = getattr(response.data, "message_id")
-            self._sent_message_ids[sent_mid] = time.time()
+            self._record_sent_message_id(sent_mid)
 
         logger.info(f"✔ Đã {action_desc} thành công nhân danh User")
         return {"success": True, "data": response.data}

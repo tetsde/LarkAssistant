@@ -3,21 +3,20 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Khắc phục lỗi cắt cụt ngữ cảnh Sổ tay Nhân viên (Salary Date Truncation Bug), Thiết kế Kiến trúc Tầng Phân Giải Tài Liệu Đa Phương Tiện (Document Parsing Layer via AnyDoc gRPC & Lark OpenAPI), và Chuẩn hóa Cơ chế Xử lý Xung đột Tri thức (EDL-0010).
-- **Status:** Architecture Approved & Documented (Đã phê duyệt và đồng bộ lên Notion EDL-0010; đã sửa xong lỗi cắt cụt ngữ cảnh lương trong `context_composer.py`).
+- **Goal:** Triển khai Giai đoạn 1 Tái cấu trúc (Phase 1 Refactoring: Ổn định Dữ liệu & Chống Rò rỉ Bộ nhớ theo EDL-0009).
+- **Status:** Phase 1 Completed & Verified (Đã hoàn thành toàn bộ 7 task của Giai đoạn 1; 59/59 unit test passed 100%).
 - **Scope:**
-  1. Điều tra & Fix Bug Lương: Sửa `max_chunk_chars: int = 16000` trong `server/utils/context_composer.py` đảm bảo không bị cắt cụt tài liệu Sổ tay Nhân viên (`01_So_Tay_Nhan_Vien_Employee_Handbook.docx`).
-  2. Brainstorm & Thống nhất Cơ chế Xử lý Xung đột: Giữ nguyên tài liệu gốc (Project Charter) trên WeKnora làm Baseline bất biến; trích xuất các quyết định họp/chốt việc thành Dynamic Claims (MongoDB) làm Overlay; `ContextComposer` hợp nhất với rule `CURRENT Claims > Static WeKnora Documents`.
-  3. Thiết kế Tầng Phân Giải Đa Phương Tiện: Tách biệt `doc_parser_service.py` (chuyển đổi PDF, Word, Excel, PPTX, ảnh sang Markdown bằng WeKnora AnyDoc gRPC `WeKnora-docreader:50051`, và Lark Doc URL qua Lark OpenAPI) đứng trước `llm_extractor.py` (chỉ nhận Markdown sạch để bóc tách Claims).
-  4. Ghi nhận quyết định kỹ thuật `EDL-0010` lên Notion Engineering Decision Log và cập nhật bộ nhớ dự án (`DECISIONS.md`, `HANDOFF.md`, `PROJECT_CONTEXT.md`).
+  1. Chuẩn hóa môi trường test `pytest.ini` với `pythonpath = .`.
+  2. Xây dựng tập trung cấu hình MongoDB Index cho 8 collections trong `server/database/indexes.py` kèm cơ chế graceful fallback chống lỗi xung đột dữ liệu dev cũ.
+  3. Quản lý vòng đời kết nối MongoDB: Thêm `close_mongo_connections()` trong `server/database/db.py` và gọi `ensure_database_indexes()` khi startup, `close_mongo_connections()` khi shutdown trong `server/main.py`.
+  4. Chống rò rỉ bộ nhớ (Bounded Cache & TTL): Chuẩn hóa cache `_sent_message_ids` trong `lark_messenger.py` (TTL 600s, max 1,000) và `_user_name_cache` trong `lark_client.py` (TTL 3,600s, max 1,000).
+  5. Xây dựng bộ unit tests toàn diện `tests/01/test_phase1_stability.py` và chạy xác minh toàn bộ test suite.
 
 ## What is confirmed
-- Quyết định kỹ thuật `EDL-0006`, `EDL-0007`, `EDL-0008`, `EDL-0009` và `EDL-0010` đã được ghi nhận và đồng bộ thành công lên Notion Database `Engineering Decision Log`:
-  - `EDL-0006`: [Page ID `403590f7-e19e-81ec-908f-c1f4527802fe`](https://app.notion.com/p/EDL-0006-T-ng-L-m-m-i-Lark-User-Token-OAuth2-Single-Use-Refresh-Token-Rotation-MongoDB-Stora-403590f7e19e81ec908fc1f4527802fe) (Approved)
-  - `EDL-0007`: [Page ID `403590f7-e19e-8175-9524-ffcc0fc15288`](https://app.notion.com/p/EDL-0007-nh-tuy-n-RAG-a-kho-Mi-n-tr-Nh-n-c-m-D-n-cho-V-n-b-n-Ch-nh-s-ch-C-ng-ty-403590f7e19e81759524ffcc0fc15288) (Approved)
-  - `EDL-0008`: [Page ID `403590f7-e19e-81d7-9957-cd187c3df8fa`](https://app.notion.com/p/EDL-0008-Ki-n-tr-c-Contextual-Claim-Gate-Ki-m-so-t-N-p-Claims-ng-v-Ch-ng-nhi-m-Ng-c-nh-RAG-403590f7e19e81d79957cd187c3df8fa) (Approved)
-  - `EDL-0009`: [Page ID `403590f7-e19e-81a3-b443-e08deef4e925`](https://app.notion.com/p/EDL-0009-nh-Gi-Ch-t-L-ng-Codebase-Ph-n-Lo-i-Code-Dirty-v-Chi-n-L-c-Gi-i-Quy-t-N-K-Thu-t-403590f7e19e81a3b443e08deef4e925) (Approved)
-  - `EDL-0010`: [Page ID `403590f7-e19e-811a-9a02-cd8ddff7c38b`](https://app.notion.com/p/EDL-0010-Ki-n-tr-c-T-ng-Ph-n-Gi-i-T-i-Li-u-a-Ph-ng-Ti-n-AnyDoc-gRPC-Lark-OpenAPI-Tr-ch-Xu--403590f7e19e811a9a02cd8ddff7c38b) (Approved)
+- Toàn bộ 8 collections MongoDB (`claims`, `memories`, `conversation_staging`, `chat_scopes`, `daily_digests`, `master_daily_digests`, `draft_logs`, `lark_auth`) được đánh index tự động khi server khởi động.
+- Không phá vỡ hợp đồng API / import path của `server/database/db.py` (tất cả hơn 15 modules khác vẫn import bình thường).
+- Không rò rỉ RAM đối với in-memory cache qua cơ chế FIFO và TTL tự động dọn dẹp.
+- Bộ kiểm thử unit tests `tests/01/test_phase1_stability.py` (8/8 tests pass) và toàn bộ bộ test regression (59/59 tests pass).
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:
@@ -73,9 +72,17 @@
   * `server/services/digest_service.py`: Thêm `get_previous_digest` & `get_previous_master_digest`, tự động nạp bối cảnh K-1 vào prompt trích xuất LLM để đảm bảo không bị đứt gãy diễn biến công việc, cam kết và blockers giữa các ngày.
   * `server/tests/01/test_digest_continuation.py`: Viết bộ 5 unit test kiểm thử toàn diện tính năng (5/5 tests pass).
 
-- **Tự Động Làm Mới Token Khi Khởi Động (Token Startup Auto-Refresh)**:
-  * Khắc phục lỗi hiển thị cảnh báo `EXPIRED` khi bật server: Cập nhật `init_token_on_startup()` trong `server/services/token_service.py` gọi `get_valid_user_token()`, tự động kích hoạt OAuth2 refresh xoay vòng ngay lúc khởi động nếu access token đã hết hạn, nạp token mới vào RAM và MongoDB.
-  * Bộ test `test_token_service.py`: 9/9 test cases passed.
+- **Tự Động Làm Mới Token Khi Khởi Động & Khắc Phục Lỗi Token Chết / Graceful Bot Fallback**:
+  * Khắc phục lỗi hiển thị cảnh báo `EXPIRED` khi bật server và lỗi `20038` (Invalid refresh token):
+    - `server/services/token_service.py`:
+      * Trong `refresh_user_token()`: Bắt mã lỗi `20038` ("The refresh token passed is invalid. It may have been used"), cập nhật trạng thái `invalid_refresh_token` vào MongoDB.
+      * Trong `get_valid_user_token()`: Nếu access token đã hết hạn (`expires_at < now`) và refresh thất bại, trả về `None`, dứt khoát không trả về token đã chết.
+      * Trong `init_token_on_startup()`: Tự động dọn dẹp `user_access_token = ""` trong RAM nếu token không hợp lệ, không để token rác gây lỗi API.
+      * Trong `start_token_refresh_loop()`: Khởi động vòng lặp kiểm tra token ngay sau 5 giây (thay vì chờ 30 phút), chu kỳ kiểm tra định kỳ 15 phút.
+    - `server/services/larkServices/lark_client.py`:
+      * Sửa `_get_request_option(as_user=True)`: Kiểm tra đúng `if as_user and self.user_access_token:`.
+      * Bổ sung cơ chế **Graceful Fallback sang Bot (Tenant Token)** cho các thao tác đọc tài liệu: `aresolve_wiki_token`, `resolve_wiki_token`, `aget_docx_raw_content`, `get_docx_raw_content`, `adownload_message_resource`, `download_message_resource`, `_get_name_sync`. Khi User Token hỏng hoặc thiếu quyền, tự động gọi lại bằng Bot token giúp hệ thống không bị gián đoạn.
+  * Bộ test `test_token_service.py`, `test_doc_parser_service.py`, `test_chat_scope.py`: Toàn bộ **38/38 PASSED 100%**.
 - **Nâng Cấp Cột Documents trong Lark Base Hỗ Trợ Link Lark Docs & Wiki (Bitable Document Link Ingestion)**:
   * `server/services/scope_service.py`:
     - Thêm helper `_extract_document_items` và `_sanitize_filename`: Phân loại và trích xuất cả tệp đính kèm nhị phân (PDF, Word, Excel...) lẫn liên kết Lark DocX / Wiki (dạng chuỗi URL, dict `{'link': ..., 'text': ...}` của Bitable Hyperlink field, hoặc list).
@@ -83,32 +90,37 @@
     - Cơ chế chống trùng lặp: Tra cứu `knowledge_id` sẵn có trong MongoDB qua `doc_key` hoặc `url`, không gọi lại API WeKnora nếu tài liệu đã tồn tại.
   * `server/tests/01/test_chat_scope.py`: Bổ sung 3 unit tests (`test_extract_document_items_various_formats`, `test_sync_group_from_base_record_with_lark_docx_link`, `test_sync_group_deduplicates_existing_lark_doc`) -> Toàn bộ **18/18 PASSED 100%**.
 
+- **Giai đoạn 1 Tái Cấu Trúc (Phase 1 Refactoring: Database Indexes & Bounded Cache Eviction - EDL-0009)**:
+  * Khởi tạo `server/database/indexes.py`: Định nghĩa IndexModel cho 8 collections (`claims`, `memories`, `conversation_staging`, `chat_scopes`, `daily_digests`, `master_daily_digests`, `draft_logs`, `lark_auth`) kèm cơ chế Graceful Fallback đơn lẻ chống OperationFailure.
+  * Quản lý vòng đời kết nối `server/database/db.py`: Bổ sung `close_mongo_connections()` đóng an toàn `_async_client` và `_sync_client`, re-export `ensure_database_indexes`.
+  * Tích hợp `server/main.py`: Gọi `ensure_database_indexes()` trong startup và `close_mongo_connections()` trong shutdown của `lifespan`.
+  * Chống rò rỉ bộ nhớ (Bounded Cache):
+    - `server/services/larkServices/lark_messenger.py`: Thêm `_record_sent_message_id` với TTL 600s, max 1,000 items.
+    - `server/services/larkServices/lark_client.py`: Nâng cấp `get_user_name` và `_user_name_cache` với TTL 3,600s (1h), max 1,000 users.
+  * Bộ test `tests/01/test_phase1_stability.py`: 8/8 tests passed 100%.
+
 ## Verification
-- Context Truncation Fix:
-  * Chạy kịch bản mô phỏng kiểm thử sinh câu trả lời với chunk đầy đủ: Gemini trích dẫn chính xác "ngày 25 hàng tháng" từ Sổ tay Nhân viên.
-- AnyDoc gRPC Phase 1 Smoke Test:
-  * Chạy script `test_grpc_smoke.py`: Kết nối thành công 100%.
-- DocReader Service Unit Test Suite (`tests/01/test_docreader_service.py`):
-  * Ran 8 tests in 0.096s -> **8/8 PASSED**.
-- DocParser Service Unit Test Suite (`tests/01/test_doc_parser_service.py`):
-  * Ran 11 tests in 0.019s -> **11/11 PASSED**.
-- Claims Doc Pipeline Unit Test Suite (`tests/01/test_claims_doc_pipeline.py`):
-  * Ran 6 tests in 5.059s -> **6/6 PASSED**.
-- E2E Document Knowledge Overlay Test Suite (`tests/01/test_e2e_document_knowledge_overlay.py`):
-  * Ran 4 tests in 1.543s -> **4/4 PASSED**.
-- Contextual Claim Gate Regression Suite (`tests/01/test_contextual_claim_gate.py`):
-  * Ran 8 tests in 0.007s -> **8/8 PASSED**.
-- Digest Continuation Test Suite (`tests/01/test_digest_continuation.py`):
-  * Ran 5 tests in 0.021s -> **5/5 PASSED**.
-- Chat Scope & Base Sync Suite (`tests/01/test_chat_scope.py`):
-  * Ran 18 tests in 2.48s -> **18/18 PASSED**.
+- Phase 1 Stability Test Suite (`tests/01/test_phase1_stability.py`):
+  * Ran 8 tests -> **8/8 PASSED**.
 - Token Service & OAuth Suite (`tests/01/test_token_service.py`):
-  * Ran 9 tests in 2.57s -> **9/9 PASSED**.
-- **Tổng kiểm thử hợp nhất toàn bộ hệ thống:** **69/69 PASSED 100%**.
+  * Ran 9 tests -> **9/9 PASSED**.
+- Chat Scope & Base Sync Suite (`tests/01/test_chat_scope.py`):
+  * Ran 18 tests -> **18/18 PASSED**.
+- DocParser Service Unit Test Suite (`tests/01/test_doc_parser_service.py`):
+  * Ran 11 tests -> **11/11 PASSED**.
+- Contextual Claim Gate Regression Suite (`tests/01/test_contextual_claim_gate.py`):
+  * Ran 8 tests -> **8/8 PASSED**.
+- Lark Service Unit Test Suite (`tests/01/test_lark_service.py`):
+  * Ran 5 tests -> **5/5 PASSED**.
+- **Tổng kiểm thử regression sau Phase 1:** **59/59 PASSED 100%**.
 
 ## Next concrete steps
-1. Thông báo kết quả nâng cấp cột `Documents` hỗ trợ link Lark Docs/Wiki cho User.
-2. Tiếp tục các yêu cầu tiếp theo của User.
+1. Dừng lại báo cáo User về kết quả Giai đoạn 1.
+2. Trình bày các điểm giả định / chưa chắc chắn để User góp ý:
+   - TTL của `_sent_message_ids` (600s) và `_user_name_cache` (1h).
+   - Quyết định giữ nguyên hợp đồng `server/database/db.py` (Modular Expansion) thay vì chia nhỏ thành folder `repositories/`.
+   - Cơ chế Graceful Fallback của MongoDB indexes khi chạy trên dữ liệu dev có sẵn bản ghi rác.
+3. Chờ ý kiến người dùng trước khi tiến hành Giai đoạn 2 (Tách nhỏ `bot_service.py` & Service Layer Decoupling).
 
 
 
