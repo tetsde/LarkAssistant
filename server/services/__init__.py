@@ -1,49 +1,94 @@
-from .jev import jev_service, JevService
-from .weknora import weknora_service, WeKnoraService
-from .lark import lark_service, LarkService, LarkMessage, LarkConfig
-from .digest_service import digest_service, DigestService
-from .scope_service import scope_service, ScopeService
-from .llm_client import llm_client, LLMClient, GeminiClient
-from .larkbase import lark_base_service, LarkBaseService, LarkBaseRecord, read_lark_base_records
-from .chat_service import (
+from .ai import jev_service, JevService, llm_client, LLMClient, GeminiClient
+from .auth import token_service, LarkTokenService, start_token_refresh_loop
+from .knowledge import (
+    weknora_service,
+    WeKnoraService,
+    scope_service,
+    ScopeService,
+    docreader_service,
+    DocReaderService,
+    doc_parser_service,
+    DocParserService,
+    policy_sync_service,
+    PolicySyncService,
+    context_composer,
+    ContextComposer,
+    rule_engine,
+    UnifiedRuleEngine,
+)
+from .lark import (
+    lark_service,
+    LarkService,
+    LarkMessage,
+    LarkConfig,
+    lark_base_service,
+    LarkBaseService,
+    LarkBaseRecord,
+    read_lark_base_records,
+)
+from .workflows import (
     chat_service,
     ChatService,
     process_chat_pipeline,
     process_document_to_claims,
+    digest_service,
+    DigestService,
+    draft_service,
+    DraftService,
+    draft_store,
+    DraftStore,
+    PendingDraft,
+    chat_queue_service,
+    ChatQueueService,
 )
 
-from .docreader_service import docreader_service, DocReaderService
-from .doc_parser_service import doc_parser_service, DocParserService
-
 __all__ = [
+    # AI Domain
     "jev_service",
     "JevService",
-    "weknora_service",
-    "WeKnoraService",
-    "lark_service",
-    "LarkService",
-    "LarkMessage",
-    "LarkConfig",
-    "digest_service",
-    "DigestService",
-    "scope_service",
-    "ScopeService",
     "llm_client",
     "LLMClient",
     "GeminiClient",
-    "lark_base_service",
-    "LarkBaseService",
-    "LarkBaseRecord",
-    "read_lark_base_records",
-    "chat_service",
-    "ChatService",
-    "process_chat_pipeline",
-    "process_document_to_claims",
+    # Auth Domain
+    "token_service",
+    "LarkTokenService",
+    "start_token_refresh_loop",
+    # Knowledge Domain
+    "weknora_service",
+    "WeKnoraService",
+    "scope_service",
+    "ScopeService",
     "docreader_service",
     "DocReaderService",
     "doc_parser_service",
     "DocParserService",
+    "policy_sync_service",
+    "PolicySyncService",
+    "context_composer",
+    "ContextComposer",
+    "rule_engine",
+    "UnifiedRuleEngine",
+    # Lark Domain
+    "lark_service",
+    "LarkService",
+    "LarkMessage",
+    "LarkConfig",
+    "lark_base_service",
+    "LarkBaseService",
+    "LarkBaseRecord",
+    "read_lark_base_records",
+    # Workflows Domain
+    "chat_service",
+    "ChatService",
+    "process_chat_pipeline",
+    "process_document_to_claims",
+    "digest_service",
+    "DigestService",
+    "draft_service",
+    "DraftService",
+    "draft_store",
+    "DraftStore",
+    "PendingDraft",
+    "chat_queue_service",
+    "ChatQueueService",
 ]
-
-
-

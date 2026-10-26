@@ -38,11 +38,12 @@ Kiến trúc vận hành 4 lớp tuần tự:
 | Area | Path | Responsibility | Evidence / notes |
 |---|---|---|---|
 | Entry point | `server/main.py` | Khởi tạo FastAPI app, lifespan quản lý bot service, đăng ký routers | Đã xác minh |
+| Persistent HTTP Client | `server/core/http_client.py` | Persistent Connection Pool cho WeKnora, JEV, TokenService (EDL-0009) | Đã xác minh qua unit test (7/7 pass) |
 | Configuration | `server/core/config.py` | Load `.env` từ repo root, cấu hình MongoDB, Lark, WeKnora, JEV, Gemini | Đã xác minh |
-| Lark Bot Service | `server/services/bot_service.py` | Kết nối Lark WebSocket, lắng nghe event tin nhắn & card action | Đã xác minh |
+| Lark Bot Service & Handlers | `server/services/bot_service.py`, `server/services/bot_handlers/` | Root Dispatcher Facade & tách nhỏ 3 handlers: document, owner_command, member_message (EDL-0009) | Đã xác minh qua unit test (8/8 pass) |
 | Core Chat Orchestration | `server/services/chat_service.py` | Pipeline xử lý tin nhắn, gọi JEV, RAG, Claims, LLM, duyệt nháp, bóc tách tài liệu (EDL-0010) | Đã xác minh |
-| Intent Classifier (JEV) | `server/services/jev.py` | Giao tiếp API JEV để phân loại mục tiêu tin nhắn | Đã xác minh |
-| Hybrid RAG | `server/services/weknora.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset | Đã xác minh |
+| Intent Classifier (JEV) | `server/services/jev.py` | Giao tiếp API JEV phân loại mục tiêu tin nhắn, dùng JEVError (EDL-0009) | Đã xác minh |
+| Hybrid RAG | `server/services/weknora.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset, dùng connection pool (EDL-0009) | Đã xác minh |
 | Context Composer | `server/utils/context_composer.py` | Hợp nhất RAG chunks + Claims, ưu tiên Claims mới hơn tài liệu | Đã xác minh qua unit test |
 | Document Parsing Layer | `server/services/doc_parser_service.py` | Chuyển đổi file đính kèm & Lark Doc URL sang Markdown (EDL-0010) | Đã xác minh qua unit test (11/11 pass) |
 | AnyDoc gRPC Client | `server/services/docreader_service.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đã xác minh qua unit test (8/8 pass) |
@@ -50,8 +51,8 @@ Kiến trúc vận hành 4 lớp tuần tự:
 | Daily Digest & Staging | `server/services/digest_service.py` | Lưu staging tin nhắn, tổng hợp digest ngày, xuất báo cáo | Đã xác minh |
 | Chat Scope Isolation | `server/services/scope_service.py` | Quản lý quyền truy cập dataset và dữ liệu theo chat_id | Đã xác minh qua unit test |
 | Draft Approval (HITL) | `server/services/draft_service.py` | Quản lý vòng đời bản nháp (Pending, Approved, Rejected) | Đã xác minh |
-| Database layer | `server/database/` (`db.py`, `mongo.py`) | Kết nối Motor AsyncIOMotorClient và PyMongo | Đã xác minh |
-| Test suite | `server/tests/01/` | Bộ kiểm thử chức năng (73 test cases) | 72 passed, 1 failed |
+| Database layer | `server/database/` (`db.py`, `indexes.py`) | Kết nối Motor AsyncIOMotorClient, PyMongo và tự động đánh index (EDL-0009) | Đã xác minh |
+| Test suite | `server/tests/01/` | Bộ kiểm thử chức năng & hồi quy (96 test cases) | 96 passed (100%) |
 
 ## 5. Contracts and constraints
 - **Lark API:** Dùng `lark-oapi` kết nối WebSocket mode (không cần public IP/webhook proxy khi dev).
@@ -94,6 +95,10 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
   - Giả định MongoDB cục bộ hoặc cloud URI đã sẵn sàng khi chạy bot service thực tế.
 
 ## 9. Last verified
-- **Date:** 2026-10-25
-- **What was checked:** Cấu hình `server/core/config.py`, `.env`, hạ tầng AnyDoc gRPC `WeKnora-docreader:50051`, và toàn bộ 4 Giai đoạn của Quyết định Kỹ thuật `EDL-0010` (DocReader Service 8/8 pass, DocParser Service 11/11 pass, Claims Doc Pipeline 6/6 pass, E2E Document Knowledge Overlay 4/4 pass, Contextual Claim Gate 8/8 pass -> Tổng cộng 37/37 test cases passed 100%).
-- **By / source:** Antigravity Agent (phiên nghiệm thu hoàn thành EDL-0010).
+- **Date:** 2026-10-26
+- **What was checked:** Hoàn thành trọn vẹn cả 3 Giai đoạn của Quyết định Kỹ thuật `EDL-0009`:
+  - Giai đoạn 1: Database Indexes (8 collections) & Bounded Caches (TTL + Size limits).
+  - Giai đoạn 2: Persistent HTTP Connection Pool (`core/http_client.py`), Clean Architecture (`JEVError`), Non-blocking Startup I/O.
+  - Giai đoạn 3: Phân rã `bot_service.py` Facade & tách các Handlers độc lập (`bot_handlers/`).
+  - Toàn bộ 96/96 test cases passed 100% trong 3.36s.
+- **By / source:** Antigravity Agent (phiên nghiệm thu hoàn thành toàn bộ EDL-0009).

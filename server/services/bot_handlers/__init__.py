@@ -1,18 +1,12 @@
 """
-HiLark Bot Handlers Package
-===========================
-Exports các handlers chuyên biệt cho Lark Bot:
-  - document_handler: Xử lý tệp đính kèm (Word/PDF/ảnh) và link Lark DocX/Wiki.
-  - owner_command_handler: Xử lý các câu lệnh DM 1-1 của Chủ nhân (Digest & Draft Approval).
-  - member_message_handler: Xử lý tin nhắn nhóm, staging và chat queue.
+Transitional Facade Shim for Bot Handlers
+=========================================
+Vị trí: server/services/bot_handlers/__init__.py (Deprecated - Vui lòng import từ services.lark.handlers)
 """
 
-from services.bot_handlers.document_handler import handle_document_or_links
-from services.bot_handlers.owner_command_handler import handle_owner_dm_command
-from services.bot_handlers.member_message_handler import handle_member_message
+from __future__ import annotations
 
-__all__ = [
-    "handle_document_or_links",
-    "handle_owner_dm_command",
-    "handle_member_message",
-]
+import services.lark.handlers as _h_mod
+from services.lark.handlers import *  # noqa: F401, F403
+
+__all__ = [name for name in dir(_h_mod) if not name.startswith("_")]

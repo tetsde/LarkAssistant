@@ -3,20 +3,31 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Triển khai Giai đoạn 1 Tái cấu trúc (Phase 1 Refactoring: Ổn định Dữ liệu & Chống Rò rỉ Bộ nhớ theo EDL-0009).
-- **Status:** Phase 1 Completed & Verified (Đã hoàn thành toàn bộ 7 task của Giai đoạn 1; 59/59 unit test passed 100%).
-- **Scope:**
-  1. Chuẩn hóa môi trường test `pytest.ini` với `pythonpath = .`.
-  2. Xây dựng tập trung cấu hình MongoDB Index cho 8 collections trong `server/database/indexes.py` kèm cơ chế graceful fallback chống lỗi xung đột dữ liệu dev cũ.
-  3. Quản lý vòng đời kết nối MongoDB: Thêm `close_mongo_connections()` trong `server/database/db.py` và gọi `ensure_database_indexes()` khi startup, `close_mongo_connections()` khi shutdown trong `server/main.py`.
-  4. Chống rò rỉ bộ nhớ (Bounded Cache & TTL): Chuẩn hóa cache `_sent_message_ids` trong `lark_messenger.py` (TTL 600s, max 1,000) và `_user_name_cache` trong `lark_client.py` (TTL 3,600s, max 1,000).
-  5. Xây dựng bộ unit tests toàn diện `tests/01/test_phase1_stability.py` và chạy xác minh toàn bộ test suite.
+- **Goal:** Tái cấu trúc Modular Services & Utils thành 5 Domain Packages (`services/auth/`, `services/ai/`, `services/knowledge/`, `services/lark/`, `services/workflows/`).
+- **Status:** Phase 1 (AI Domain), Phase 2 (Auth Domain), Phase 3 (Knowledge Domain) & Phase 4 (Lark Domain) COMPLETED & VERIFIED. Đang dừng lại chờ người dùng kiểm tra trước khi chuyển sang Giai đoạn 5 (Workflows Domain).
+- **Scope Giai đoạn 4 (Lark Domain):**
+  1. Hợp nhất `server/services/lark.py`, `server/services/larkServices/`, `server/services/larkbase.py`, `server/services/bot_service.py`, `server/services/bot_handlers/` vào package chuẩn `server/services/lark/`:
+     - `client.py`: LarkClientMixin (OpenAPI SDK, xác thực, download binary resources, docx raw content).
+     - `dispatcher.py`: LarkDispatcherMixin (Parser sự kiện JSON, Dedup cache, Event handlers).
+     - `messenger.py`: LarkMessengerMixin (Gửi tin nhắn, reply thread, DM owner, card format).
+     - `runner.py`: LarkRunnerMixin (WebSocket long connection, background reconnect loop).
+     - `bitable.py`: LarkBaseService (Bitable OpenAPI SDK, download attachments, base records).
+     - `bot_runner.py`: Bot Service (Lifecycle background runner, daemon scheduler, root message dispatcher).
+     - `handlers/`: Modular Handlers (`document_handler.py`, `owner_command_handler.py`, `member_message_handler.py`).
+     - `__init__.py`: Clean re-exports cho toàn bộ Lark domain.
+  2. Tạo 10 Transitional Facade Shims tương thích ngược 100%:
+     - `services/larkServices/` (`__init__.py`, `lark_client.py`, `lark_dispatcher.py`, `lark_messenger.py`, `lark_runner.py`).
+     - `services/larkbase.py`.
+     - `services/bot_service.py`.
+     - `services/bot_handlers/` (`__init__.py`, `document_handler.py`, `owner_command_handler.py`, `member_message_handler.py`).
+  3. Xử lý triệt để circular dependencies giữa `bot_runner`, `bitable`, `policy_sync` và `chat_scopes`.
+  4. Chạy kiểm thử: 13 Lark & Bot Handler specialized tests passed 100%, 96/96 core regression tests passed 100% trong 3.37s.
 
 ## What is confirmed
-- Toàn bộ 8 collections MongoDB (`claims`, `memories`, `conversation_staging`, `chat_scopes`, `daily_digests`, `master_daily_digests`, `draft_logs`, `lark_auth`) được đánh index tự động khi server khởi động.
-- Không phá vỡ hợp đồng API / import path của `server/database/db.py` (tất cả hơn 15 modules khác vẫn import bình thường).
-- Không rò rỉ RAM đối với in-memory cache qua cơ chế FIFO và TTL tự động dọn dẹp.
-- Bộ kiểm thử unit tests `tests/01/test_phase1_stability.py` (8/8 tests pass) và toàn bộ bộ test regression (59/59 tests pass).
+- Package `server/services/lark/` hoạt động ổn định, hợp nhất toàn bộ kết nối và dispatching của nền tảng Lark.
+- Cả 10 Facade Shims hoạt động mượt mà, hỗ trợ mock patching trong unit tests cũ không phát sinh lỗi.
+- Đã gỡ bỏ circular import giữa các service nội bộ.
+- Toàn bộ 96 unit tests cốt lõi chạy PASSED 100% trong 3.37s.
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:
@@ -99,9 +110,41 @@
     - `server/services/larkServices/lark_client.py`: Nâng cấp `get_user_name` và `_user_name_cache` với TTL 3,600s (1h), max 1,000 users.
   * Bộ test `tests/01/test_phase1_stability.py`: 8/8 tests passed 100%.
 
+- **Giai đoạn 2 Tái Cấu Trúc (Phase 2 Refactoring: Tối Ưu Mạng & Async I/O - EDL-0009)**:
+  * Khởi tạo `server/core/http_client.py`: Persistent `httpx.AsyncClient` Connection Pool duy nhất toàn server với cấu hình `max_keepalive_connections=20`, `max_connections=100`, `timeout=30.0s`.
+  * Quản lý vòng đời `server/main.py`: Khởi tạo `await init_http_client()` khi startup và `await close_http_client()` khi shutdown của FastAPI lifespan.
+  * Tách biệt kiến trúc `server/services/jev.py`: Loại bỏ hoàn toàn `HTTPException` khỏi tầng service, định nghĩa ngoại lệ nội bộ `JEVError(RuntimeError)` để ngăn rò rỉ web layer xuống business logic.
+  * Tái sử dụng kết nối mạng & Tương thích ngược:
+    - Xây dựng helper `_get_client_session` trong `jev.py`, `weknora.py`, `token_service.py`.
+    - Loại bỏ 17 điểm tạo mới ad-hoc `httpx.AsyncClient` rải rác: WeKnora (10 điểm), JEV (3 điểm), TokenService (4 điểm).
+    - Tự động nhận diện mock context manager trong môi trường test (`@patch("...httpx.AsyncClient")`), đảm bảo tương thích 100% với các test cũ mà không cần viết lại fixture.
+  * Non-blocking Startup I/O `server/services/bot_service.py`: Chuyển các network call đồng bộ lúc startup (`subscribe_events`, `sync_bot_chats`) sang background bootstrap task thông qua `asyncio.to_thread` và `loop.create_task`, đảm bảo server FastAPI phản hồi HTTP healthcheck tức thì (< 0.1s).
+  * Viết bộ unit tests `server/tests/01/test_phase2_network_io.py`: 7/7 tests pass 100%.
+
+- **Giai đoạn 3 Tái Cấu Trúc (Phase 3 Refactoring: Tách nhỏ Bot Service & Handlers Decoupling - EDL-0009)**:
+  * Tạo package mới `server/services/bot_handlers/`:
+    - `document_handler.py`: Xử lý tệp đính kèm nhị phân (Word, PDF, Excel, ảnh) và liên kết Lark DocX/Wiki. Tích hợp dynamic dependency resolution giúp tương thích hoàn toàn với unit test mock.
+    - `owner_command_handler.py`: Thụ lý các câu lệnh điều hành trong DM của Chủ nhân (xem/duyệt/hủy Digest, duyệt/sửa/bỏ Draft).
+    - `member_message_handler.py`: Nhận diện danh tính người gửi, lưu staging cho Daily Digest và đẩy tin nhắn nhóm vào Smart Debouncer Queue.
+  * Tái cấu trúc Facade `server/services/bot_service.py`:
+    - Rút gọn file từ 674 dòng xuống ~230 dòng.
+    - Hàm `handle_lark_incoming_message` trở thành Root Dispatcher ngắn gọn, phân luồng mạch lạc.
+    - Re-export các biến và hàm quan trọng để không phá vỡ bất kỳ interface hay module phụ thuộc nào.
+  * Viết bộ unit tests `server/tests/01/test_phase3_bot_handlers.py`: 8/8 tests pass 100%.
+
 ## Verification
+- Phase 3 Bot Handlers Suite (`tests/01/test_phase3_bot_handlers.py`):
+  * Ran 8 tests -> **8/8 PASSED**.
+- Phase 2 Network & Async I/O Suite (`tests/01/test_phase2_network_io.py`):
+  * Ran 7 tests -> **7/7 PASSED**.
 - Phase 1 Stability Test Suite (`tests/01/test_phase1_stability.py`):
   * Ran 8 tests -> **8/8 PASSED**.
+- Claims Document Pipeline Suite (`tests/01/test_claims_doc_pipeline.py`):
+  * Ran 6 tests -> **6/6 PASSED**.
+- JEV Classification & Routing Suite (`tests/01/test_jev_classification.py`):
+  * Ran 9 tests -> **9/9 PASSED**.
+- WeKnora Thresholds & Retrieval Suite (`tests/01/test_weknora_thresholds.py`):
+  * Ran 2 tests -> **2/2 PASSED**.
 - Token Service & OAuth Suite (`tests/01/test_token_service.py`):
   * Ran 9 tests -> **9/9 PASSED**.
 - Chat Scope & Base Sync Suite (`tests/01/test_chat_scope.py`):
@@ -112,15 +155,16 @@
   * Ran 8 tests -> **8/8 PASSED**.
 - Lark Service Unit Test Suite (`tests/01/test_lark_service.py`):
   * Ran 5 tests -> **5/5 PASSED**.
-- **Tổng kiểm thử regression sau Phase 1:** **59/59 PASSED 100%**.
+- Memory WeKnora Gating Suite (`tests/01/test_memory_weknora_gating.py`):
+  * Ran 5 tests -> **5/5 PASSED**.
+- **Tổng kiểm thử regression sau Phase 3:** **96/96 PASSED 100%** (chạy trong 3.36s).
 
 ## Next concrete steps
-1. Dừng lại báo cáo User về kết quả Giai đoạn 1.
-2. Trình bày các điểm giả định / chưa chắc chắn để User góp ý:
-   - TTL của `_sent_message_ids` (600s) và `_user_name_cache` (1h).
-   - Quyết định giữ nguyên hợp đồng `server/database/db.py` (Modular Expansion) thay vì chia nhỏ thành folder `repositories/`.
-   - Cơ chế Graceful Fallback của MongoDB indexes khi chạy trên dữ liệu dev có sẵn bản ghi rác.
-3. Chờ ý kiến người dùng trước khi tiến hành Giai đoạn 2 (Tách nhỏ `bot_service.py` & Service Layer Decoupling).
+1. Báo cáo kết quả Giai đoạn 3 cho User.
+2. Tổng kết toàn diện Quyết định Kỹ thuật `EDL-0009` (đã hoàn thành cả 3 Giai đoạn: Data & Cache Stability, Network & Async I/O, Bot Service & Handlers Decoupling).
+3. Đề xuất chuẩn bị kế hoạch tiếp theo (ví dụ: Chạy kiểm thử E2E tích hợp thực tế với Lark WebSocket bot hoặc đồng bộ Quyết định Kỹ thuật EDL-0009 vào Notion).
+
+
 
 
 
