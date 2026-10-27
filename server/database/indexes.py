@@ -93,6 +93,13 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("open_id", ASCENDING)], name="idx_auth_open_id"),
             IndexModel([("status", ASCENDING)], name="idx_auth_status"),
         ],
+
+        # 9. COST TELEMETRY (Đo lường chi phí LLM & JEV)
+        settings.MONGO_TELEMETRY_COLLECTION: [
+            IndexModel([("timestamp", DESCENDING)], name="idx_telemetry_timestamp"),
+            IndexModel([("service", ASCENDING), ("operation", ASCENDING)], name="idx_telemetry_svc_op"),
+            IndexModel([("chat_id", ASCENDING)], sparse=True, name="idx_telemetry_chat_id"),
+        ],
     }
 
 

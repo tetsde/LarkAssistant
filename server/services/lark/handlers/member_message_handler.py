@@ -18,7 +18,13 @@ import sys
 from typing import Optional
 
 from core.config import settings
+from database.db import (
+    get_staging_collection,
+    promote_claims_by_message_id,
+    reject_claims_by_message_id,
+)
 from models.lark import LarkMessage
+from services.ai.jev_classifier import jev_service
 from services.chat_service import process_chat_pipeline
 from services.digest_service import digest_service
 from services.lark import lark_service as default_lark_service
@@ -85,10 +91,73 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
 
     # Chuyển vào Unified Chat Pipeline
     if is_owner:
+        query_to_run = msg.text
+
+        # ── [TIER 2: SMART THREAD REPLY VIA JEV] ──
+        # Nếu Lãnh đạo đang reply một tin nhắn cụ thể trong thread
+        if msg.parent_id:
+            parent_text: Optional[str] = None
+            try:
+                parent_doc = await get_staging_collection().find_one({"message_id": msg.parent_id})
+                if parent_doc and parent_doc.get("text"):
+                    parent_text = parent_doc["text"]
+            except Exception as e:
+                logger.debug(f"Không lấy được parent text từ staging: {e}")
+
+            if not parent_text:
+                try:
+                    res = lark_service.get_message(msg.parent_id)
+                    if res.get("success") and res.get("data"):
+                        data_obj = res["data"]
+                        items = getattr(data_obj, "items", None) or [data_obj]
+                        if items and len(items) > 0:
+                            body = getattr(items[0], "body", None)
+                            raw_c = getattr(body, "content", "{}") if body else "{}"
+                            import json
+                            c_dict = json.loads(raw_c) if isinstance(raw_c, str) else raw_c
+                            parent_text = c_dict.get("text", "") if isinstance(c_dict, dict) else str(c_dict)
+                except Exception as e:
+                    logger.debug(f"Không lấy được parent message qua Lark API: {e}")
+
+            if parent_text:
+                print(f"🧵 [THREAD REPLY PHÁT HIỆN] Sếp reply tin nhắn '{msg.parent_id}': \"{parent_text[:80]}...\"")
+                decision_res = await jev_service.classify_thread_decision(
+                    parent_text=parent_text,
+                    reply_text=msg.text,
+                )
+                decision = decision_res.get("decision", "CHAT_ONLY")
+                conf = decision_res.get("confidence", 0.0)
+                print(f"🎯 [THREAD JEV DECISION] Quyết định của Sếp: {decision} (Độ tin cậy: {conf:.2f})")
+
+                approver_info = {
+                    "user_id": msg.sender_id,
+                    "user_name": responder_name,
+                    "role": "owner",
+                }
+
+                if decision == "APPROVE_AS_IS":
+                    # FAST-LANE: 0 TOKEN LLM, 0ms latency, 0% regex!
+                    promoted = await promote_claims_by_message_id(msg.parent_id, approver_info=approver_info)
+                    print(f"🎉 [THREAD APPROVAL FAST-LANE] Sếp reply '{msg.text}' -> APPROVE_AS_IS! Đã thăng hạng {promoted} fact(s) thành CURRENT (0 LLM tokens).")
+                    return
+
+                elif decision == "REJECT":
+                    rejected = await reject_claims_by_message_id(msg.parent_id)
+                    print(f"🛑 [THREAD REJECT] Sếp reply '{msg.text}' -> REJECT! Đã từ chối {rejected} fact(s).")
+                    return
+
+                elif decision == "APPROVE_WITH_CHANGES":
+                    # LLM MODIFICATION LANE: Nối ngữ cảnh đề xuất + điều chỉnh của sếp
+                    print(f"📝 [THREAD MODIFICATION] Sếp reply '{msg.text}' -> APPROVE_WITH_CHANGES! Kích hoạt LLM cập nhật giá trị mới...")
+                    query_to_run = (
+                        f"Đề xuất ban đầu từ nhân sự: \"{parent_text}\"\n"
+                        f"Quyết định điều chỉnh và phê duyệt của Lãnh đạo: \"{msg.text}\""
+                    )
+
         print(f"👑 [LARK GROUP CHỦ NHÂN] Tin nhắn của chủ nhân -> Chat Pipeline (chế độ chỉ ghi nhớ/ignore, cấm reply)...")
         try:
             result = await process_chat_pipeline(
-                query=msg.text,
+                query=query_to_run,
                 sender=msg.sender_id,
                 channel=f"lark_{msg.chat_type}",
                 message_id=msg.message_id,

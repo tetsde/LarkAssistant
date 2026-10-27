@@ -42,8 +42,15 @@ from services.workflows.digest_workflow import (
     DigestService,
     digest_service,
 )
+from services.workflows.claim_workflow import (
+    ClaimService,
+    claim_service,
+)
 
 __all__ = [
+    # Claim Workflow
+    "ClaimService",
+    "claim_service",
     # Chat Workflow
     "ChatService",
     "chat_service",

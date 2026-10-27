@@ -29,11 +29,18 @@ from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
     P2ImChatMemberBotAddedV1,
     P2ImChatMemberBotDeletedV1,
+    P2ImMessageReactionCreatedV1,
 )
 from lark_oapi.api.drive.v1 import (
     P2DriveFileBitableRecordChangedV1,
     P2DriveFileBitableFieldChangedV1,
     P2DriveFileEditV1,
+)
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+    CallBackToast,
+    CallBackCard,
 )
 
 from models.lark import LarkMessage
@@ -72,11 +79,13 @@ class LarkDispatcherMixin:
             self.verification_token or "",
         )
         builder.register_p2_im_message_receive_v1(self._internal_on_message_event)
+        builder.register_p2_im_message_reaction_created_v1(self._internal_on_reaction_created_event)
         builder.register_p2_im_chat_member_bot_added_v1(self._internal_on_bot_added_event)
         builder.register_p2_im_chat_member_bot_deleted_v1(self._internal_on_bot_deleted_event)
         builder.register_p2_drive_file_bitable_record_changed_v1(self._internal_on_bitable_record_changed_event)
         builder.register_p2_drive_file_bitable_field_changed_v1(self._internal_on_bitable_field_changed_event)
         builder.register_p2_drive_file_edit_v1(self._internal_on_drive_file_edit_event)
+        builder.register_p2_card_action_trigger(self._internal_on_card_action_trigger)
         return builder.build()
 
     # -------------------------------------------------------------------------
@@ -290,6 +299,82 @@ class LarkDispatcherMixin:
             except Exception as e:
                 logger.error(f"Lỗi khi thực thi message handler {handler.__name__}: {e}", exc_info=True)
 
+    def _internal_on_reaction_created_event(self, data: P2ImMessageReactionCreatedV1) -> None:
+        """
+        [Fast Reaction Hook - Tier 1 Decision Governance]
+        Xử lý sự kiện reaction (thả emoji) vào tin nhắn từ Lark (im.message.reaction.created_v1).
+        Khi Lãnh đạo (Owner) thả emoji đồng thuận (👍, ✅, OK, THUMBSUP, etc.):
+        Tự động thăng hạng các claim PROPOSED phát sinh từ message đó thành CURRENT.
+        0 token LLM, 0ms latency, 0% regex!
+        """
+        try:
+            event = getattr(data, "event", None)
+            if not event:
+                return
+
+            message_id = getattr(event, "message_id", "")
+            reaction_type = getattr(event, "reaction_type", None)
+            emoji_type = getattr(reaction_type, "emoji_type", "") if reaction_type else ""
+            user_id_obj = getattr(event, "user_id", None)
+            user_open_id = getattr(user_id_obj, "open_id", "") if user_id_obj else ""
+
+            if not message_id or not emoji_type:
+                return
+
+            print(f"👍 [LARK REACTION] Bắt được reaction '{emoji_type}' vào tin nhắn {message_id} từ {user_open_id}")
+
+            # Kiểm tra xem có phải Lãnh đạo (Owner) thả reaction hay không
+            is_owner = False
+            from core.config import settings
+            if user_open_id and settings.LARK_USER_OPEN_ID and user_open_id == settings.LARK_USER_OPEN_ID:
+                is_owner = True
+            elif hasattr(self, "_current_user_profile") and self._current_user_profile:
+                owner_open_id = self._current_user_profile.get("open_id")
+                if owner_open_id and user_open_id == owner_open_id:
+                    is_owner = True
+
+            if not is_owner:
+                logger.debug(f"[Reaction Gate] User {user_open_id} không phải Owner, bỏ qua.")
+                return
+
+            # Danh sách Emoji phê duyệt chính thức
+            APPROVAL_EMOJIS = {
+                "THUMBSUP", "OK", "CHECK_MARK", "DONE", "APPLAUSE", "HEART",
+                "FISTBUMP", "MUSCLE", "FIRE", "+1"
+            }
+            if emoji_type.upper() not in APPROVAL_EMOJIS:
+                logger.debug(f"[Reaction Gate] Emoji '{emoji_type}' không phải emoji phê duyệt.")
+                return
+
+            # Kích hoạt thăng hạng claims thành CURRENT
+            async def _promote():
+                try:
+                    from database.db import promote_claims_by_message_id
+                    approver_info = {
+                        "user_id": user_open_id,
+                        "user_name": settings.LARK_USER_NAME or "Lãnh đạo",
+                        "role": "owner",
+                    }
+                    promoted = await promote_claims_by_message_id(message_id, approver_info=approver_info)
+                    if promoted > 0:
+                        print(f"🎉 [FAST REACTION APPROVAL] Sếp đã thả {emoji_type} vào tin {message_id}! Đã thăng hạng {promoted} fact(s) thành CURRENT.")
+                    else:
+                        print(f"ℹ️ [FAST REACTION APPROVAL] Sếp thả {emoji_type} vào tin {message_id} (không có fact PROPOSED nào gắn với message này).")
+                except Exception as e:
+                    logger.error(f"Lỗi khi thăng hạng claim qua reaction: {e}", exc_info=True)
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_promote())
+            except RuntimeError:
+                try:
+                    asyncio.run(_promote())
+                except Exception as e:
+                    logger.error(f"Lỗi chạy async promote: {e}")
+
+        except Exception as e:
+            logger.error(f"Lỗi xử lý reaction created event: {e}", exc_info=True)
+
     def _internal_on_bot_added_event(self, data: P2ImChatMemberBotAddedV1) -> None:
         """Xử lý sự kiện Bot được thêm vào nhóm chat (im.chat.member.bot.added_v1)."""
         try:
@@ -453,6 +538,53 @@ class LarkDispatcherMixin:
     def _internal_on_drive_file_edit_event(self, data: P2DriveFileEditV1) -> None:
         """Xử lý sự kiện chỉnh sửa file trên Drive (drive.file.edit_v1)."""
         logger.debug("Drive file edit event received (drive.file.edit_v1)")
+
+    def _internal_on_card_action_trigger(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
+        """
+        Xử lý sự kiện khi người dùng bấm nút trên Thẻ tương tác (Interactive Card)
+        nhận qua WebSocket persistent connection (card.action.trigger).
+        """
+        try:
+            event = getattr(data, "event", None)
+            if not event:
+                return P2CardActionTriggerResponse()
+
+            operator = getattr(event, "operator", None)
+            open_id = getattr(operator, "open_id", "") if operator else ""
+
+            context = getattr(event, "context", None)
+            message_id = getattr(context, "open_message_id", "") if context else ""
+
+            action = getattr(event, "action", None)
+            action_val = getattr(action, "value", {}) if action else {}
+
+            logger.info(f"🔘 [LARK WS CARD ACTION] Nhận tương tác nút bấm từ {open_id} trên thẻ {message_id}: {action_val}")
+
+            from services.lark.handlers.card_action_handler import handle_card_action
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                ok, toast_msg, updated_card = executor.submit(
+                    lambda: asyncio.run(handle_card_action(open_id, message_id, action_val))
+                ).result(timeout=10.0)
+
+            resp = P2CardActionTriggerResponse()
+            if toast_msg:
+                resp.toast = CallBackToast()
+                resp.toast.type = "success" if ok else "warning"
+                resp.toast.content = toast_msg
+            if updated_card:
+                resp.card = CallBackCard()
+                resp.card.type = "raw"
+                resp.card.data = updated_card
+            return resp
+        except Exception as e:
+            logger.error(f"Lỗi khi xử lý card action trigger trong WebSocket: {e}", exc_info=True)
+            err_resp = P2CardActionTriggerResponse()
+            err_resp.toast = CallBackToast()
+            err_resp.toast.type = "danger"
+            err_resp.toast.content = "Đã xảy ra lỗi khi xử lý thao tác nút bấm."
+            return err_resp
 
     # -------------------------------------------------------------------------
     # ĐĂNG KÝ HANDLERS (MESSAGE & BITABLE)

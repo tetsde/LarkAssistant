@@ -31,6 +31,8 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequestBody,
     GetMessageRequest,
     ListMessageRequest,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -51,17 +53,23 @@ class LarkMessengerMixin:
     # GỬI TIN NHẮN DM TỚI CHỦ NHÂN BẰNG BOT (TRƯỜNG HỢP NGOẠI LỆ DUY NHẤT)
     # -------------------------------------------------------------------------
 
-    async def send_bot_dm_to_owner(self, text: str, target_open_id: Optional[str] = None) -> Dict[str, Any]:
+    async def send_bot_dm_to_owner(self, text: str | Dict[str, Any], target_open_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        ĐÂY LÀ ĐOẠN LOGIC DUY NHẤT TRONG HỆ THỐNG MÀ BOT GỬI TIN NHẮN DƯỚI DANH NGHĨA BOT:
-        Bot chỉ có quyền gửi tin nhắn riêng (DM 1-1) tới CHÍNH ĐÍCH DANH CHỦ SỞ HỮU ACCESS_TOKEN.
+        Gửi tin nhắn riêng (DM 1-1) từ Bot tới tài khoản của chủ nhân.
+        Tự động chuyển tiếp sang send_bot_card_to_owner nếu nội dung truyền vào là cấu trúc Thẻ tương tác.
         """
         if not text:
             return {"success": False, "error": "text không được rỗng"}
 
+        # Tự động nhận diện nếu người gọi truyền vào card dictionary hoặc card JSON
+        if isinstance(text, dict):
+            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id)
+        if isinstance(text, str) and text.strip().startswith("{") and '"elements"' in text:
+            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id)
+
         owner_open_id = target_open_id or self.owner_open_id
         if not owner_open_id:
-            logger.error("❌ [LARK BOT DM] Không tìm thấy open_id của chủ nhân (từ token hoặc cấu hình) để gửi tin.")
+            logger.error("[LARK BOT DM] Không tìm thấy open_id của chủ nhân để gửi tin.")
             return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -82,16 +90,127 @@ class LarkMessengerMixin:
             # Gửi bằng Bot App Token tới riêng 1-1 chủ nhân
             response = await self.client.im.v1.message.acreate(request)
             if not response.success():
-                logger.error(f"❌ [LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
+                logger.error(f"[LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
                 return {"success": False, "code": response.code, "msg": response.msg}
-            logger.info(f"✔ [LARK BOT DM] Đã gửi tin nhắn tới chủ nhân ({owner_open_id}) thành công")
+            logger.info(f"[LARK BOT DM] Đã gửi tin nhắn tới chủ nhân ({owner_open_id}) thành công")
             return {"success": True, "data": response.data}
         except Exception as e:
-            logger.error(f"❌ [LARK BOT DM] Exception khi gửi tin nhắn tới chủ nhân: {e}", exc_info=True)
+            logger.error(f"[LARK BOT DM] Lỗi ngoại lệ khi gửi tin nhắn tới chủ nhân: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     # Tương thích ngược tên hàm cũ
     send_to_owner_as_bot = send_bot_dm_to_owner
+
+    # -------------------------------------------------------------------------
+    # GỬI THẺ TIN NHẮN TƯƠNG TÁC (INTERACTIVE CARD) TỚI CHỦ NHÂN BẰNG BOT
+    # -------------------------------------------------------------------------
+
+    async def send_bot_card_to_owner(
+        self,
+        card_payload: Dict[str, Any] | str,
+        target_open_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Gửi Thẻ tin nhắn tương tác (Lark Interactive Card) trực tiếp tới Chủ nhân qua tài khoản Bot.
+        """
+        if not card_payload:
+            return {"success": False, "error": "card_payload không được rỗng"}
+
+        owner_open_id = target_open_id or self.owner_open_id
+        if not owner_open_id:
+            logger.error("[LARK BOT DM CARD] Không tìm thấy open_id của chủ nhân để gửi thẻ.")
+            return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
+
+        content_json = (
+            card_payload if isinstance(card_payload, str)
+            else json.dumps(card_payload, ensure_ascii=False)
+        )
+
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type("open_id")
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(owner_open_id)
+                .msg_type("interactive")
+                .content(content_json)
+                .build()
+            )
+            .build()
+        )
+
+        try:
+            response = await self.client.im.v1.message.acreate(request)
+            if not response.success():
+                logger.error(
+                    f"[LARK BOT DM CARD] Thất bại khi gửi thẻ tới chủ nhân ({owner_open_id}): "
+                    f"code={response.code}, msg={response.msg}"
+                )
+                return {"success": False, "code": response.code, "msg": response.msg}
+
+            mid = getattr(response.data, "message_id", None) if response.data else None
+            logger.info(f"[LARK BOT DM CARD] Đã gửi thẻ tương tác tới chủ nhân ({owner_open_id}) thành công, message_id={mid}")
+            return {"success": True, "data": response.data, "message_id": mid}
+        except Exception as e:
+            logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # -------------------------------------------------------------------------
+    # CẬP NHẬT THẺ TIN NHẮN TƯƠNG TÁC TẠI CHỖ (IN-PLACE CARD UPDATE)
+    # -------------------------------------------------------------------------
+
+    async def update_card_message(
+        self,
+        message_id: str,
+        card_payload: Dict[str, Any] | str,
+        as_user: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Cập nhật nội dung một thẻ tin nhắn đã gửi (In-place update).
+        Dùng để cập nhật trạng thái sau khi Lãnh đạo bấm nút (ví dụ: đã duyệt, đã hủy),
+        vô hiệu hóa các nút bấm nhằm chống bấm lặp lại.
+        """
+        if not message_id or not card_payload:
+            return {"success": False, "error": "message_id và card_payload không được rỗng"}
+
+        content_json = (
+            card_payload if isinstance(card_payload, str)
+            else json.dumps(card_payload, ensure_ascii=False)
+        )
+
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder()
+                .content(content_json)
+                .build()
+            )
+            .build()
+        )
+
+        opt = None
+        if as_user:
+            try:
+                opt = self._get_user_request_option()
+            except Exception as e:
+                logger.error(f"[LARK CARD UPDATE] Không lấy được quyền User: {e}")
+                return {"success": False, "error": str(e)}
+
+        try:
+            response = await self.client.im.v1.message.apatch(request, option=opt)
+            if not response.success():
+                logger.error(
+                    f"[LARK CARD UPDATE] Cập nhật thẻ {message_id} thất bại: "
+                    f"code={response.code}, msg={response.msg}"
+                )
+                return {"success": False, "code": response.code, "msg": response.msg}
+
+            logger.info(f"[LARK CARD UPDATE] Cập nhật thẻ {message_id} thành công")
+            return {"success": True, "data": getattr(response, "data", None)}
+        except Exception as e:
+            logger.error(f"[LARK CARD UPDATE] Lỗi ngoại lệ khi cập nhật thẻ {message_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
     # -------------------------------------------------------------------------
     # HÀM HELPER NỘI BỘ
@@ -340,7 +459,8 @@ class LarkMessengerMixin:
         """
         body_bytes = await request.body()
 
-        # 1. Xử lý tức thì URL Verification Challenge
+        # 1. Parse JSON payload và xử lý URL Verification Challenge
+        payload: Dict[str, Any] = {}
         try:
             payload = json.loads(body_bytes.decode(UTF_8)) if body_bytes else {}
             if isinstance(payload, dict) and payload.get("type") == "url_verification":
@@ -354,13 +474,40 @@ class LarkMessengerMixin:
         except Exception:
             pass
 
-        # 2. Xây dựng RawRequest cho Lark SDK
+        # 2. Xử lý sự kiện Card Action Callback (khi người dùng bấm nút trên Thẻ tương tác)
+        is_card_action = False
+        if isinstance(payload, dict):
+            if "action" in payload or payload.get("open_message_id"):
+                is_card_action = True
+            elif payload.get("header", {}).get("event_type") == "card.action.trigger":
+                is_card_action = True
+
+        if is_card_action:
+            from services.lark.handlers.card_action_handler import handle_card_action, parse_card_action_payload
+            open_id, message_id, action_val = parse_card_action_payload(payload)
+            if action_val:
+                ok, toast_msg, updated_card = await handle_card_action(open_id, message_id, action_val)
+                resp_data: Dict[str, Any] = {}
+                if toast_msg:
+                    resp_data["toast"] = {
+                        "type": "success" if ok else "warning",
+                        "content": toast_msg,
+                    }
+                if updated_card:
+                    resp_data["card"] = updated_card
+                return Response(
+                    content=json.dumps(resp_data, ensure_ascii=False),
+                    media_type="application/json; charset=utf-8",
+                    status_code=200,
+                )
+
+        # 3. Xây dựng RawRequest cho Lark SDK EventDispatcher
         raw_req = RawRequest()
         raw_req.uri = request.url.path
         raw_req.body = body_bytes
         raw_req.headers = dict(request.headers)
 
-        # 3. Chuyển cho SDK Dispatcher xử lý
+        # 4. Chuyển cho SDK Dispatcher xử lý
         try:
             raw_resp = self.event_dispatcher.do(raw_req)
             return Response(
@@ -384,3 +531,7 @@ class LarkMessengerMixin:
                     status_code=500,
                     media_type="application/json",
                 )
+
+    async def handle_card_action_request(self, request: Request) -> Response:
+        """Endpoint chuyên xử lý Card Action Callback từ Lark."""
+        return await self.handle_fastapi_request(request)

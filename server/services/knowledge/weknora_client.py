@@ -310,9 +310,11 @@ class WeKnoraService:
 
         try:
             async with self._get_client_session(client) as http_client:
+                valid_knowledge_ids = [str(kid).strip() for kid in (knowledge_ids or []) if str(kid).strip()]
                 target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
-                if not target_kbs:
-                    print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
+
+                if not valid_knowledge_ids and not target_kbs:
+                    print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids/knowledge_ids). Bỏ qua retrieval.")
                     return []
 
                 shim_mod = sys.modules.get("services.knowledge_service") or sys.modules.get("services.weknora")
@@ -328,12 +330,16 @@ class WeKnoraService:
                 payload: Dict[str, Any] = {
                     "query": query.strip(),
                     "match_count": match_count,
-                    "knowledge_base_ids": target_kbs,
                 }
 
-                # Giới hạn tìm kiếm trong các file cụ thể nếu có
-                if knowledge_ids:
-                    payload["knowledge_ids"] = knowledge_ids
+                # ĐẶC BIỆT: Trong WeKnora backend, nếu gửi cả knowledge_base_ids và knowledge_ids,
+                # WeKnora sẽ kích hoạt Full KB Search và BỎ QUA knowledge_ids!
+                # Do đó: Nếu có knowledge_ids cụ thể (tài liệu của nhóm chat), CHỈ gửi knowledge_ids.
+                # Chỉ khi không có knowledge_ids, mới gửi knowledge_base_ids để quét toàn bộ dataset.
+                if valid_knowledge_ids:
+                    payload["knowledge_ids"] = valid_knowledge_ids
+                elif target_kbs:
+                    payload["knowledge_base_ids"] = target_kbs
 
                 if effective_vector_threshold is not None:
                     payload["vector_threshold"] = effective_vector_threshold
@@ -394,18 +400,20 @@ class WeKnoraService:
             return []
 
         search_url = f"{self.base_url}/knowledge-search"
+        valid_knowledge_ids = [str(kid).strip() for kid in (knowledge_ids or []) if str(kid).strip()]
         target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
-        if not target_kbs:
-            print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids). Bỏ qua retrieval.")
+        if not valid_knowledge_ids and not target_kbs:
+            print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids/knowledge_ids). Bỏ qua retrieval.")
             return []
 
         payload: Dict[str, Any] = {
             "query": query.strip(),
             "match_count": match_count,
-            "knowledge_base_ids": target_kbs,
         }
-        if knowledge_ids:
-            payload["knowledge_ids"] = knowledge_ids
+        if valid_knowledge_ids:
+            payload["knowledge_ids"] = valid_knowledge_ids
+        elif target_kbs:
+            payload["knowledge_base_ids"] = target_kbs
 
         try:
             with httpx.Client(timeout=timeout) as client:

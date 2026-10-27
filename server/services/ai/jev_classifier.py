@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import httpx
 from core.config import settings
 from core.http_client import get_http_client
+from decorators.cost_telemetry import track_jev_cost
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class JevService:
 
         yield get_http_client()
 
+    @track_jev_cost(operation="classify_message")
     async def classify_message(self, message: str, client: Optional[httpx.AsyncClient] = None) -> dict:
         if not self.api_key:
             raise JEVError("Missing JEV API Key (jev_api) in .env")
@@ -197,6 +199,7 @@ class JevService:
         except Exception as e:
             raise JEVError(f"JEV Classification Failed: {str(e)}") from e
 
+    @track_jev_cost(operation="filter_chunks_relevance")
     async def filter_chunks_relevance(
         self,
         query: str,
@@ -292,6 +295,7 @@ class JevService:
         except Exception:
             return chunks
 
+    @track_jev_cost(operation="check_forbidden_query")
     async def check_forbidden_query(
         self,
         query: str,
@@ -481,6 +485,163 @@ class JevService:
                 "choice": "ALLOWED",
                 "forbidden_labels": cleaned_labels,
                 "matched_label": None,
+                "reason": f"exception: {str(e)}",
+            }
+
+    @track_jev_cost(operation="classify_thread_decision")
+    async def classify_thread_decision(
+        self,
+        parent_text: str,
+        reply_text: str,
+        timeout: float = 10.0,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> Dict[str, Any]:
+        """
+        [Thread Decision Intent] Phân loại phản hồi của Lãnh đạo khi reply tin nhắn đề xuất:
+        - APPROVE_AS_IS: Lãnh đạo đồng ý nguyên văn đề xuất ('Ok em', 'Chốt', 'Duyệt', 'Đồng ý', 'Nhất trí', 'Tiến hành nhé').
+        - APPROVE_WITH_CHANGES: Lãnh đạo đồng ý nhưng có điều chỉnh số liệu, mốc thời gian ('Dời 1 ngày thôi', 'Duyệt nhưng ngân sách 30tr').
+        - REJECT: Lãnh đạo từ chối hoặc bác bỏ đề xuất ('Không được', 'Giữ nguyên đi', 'Thôi bỏ đi').
+        - CHAT_ONLY: Trao đổi, thảo luận thông thường, hỏi thêm làm rõ hoặc không mang tính quyết định.
+        """
+        if not reply_text or not reply_text.strip() or not parent_text or not parent_text.strip():
+            return {
+                "decision": "CHAT_ONLY",
+                "confidence": 0.0,
+                "raw_choice": "CHAT_ONLY",
+                "probabilities": {},
+                "reason": "empty_input",
+            }
+
+        reply_clean = reply_text.strip()
+        parent_clean = parent_text.strip()
+
+        # Fast heuristic nếu thiếu JEV API Key (phục vụ fallback an toàn hoặc offline dev/test)
+        FAST_APPROVE_SET = {
+            "ok", "ok em", "oke em", "ok nhé", "oke nhé", "chốt", "chốt nhé", "duyệt", "duyệt nhé",
+            "duyệt em", "đồng ý", "nhất trí", "tiến hành đi", "tiến hành nhé", "ok anh", "ok sếp",
+        }
+        FAST_REJECT_SET = {
+            "không được", "ko được", "không được em", "ko đc", "hủy nhé", "thôi bỏ đi", "giữ nguyên đi",
+        }
+        reply_lower = reply_clean.lower()
+        if not self.api_key:
+            if reply_lower in FAST_APPROVE_SET:
+                return {
+                    "decision": "APPROVE_AS_IS",
+                    "confidence": 0.95,
+                    "raw_choice": "APPROVE_AS_IS",
+                    "probabilities": {"APPROVE_AS_IS": 0.95},
+                    "reason": "fast_heuristic_no_key",
+                }
+            if reply_lower in FAST_REJECT_SET:
+                return {
+                    "decision": "REJECT",
+                    "confidence": 0.95,
+                    "raw_choice": "REJECT",
+                    "probabilities": {"REJECT": 0.95},
+                    "reason": "fast_heuristic_no_key",
+                }
+            return {
+                "decision": "CHAT_ONLY",
+                "confidence": 0.5,
+                "raw_choice": "CHAT_ONLY",
+                "probabilities": {},
+                "reason": "missing_api_key",
+            }
+
+        payload = {
+            "state": (
+                f"Tin nhắn đề xuất ban đầu của nhân sự:\n\"{parent_clean}\"\n\n"
+                f"Phản hồi của Lãnh đạo/Quản lý:\n\"{reply_clean}\""
+            ),
+            "model": "jev-latest",
+            "questions": {
+                "decision_action": {
+                    "type": "choice",
+                    "instructions": (
+                        "Bạn là trợ lý AI phân tích quyết định của Lãnh đạo khi phản hồi một đề xuất/kiến nghị trong nhóm làm việc. "
+                        "Hãy phân tích nội dung phản hồi của Lãnh đạo đối với tin nhắn đề xuất ban đầu và chọn 1 trong 4 nhãn phù hợp nhất:"
+                    ),
+                    "criteria": {
+                        "APPROVE_AS_IS": "Lãnh đạo đồng ý, phê duyệt, chốt hoặc chấp thuận nguyên văn đề xuất (ví dụ: 'Ok em', 'Chốt', 'Duyệt', 'Đồng ý', 'Nhất trí', 'Tiến hành nhé', 'Ok').",
+                        "APPROVE_WITH_CHANGES": "Lãnh đạo đồng ý nhưng có kèm điều kiện, sửa đổi, điều chỉnh mốc thời gian, số liệu, ngân sách hoặc phạm vi (ví dụ: 'Dời 1 ngày thôi nhé', 'Duyệt nhưng ngân sách 30tr thôi', 'Được nhưng tuần sau mới bắt đầu').",
+                        "REJECT": "Lãnh đạo từ chối, bác bỏ, không đồng ý hoặc yêu cầu hủy đề xuất (ví dụ: 'Không được', 'Giữ nguyên đi', 'Thôi bỏ đi', 'Chưa được em ơi').",
+                        "CHAT_ONLY": "Trao đổi, thảo luận thông thường, hỏi thêm thông tin làm rõ hoặc không đưa ra quyết định phê duyệt/từ chối."
+                    }
+                }
+            }
+        }
+
+        try:
+            async with self._get_client_session(client) as http_client:
+                response = await http_client.post(self.url, headers=self.headers, json=payload, timeout=timeout)
+            if response.status_code != 200:
+                logger.warning(f"JEV API returned non-200 ({response.status_code}): {response.text}")
+                if reply_lower in FAST_APPROVE_SET:
+                    return {
+                        "decision": "APPROVE_AS_IS",
+                        "confidence": 0.9,
+                        "raw_choice": "APPROVE_AS_IS",
+                        "probabilities": {"APPROVE_AS_IS": 0.9},
+                        "reason": "api_error_fast_approve_fallback",
+                    }
+                return {
+                    "decision": "CHAT_ONLY",
+                    "confidence": 0.0,
+                    "raw_choice": "CHAT_ONLY",
+                    "probabilities": {},
+                    "reason": f"api_error_{response.status_code}",
+                }
+
+            data = response.json()
+            action_data = data.get("answers", {}).get("decision_action")
+            if not action_data:
+                return {
+                    "decision": "CHAT_ONLY",
+                    "confidence": 0.0,
+                    "raw_choice": "CHAT_ONLY",
+                    "probabilities": {},
+                    "reason": "empty_answer",
+                }
+
+            if isinstance(action_data, str):
+                choice = action_data.upper()
+                return {
+                    "decision": choice if choice in ("APPROVE_AS_IS", "APPROVE_WITH_CHANGES", "REJECT") else "CHAT_ONLY",
+                    "confidence": 0.8,
+                    "raw_choice": choice,
+                    "probabilities": {},
+                    "reason": "string_response",
+                }
+
+            choice = action_data.get("choice", "CHAT_ONLY")
+            probabilities = action_data.get("probabilities", {})
+            prob_choice = float(probabilities.get(choice, action_data.get("confidence", 0.0)))
+
+            final_decision = choice if choice in ("APPROVE_AS_IS", "APPROVE_WITH_CHANGES", "REJECT") else "CHAT_ONLY"
+
+            return {
+                "decision": final_decision,
+                "confidence": prob_choice,
+                "raw_choice": choice,
+                "probabilities": probabilities,
+                "reason": "jev_classified",
+            }
+        except Exception as e:
+            logger.warning(f"JEV classify_thread_decision exception: {e}")
+            if reply_lower in FAST_APPROVE_SET:
+                return {
+                    "decision": "APPROVE_AS_IS",
+                    "confidence": 0.9,
+                    "raw_choice": "APPROVE_AS_IS",
+                    "probabilities": {"APPROVE_AS_IS": 0.9},
+                    "reason": "exception_fast_approve_fallback",
+                }
+            return {
+                "decision": "CHAT_ONLY",
+                "confidence": 0.0,
+                "raw_choice": "CHAT_ONLY",
+                "probabilities": {},
                 "reason": f"exception: {str(e)}",
             }
 

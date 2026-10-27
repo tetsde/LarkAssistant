@@ -94,6 +94,19 @@ class DraftStore:
         )
         return PendingDraft.from_document(document) if document else None
 
+    async def update_draft_content(self, draft_id: str, new_draft_answer: str) -> bool:
+        """Cập nhật nội dung bản nháp đang ở trạng thái pending."""
+        result = await _get_collection().update_one(
+            {"id": draft_id, "status": "pending"},
+            {
+                "$set": {
+                    "draft_answer": new_draft_answer,
+                    "updated_at": get_vietnam_now_iso(),
+                }
+            },
+        )
+        return result.modified_count == 1
+
 
 draft_store = DraftStore()
 

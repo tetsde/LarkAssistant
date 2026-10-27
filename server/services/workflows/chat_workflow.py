@@ -174,6 +174,8 @@ async def process_memory_extraction(
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     scope_type: str = "chat",
+    is_owner: bool = False,
+    notify_realtime: bool = False,
 ) -> Dict[str, Any]:
     """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope."""
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
@@ -202,12 +204,37 @@ async def process_memory_extraction(
         existing_facts=existing_facts,
     )
 
+    # Phân loại quyền lực tri thức:
+    # Nếu không phải do Lãnh đạo phát ngôn -> chuyển toàn bộ facts sang proposed
+    is_speaker_owner = is_owner or bool(asserted_by and asserted_by.get("role") == "owner")
+    if not is_speaker_owner:
+        facts_list = extraction_result.get("facts", []) if isinstance(extraction_result, dict) else getattr(extraction_result, "facts", [])
+        for f in facts_list:
+            if isinstance(f, dict):
+                f["status"] = "proposed"
+            elif hasattr(f, "status"):
+                f.status = "proposed"
+
     mongo_saved = await _save_extraction(
         extraction_result,
         chat_id=chat_id,
         project_tag=project_tag,
         scope_type=scope_type,
     )
+
+    new_facts = mongo_saved.get("facts", [])
+    if notify_realtime:
+        try:
+            from services.workflows.claim_workflow import claim_service
+            await claim_service.notify_proposed_claims(
+                facts=new_facts,
+                chat_id=chat_id,
+                entities=mongo_saved.get("entities", []),
+                message_id=msg_id,
+                source_text=query_text,
+            )
+        except Exception as e:
+            logger.warning(f"Lỗi khi gửi thẻ duyệt Claim đề xuất tới lãnh đạo: {e}")
 
     total_entities = mongo_saved.get("total_stored_entities", 0)
     total_facts = mongo_saved.get("total_stored_facts", 0)
@@ -236,6 +263,8 @@ async def process_document_to_claims(
     message_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     scope_type: str = "chat",
+    is_owner: bool = False,
+    notify_realtime: bool = False,
 ) -> Dict[str, Any]:
     """
     Tiếp nhận tài liệu đã chuẩn hóa (DocParseResult từ AnyDoc gRPC hoặc Lark OpenAPI)
@@ -302,11 +331,16 @@ async def process_document_to_claims(
         existing_facts=existing_facts,
     )
 
-    # Đính kèm metadata nguồn tài liệu vào từng fact
-    for fact in extraction_result.get("facts", []):
+    # Đính kèm metadata nguồn tài liệu vào từng fact & phân loại quyền hạn:
+    # Tài liệu từ thành viên -> status: proposed (gom duyệt cuối ngày trên Thẻ Digest).
+    # Tài liệu do Lãnh đạo gửi (is_owner=True) -> status: current (hiệu lực ngay).
+    facts_list = extraction_result.get("facts", []) if isinstance(extraction_result, dict) else getattr(extraction_result, "facts", [])
+    for fact in facts_list:
         if isinstance(fact, dict):
             fact["source_doc"] = doc_result.doc_name
             fact["source_type"] = doc_result.source_type
+            if not is_owner:
+                fact["status"] = "proposed"
             if doc_result.metadata.get("document_id"):
                 fact["document_id"] = doc_result.metadata["document_id"]
             elif doc_result.metadata.get("file_key"):
@@ -324,6 +358,20 @@ async def process_document_to_claims(
     entities = mongo_saved.get("entities", [])
     total_entities = mongo_saved.get("total_stored_entities", 0)
     total_facts = mongo_saved.get("total_stored_facts", 0)
+
+    if notify_realtime:
+        try:
+            from services.workflows.claim_workflow import claim_service
+            await claim_service.notify_proposed_claims(
+                facts=new_facts,
+                chat_id=chat_id,
+                chat_title=doc_result.doc_name,
+                entities=entities,
+                message_id=msg_id,
+                source_text=f"Trích xuất từ tài liệu {doc_result.doc_name}",
+            )
+        except Exception as e:
+            logger.warning(f"Lỗi khi gửi thẻ duyệt Claim đề xuất từ tài liệu tới lãnh đạo: {e}")
 
     logger.info(
         f"✔ [DOC CLAIMS PIPELINE] Tiếp thu thành công tài liệu '{doc_result.doc_name}': "
@@ -604,6 +652,7 @@ async def process_chat_pipeline(
             chat_id=chat_id,
             project_tag=proj_context_name,
             scope_type="chat" if chat_id else "global",
+            is_owner=is_owner,
         )
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
@@ -644,13 +693,25 @@ async def process_chat_pipeline(
     except Exception as e:
         logger.warning(f"Lỗi khi đọc tri thức động từ MongoDB: {e}")
 
-    # ── [DOMAIN SEPARATION GATE] ──
-    # Nếu câu hỏi là Chính sách toàn công ty (COMPANY_POLICY), cấm hoàn toàn nạp Project Claims
+    # ── [DOMAIN SEPARATION GATE & CHAT SCOPE CURRENT-ONLY CLAIMS] ──
+    # 1. Nếu câu hỏi là Chính sách toàn công ty (COMPANY_POLICY), cấm hoàn toàn nạp Project Claims
     if jev_domain == "COMPANY_POLICY":
         logger.info(f"🏛️ [Domain Separation] Câu hỏi Chính sách công ty -> Cấm nạp Project Claims ({len(all_facts)} facts bị loại bỏ).")
         active_claims = [f for f in all_facts if f.get("scope_type") == "global" and f.get("is_policy")]
     else:
-        active_claims = [f for f in all_facts if f.get("status", "current") in ("current", "proposed")]
+        # 2. Với câu hỏi Dự án: CHỈ nạp các facts hiện hành đã được phê duyệt chính thức (status == 'current').
+        # Tuyệt đối cấm nạp PROPOSED vào Chat Q&A để chống nói leo và rò rỉ đề xuất chưa duyệt.
+        # Đồng thời kiểm soát nghiêm ngặt Chat Scope: Chỉ nạp facts của đúng chat_id / project_tag / global.
+        active_claims = [
+            f for f in all_facts
+            if f.get("status", "current") == "current"
+            and (
+                f.get("scope_type") == "global"
+                or (chat_id and f.get("chat_id") == chat_id)
+                or (proj_context_name and f.get("project_tag") == proj_context_name)
+                or (not f.get("chat_id") and not f.get("project_tag"))
+            )
+        ]
 
     # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat & Two-Tier Routing
     chunks = []
@@ -686,6 +747,16 @@ async def process_chat_pipeline(
 
         # ── [RAG TWO-TIER PIGGYBACK ROUTING] ──
         # Pessimistic Threshold: Chỉ khi confidence >= 0.85 mới định tuyến đơn kho, còn lại fallback HYBRID song song
+        policy_keywords = [
+            "chính sách", "quy định", "nội quy", "sổ tay", "nghỉ phép", "bảo hiểm",
+            "chế độ", "phúc lợi", "thưởng tết", "lương tháng 13", "quy tắc ứng xử",
+            "code of conduct", "policy", "handbook", "văn hóa công ty"
+        ]
+        is_explicit_policy_query = (
+            jev_domain == "COMPANY_POLICY"
+            or any(kw in clean_query.lower() for kw in policy_keywords)
+        )
+
         if jev_domain == "COMPANY_POLICY" and global_policy_kbs:
             logger.info(
                 f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Policy KBs ({global_policy_kbs}) | Confidence: {jev_domain_conf:.2f}"
@@ -756,6 +827,24 @@ async def process_chat_pipeline(
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
+    # ── [CHỐT CHẶN BẢO MẬT: STRICT DOCUMENT SCOPE & DATA ISOLATION] ──
+    # Nhóm chat chỉ được phép nhìn thấy tài liệu được cấu hình cho chính nhóm đó trên Lark Base!
+    # Lọc bỏ 100% các chunks từ tài liệu khác / dự án khác lọt vào từ dataset dùng chung.
+    allowed_doc_names = set()
+    if scope_record:
+        if hasattr(scope_record, "get_document_names"):
+            for dn in scope_record.get_document_names():
+                if dn and str(dn).strip():
+                    allowed_doc_names.add(str(dn).strip().lower())
+        if scope_record.documents:
+            for d in scope_record.documents:
+                if isinstance(d, dict) and d.get("name"):
+                    allowed_doc_names.add(str(d["name"]).strip().lower())
+                elif isinstance(d, str) and d.strip():
+                    allowed_doc_names.add(d.strip().lower())
+
+    allowed_kids = set(str(kid).strip() for kid in (target_knowledge_ids or []) if str(kid).strip())
+
     # Chuẩn hóa chunks cho ContextComposer và Rule Engine
     normalized_chunks = []
     for c in chunks:
@@ -764,6 +853,7 @@ async def process_chat_pipeline(
             or c.get("document_name")
             or "Tài liệu hệ thống"
         )
+        chunk_kid = str(c.get("knowledge_id") or "").strip()
         kb_id = str(c.get("knowledge_base_id") or "")
         is_policy_doc = (
             kb_id == str(settings.WEKNORA_POLICY_DATASET_ID)
@@ -772,6 +862,37 @@ async def process_chat_pipeline(
                 for kw in ["so_tay", "chinh_sach", "quy_che", "quy_tac", "employee_handbook", "code_of_conduct", "policy", "handbook"]
             )
         )
+
+        # STRICT ISOLATION FILTER:
+        # Nếu đây là tài liệu dự án và nhóm có cấu hình tài liệu cụ thể:
+        if not is_policy_doc and (allowed_kids or allowed_doc_names):
+            if chunk_kid and allowed_kids:
+                kid_match = chunk_kid in allowed_kids
+                name_match = any(
+                    (ad in doc_name.lower() or doc_name.lower() in ad)
+                    for ad in allowed_doc_names
+                ) if allowed_doc_names else False
+
+                if not kid_match and not name_match:
+                    cid = c.get("id") or c.get("chunk_id") or "unknown"
+                    logger.warning(
+                        f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' (kid={chunk_kid}) "
+                        f"bị loại bỏ vì không thuộc phạm vi tài liệu được cấu hình của nhóm '{scope_record.chat_name if scope_record else chat_id}'."
+                    )
+                    continue
+            elif allowed_doc_names and not chunk_kid:
+                name_match = any(
+                    (ad in doc_name.lower() or doc_name.lower() in ad)
+                    for ad in allowed_doc_names
+                )
+                if not name_match:
+                    cid = c.get("id") or c.get("chunk_id") or "unknown"
+                    logger.warning(
+                        f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' "
+                        f"bị loại bỏ vì không khớp danh mục tài liệu của nhóm."
+                    )
+                    continue
+
         normalized_chunks.append({
             "content": c.get("content", ""),
             "document_name": doc_name,
@@ -779,6 +900,7 @@ async def process_chat_pipeline(
             "score": c.get("score"),
             "is_policy_doc": is_policy_doc,
             "knowledge_base_id": kb_id,
+            "knowledge_id": chunk_kid,
         })
 
     # ── [CHỐT CHẶN BẢO MẬT: UNIFIED RULE ENGINE] ──
@@ -795,8 +917,14 @@ async def process_chat_pipeline(
         forbidden_labels=forbidden_labels,
         query=clean_query,
     )
-    # Hợp nhất: policy chunks hợp lệ + project chunks đã được làm sạch
-    clean_chunks = [c for c in policy_chunks if len(str(c.get("content", "")).strip()) >= 3] + clean_proj_chunks
+    # Hợp nhất: Nếu câu hỏi hỏi về chính sách toàn công ty thì nạp policy_chunks
+    # Nếu câu hỏi là về dự án, ưu tiên 100% clean_proj_chunks để tránh nhiễm bẩn tài liệu văn hóa / review code
+    if is_explicit_policy_query:
+        clean_chunks = [c for c in policy_chunks if len(str(c.get("content", "")).strip()) >= 3] + clean_proj_chunks
+    elif clean_proj_chunks:
+        clean_chunks = clean_proj_chunks
+    else:
+        clean_chunks = clean_proj_chunks or [c for c in policy_chunks if len(str(c.get("content", "")).strip()) >= 3]
 
     # ── [RAG GATE RELEVANCE FILTERING] ──
     # Lọc ngữ nghĩa thông minh qua JEV (1 Call duy nhất) trên các chunks đã được khử trùng
@@ -910,32 +1038,32 @@ async def process_chat_pipeline(
         )
 
         if reply_to_lark:
-            header_title = "DỰ ÁN TUYỆT MẬT" if is_confidential_group else "CÂU HỎI CÓ RỦI RO"
+            from services.lark.card_builder import build_draft_card
+
+            sec_lvl = "Tuyệt mật" if is_confidential_group else (scope_record.security_level if scope_record else "Tiêu chuẩn")
+            chat_title = scope_record.chat_name if scope_record else (chat_id or "Nhóm thảo luận")
             reason_text = (
-                "Nhóm thuộc mức độ TUYỆT MẬT (Chính sách: 100% câu trả lời phải được Sếp duyệt trước khi gửi vào nhóm)."
+                "Nhóm thuộc mức độ bảo mật cao. Toàn bộ câu trả lời cần được duyệt trước khi gửi vào nhóm."
                 if is_confidential_group
-                else "Câu hỏi có dữ liệu trong Knowledge Base nhưng thuộc nhóm rủi ro/nhạy cảm."
+                else "Câu hỏi có dữ liệu trong kho tri thức nhưng thuộc nhóm cần thẩm định trước khi trả lời."
             )
-            chat_title = scope_record.chat_name if scope_record else (chat_id or "Nhóm chat")
-            draft_card_text = (
-                f"📝 [SOẠN NHÁP CHỜ DUYỆT - {header_title}]\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👥 Nhóm chat : {chat_title}\n"
-                f"🛡️ Bảo mật   : {'TUYỆT MẬT (Khóa auto-reply)' if is_confidential_group else (scope_record.security_level if scope_record else 'Tiêu chuẩn')}\n"
-                f"👤 Người hỏi : {user_name or 'bạn'}\n"
-                f"💬 Câu hỏi   : \"{clean_query}\"\n\n"
-                f"💡 Bản nháp AI soạn sẵn:\n"
-                f"\"{answer}\"\n\n"
-                f"⚠️ Lý do: {reason_text}\n"
-                f"👉 Hành động chờ duyệt: Nhắn lại [Gửi] / [Sửa: <nội dung>] / [Bỏ]\n"
-                f"🆔 Message ID gốc: {message_id or 'N/A'}\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            draft_card_payload = build_draft_card(
+                draft_id=message_id or "",
+                chat_title=chat_title,
+                user_name=user_name or "bạn",
+                query=clean_query,
+                draft_answer=answer,
+                reason=reason_text,
+                is_confidential=is_confidential_group,
+                security_level=sec_lvl,
             )
+
             try:
-                dm_notice = await _lark.send_bot_dm_to_owner(draft_card_text)
-                logger.info(f"Đã lưu draft vào MongoDB và gửi thông báo duyệt (Message ID: {message_id})")
+                dm_notice = await _lark.send_bot_dm_to_owner(draft_card_payload)
+                logger.info(f"Đã lưu bản nháp vào cơ sở dữ liệu và gửi thẻ phê duyệt tới lãnh đạo (Message ID: {message_id})")
             except Exception as e:
-                logger.error(f"Lỗi gửi bản nháp cho chủ nhân: {e}")
+                logger.error(f"Lỗi gửi bản nháp cho lãnh đạo: {e}")
                 dm_notice = {"error": str(e)}
 
         return {

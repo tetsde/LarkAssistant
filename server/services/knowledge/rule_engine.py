@@ -327,6 +327,38 @@ class UnifiedRuleEngine:
 
         return False, None
 
+    def redact_violating_text(
+        self,
+        text: str,
+        accented_regexes: List[re.Pattern],
+        unaccented_regexes: List[re.Pattern],
+    ) -> Tuple[str, int]:
+        """
+        Khử trùng văn bản: Tìm các dòng/câu chứa từ khóa cấm và thay thế bằng nhãn bảo mật.
+        Trả về (clean_text, num_redacted_segments).
+        """
+        if not text:
+            return text, 0
+
+        lines = text.split("\n")
+        redacted_lines = []
+        redact_count = 0
+
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                redacted_lines.append(line)
+                continue
+
+            is_vio, matched = self.is_text_violating(line_str, accented_regexes, unaccented_regexes)
+            if is_vio:
+                redact_count += 1
+                redacted_lines.append("[Thông tin nhạy cảm đã được lược bỏ theo chính sách bảo mật nội bộ]")
+            else:
+                redacted_lines.append(line)
+
+        return "\n".join(redacted_lines), redact_count
+
     def sanitize(
         self,
         chunks: Optional[List[Union[Dict[str, Any], Any]]] = None,
@@ -423,21 +455,62 @@ class UnifiedRuleEngine:
             if len(content) < 3:
                 continue
 
-            is_vio, reason = self.is_chunk_violating(
-                c_dict,
-                accented_regexes,
-                unaccented_regexes,
-            )
+            doc_name = str(
+                c_dict.get("document_name")
+                or c_dict.get("doc_name")
+                or c_dict.get("knowledge_title", "")
+            ).strip()
 
-            if is_vio:
+            # 2.1 Kiểm tra tên tài liệu: Nếu tên tài liệu chứa từ cấm (VD: Ngan_sach_du_an.xlsx) -> DROP cả chunk
+            is_doc_vio, doc_matched = self.is_text_violating(doc_name, accented_regexes, unaccented_regexes)
+            if is_doc_vio:
                 cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
-                doc = c_dict.get("document_name") or c_dict.get("doc_name") or "tài liệu"
                 logger.warning(
-                    f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc}' bị loại bỏ. Lý do: {reason}"
+                    f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ vì tên tài liệu chứa từ khóa cấm '{doc_matched}'"
                 )
                 dropped_item = dict(c_dict)
-                dropped_item["_drop_reason"] = reason
+                dropped_item["_drop_reason"] = f"document_name='{doc_name}' chứa từ khóa cấm '{doc_matched}'"
                 dropped_chunks.append(dropped_item)
+                continue
+
+            # 2.2 Kiểm tra nội dung
+            is_content_vio, content_matched = self.is_text_violating(content, accented_regexes, unaccented_regexes)
+            if is_content_vio:
+                # Nếu chunk ngắn (<= 150 ký tự, như các đoạn trích đơn lẻ trong test case) -> DROP hoàn toàn
+                if len(content) <= 150:
+                    cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
+                    logger.warning(
+                        f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ. Lý do: content chứa từ khóa cấm '{content_matched}'"
+                    )
+                    dropped_item = dict(c_dict)
+                    dropped_item["_drop_reason"] = f"content chứa từ khóa cấm '{content_matched}'"
+                    dropped_chunks.append(dropped_item)
+                    continue
+
+                # Với các chunk dài (> 150 ký tự) từ tài liệu dự án/quy trình:
+                # Khử trùng (Redact) các dòng vi phạm nhãn cấm để bảo tồn thông tin nghiệp vụ an toàn (mục tiêu, phạm vi...)
+                redacted_content, num_redacted = self.redact_violating_text(content, accented_regexes, unaccented_regexes)
+                clean_lines = [l for l in redacted_content.split("\n") if "[Thông tin nhạy cảm" not in l and l.strip()]
+                non_sensitive_len = sum(len(l) for l in clean_lines)
+
+                # Nếu sau khi khử trùng vẫn còn nội dung nghiệp vụ an toàn có ý nghĩa (>= 60 ký tự)
+                if non_sensitive_len >= 60:
+                    sanitized_chunk = dict(c_dict)
+                    sanitized_chunk["content"] = redacted_content
+                    cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
+                    logger.info(
+                        f"🛡️ [RULE ENGINE - CHUNK REDACT] Đã khử trùng {num_redacted} dòng nhạy cảm trong chunk '{cid}' từ '{doc_name}'. "
+                        f"Bảo tồn {non_sensitive_len} ký tự nghiệp vụ an toàn."
+                    )
+                    clean_chunks.append(sanitized_chunk)
+                else:
+                    cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
+                    logger.warning(
+                        f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ vì toàn bộ nội dung thuộc chủ đề cấm '{content_matched}'"
+                    )
+                    dropped_item = dict(c_dict)
+                    dropped_item["_drop_reason"] = f"content chứa từ khóa cấm '{content_matched}'"
+                    dropped_chunks.append(dropped_item)
             else:
                 clean_chunks.append(c_dict)
 

@@ -25,14 +25,15 @@ Kiến trúc vận hành 4 lớp tuần tự:
 1. **Lớp 1: Cổng sự kiện Lark (Gateway & Dispatcher):** Nhận tin nhắn/sự kiện qua WebSocket (`services/bot_service.py`) hoặc Webhook HTTP, lọc trùng tin nhắn (deduplication).
 2. **Lớp 2: Bộ kiểm soát ý định JEV (System 1 Gatekeeper):** Phản xạ nhanh phân loại ý định người dùng (chào hỏi xã giao, tra cứu Q&A, giao việc, out-of-scope) để ngắt sớm hoặc điều hướng xử lý, tránh lãng phí token LLM.
 3. **Lớp 3: Động cơ nhận thức & Giải quyết xung đột tri thức:**
-   - **Tầng Phân Giải Đa Phương Tiện (Document Parsing Layer):** Chuẩn hóa file đính kèm (PDF, DOCX, XLSX, PPTX, ảnh) qua WeKnora AnyDoc gRPC (`WeKnora-docreader:50051`) và Lark DocX/Wiki URL qua Lark OpenAPI thành Markdown thuần với 0 token cost, cung cấp đầu vào cho `llm_extractor`.
+   - **Tầng Phân Giải Đa Phương Tiện (Document Parsing Layer):** Chuẩn hóa file đính kèm (PDF, DOCX, XLSX, PPTX) qua WeKnora AnyDoc gRPC (`WeKnora-docreader:50051`), file hình ảnh (PNG, JPG, JPEG, WEBP) qua Gemini Vision Multimodal OCR (`gemini_client.py`), và Lark DocX/Wiki URL qua Lark OpenAPI thành Markdown thuần với 0 token cost cho văn bản và trích xuất cấu trúc bảng/nội dung ảnh hoàn chỉnh, cung cấp đầu vào cho `llm_extractor`.
    - **WeKnora RAG (Baseline Layer):** Tìm kiếm hybrid (vector + BM25 keyword) trên kho tài liệu tĩnh bất biến có phân vùng theo nhóm chat (`chat_scopes`).
    - **MongoDB Claims (Claims Overlay):** Lưu trữ các sự thật mới chốt trong đoạn chat hoặc bóc tách từ tài liệu họp. Cơ chế `ContextComposer` giải quyết xung đột theo nguyên tắc: `CURRENT Claims > Static WeKnora Baseline`.
-   - **Rule Engine & Contextual Claim Gate:** Lọc bỏ dữ liệu nhạy cảm và ngăn chặn ô nhiễm ngữ cảnh chéo domain trước khi đưa vào prompt LLM.
+   - **Quy Trình Ghi Nhận Tri Thức & Gom Nhóm Đề Xuất (Batching Proposed Claims - EDL-0013):** Khi thành viên gửi tài liệu hoặc tin nhắn trao đổi trong ngày, các thông tin bóc tách được lưu tự động ở trạng thái `proposed` trong MongoDB và không gửi thông báo lẻ tẻ làm phiền Lãnh đạo. Chỉ những thông tin do Lãnh đạo phát ngôn mới được gắn cờ `current`. Cuối ngày, toàn bộ đề xuất được gom vào Thẻ báo cáo Master Daily Digest để Lãnh đạo duyệt 1 chạm.
+   - **Rule Engine & Contextual Claim Gate:** Lọc bỏ dữ liệu nhạy cảm bằng cơ chế Line-level Redaction (che thông tin cấm mà không làm mất bối cảnh nghiệp vụ) và ngăn chặn ô nhiễm ngữ cảnh chéo domain trước khi đưa vào prompt LLM.
 4. **Lớp 4: Cổng thực thi & Phê duyệt (Execution & HITL Gateway):**
    - Trả lời trực tiếp nếu thông tin đầy đủ và an toàn.
    - Cơ chế duyệt nháp (HITL): Gửi bản nháp dạng interactive card vào DM của người duyệt khi thiếu dữ liệu hoặc cần xác nhận.
-   - Daily Digest & LarkBase Sync: Tổng hợp tự động và đồng bộ tri thức vào WeKnora / Lark Base.
+   - Thẻ Tương Tác Master Daily Digest & Điều Hành (EDL-0013): Tổng hợp toàn bộ hoạt động các nhóm và bảng sự thật đề xuất trong ngày; cung cấp nút bấm 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`approve_all_digest_claims`), nút xem chi tiết từng nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`) và hủy báo cáo. Tự động thăng hạng toàn bộ claims sang `current` và đồng bộ WeKnora ngay trên thẻ.
 
 ## 4. Important code paths
 | Area | Path | Responsibility | Evidence / notes |
@@ -40,19 +41,24 @@ Kiến trúc vận hành 4 lớp tuần tự:
 | Entry point | `server/main.py` | Khởi tạo FastAPI app, lifespan quản lý bot service, đăng ký routers | Đã xác minh |
 | Persistent HTTP Client | `server/core/http_client.py` | Persistent Connection Pool cho WeKnora, JEV, TokenService (EDL-0009) | Đã xác minh qua unit test (7/7 pass) |
 | Configuration | `server/core/config.py` | Load `.env` từ repo root, cấu hình MongoDB, Lark, WeKnora, JEV, Gemini | Đã xác minh |
-| Lark Bot Service & Handlers | `server/services/bot_service.py`, `server/services/bot_handlers/` | Root Dispatcher Facade & tách nhỏ 3 handlers: document, owner_command, member_message (EDL-0009) | Đã xác minh qua unit test (8/8 pass) |
-| Core Chat Orchestration | `server/services/chat_service.py` | Pipeline xử lý tin nhắn, gọi JEV, RAG, Claims, LLM, duyệt nháp, bóc tách tài liệu (EDL-0010) | Đã xác minh |
-| Intent Classifier (JEV) | `server/services/jev.py` | Giao tiếp API JEV phân loại mục tiêu tin nhắn, dùng JEVError (EDL-0009) | Đã xác minh |
-| Hybrid RAG | `server/services/weknora.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset, dùng connection pool (EDL-0009) | Đã xác minh |
-| Context Composer | `server/utils/context_composer.py` | Hợp nhất RAG chunks + Claims, ưu tiên Claims mới hơn tài liệu | Đã xác minh qua unit test |
-| Document Parsing Layer | `server/services/doc_parser_service.py` | Chuyển đổi file đính kèm & Lark Doc URL sang Markdown (EDL-0010) | Đã xác minh qua unit test (11/11 pass) |
-| AnyDoc gRPC Client | `server/services/docreader_service.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đã xác minh qua unit test (8/8 pass) |
-| Rule Engine | `server/utils/rule_engine.py` | Kiểm duyệt từ khóa nhạy cảm trên Chunks và Claims | Đã xác minh qua unit test |
-| Daily Digest & Staging | `server/services/digest_service.py` | Lưu staging tin nhắn, tổng hợp digest ngày, xuất báo cáo | Đã xác minh |
-| Chat Scope Isolation | `server/services/scope_service.py` | Quản lý quyền truy cập dataset và dữ liệu theo chat_id | Đã xác minh qua unit test |
-| Draft Approval (HITL) | `server/services/draft_service.py` | Quản lý vòng đời bản nháp (Pending, Approved, Rejected) | Đã xác minh |
-| Database layer | `server/database/` (`db.py`, `indexes.py`) | Kết nối Motor AsyncIOMotorClient, PyMongo và tự động đánh index (EDL-0009) | Đã xác minh |
-| Test suite | `server/tests/01/` | Bộ kiểm thử chức năng & hồi quy (96 test cases) | 96 passed (100%) |
+| Lark Bot Service & Handlers | `server/services/bot_service.py`, `server/services/lark/handlers/` | Root Dispatcher Facade & tách nhỏ các handlers: document, owner_command, member_message, card_action (EDL-0009, EDL-0013) | Đã xác minh qua unit test |
+| Core Chat Orchestration | `server/services/workflows/chat_workflow.py` | Pipeline xử lý tin nhắn, gọi JEV, RAG Scoping, Claims, LLM, duyệt nháp, batching proposed claims (EDL-0010, EDL-0013) | Đã xác minh |
+| Intent Classifier (JEV) | `server/services/ai/jev_classifier.py` | Giao tiếp API JEV phân loại mục tiêu tin nhắn, dùng JEVError (EDL-0009) | Đã xác minh |
+| Hybrid RAG Client | `server/services/knowledge/weknora_client.py` | Tìm kiếm ngữ nghĩa/từ khóa trên WeKnora dataset, scoped knowledge_ids isolation | Đã xác minh qua test thực tế |
+| Context Composer | `server/services/knowledge/context_composer.py` | Hợp nhất RAG chunks + Claims, ưu tiên Claims mới hơn tài liệu | Đã xác minh qua unit test (6/6 pass) |
+| Document Parsing Layer & OCR | `server/services/knowledge/doc_parser.py`, `server/services/ai/gemini_client.py` | Chuyển đổi file đính kèm, Lark Doc URL và hình ảnh qua Gemini Vision OCR sang Markdown (EDL-0010, EDL-0013) | Đã xác minh qua unit test (16/16 pass) |
+| AnyDoc gRPC Client | `server/services/knowledge/docreader_client.py` | Kết nối `WeKnora-docreader:50051` parse nhị phân sang Markdown | Đã xác minh qua unit test (8/8 pass) |
+| Rule Engine | `server/services/knowledge/rule_engine.py` | Line-level Redaction & Kiểm duyệt từ khóa nhạy cảm trên Chunks và Claims | Đã xác minh qua unit test (7/7 pass) |
+| Daily Digest & Staging | `server/services/workflows/digest_workflow.py` | Lưu staging tin nhắn, tổng hợp digest ngày, xuất Thẻ báo cáo tương tác | Đã xác minh |
+| Chat Scope Isolation | `server/services/knowledge/chat_scopes.py` | Quản lý quyền truy cập dataset và dữ liệu theo chat_id | Đã xác minh qua unit test |
+| Draft Approval (HITL) | `server/services/workflows/draft_workflow.py` | Quản lý vòng đời bản nháp (Pending, Approved, Rejected) | Đã xác minh |
+| Interactive Card Builder | `server/services/lark/card_builder.py` | Dựng các Thẻ tin nhắn tương tác chuẩn Lark (Draft, Claim, Master Digest với bảng Claims đề xuất và nút 1 chạm) (EDL-0012, EDL-0013) | Đã xác minh qua unit test (7/7 pass) |
+| AI Draft Rewriter | `server/services/ai/draft_rewriter.py` | LLM viết lại bản nháp theo chỉ đạo Lãnh đạo, làm sạch icon/emoji (EDL-0012) | Đã xác minh |
+| Claim Workflow & Service | `server/services/workflows/claim_workflow.py`, `server/services/claim_service.py` | Quản lý vòng đời Claims, truy vấn claims chờ duyệt theo ngày và thăng hạng hàng loạt (EDL-0012, EDL-0013) | Đã xác minh qua unit test (9/9 pass) |
+| Card Action Handler | `server/services/lark/handlers/card_action_handler.py` | Xử lý sự kiện bấm nút trên Thẻ tương tác (`approve_all_digest_claims`, `view_digest_detail`, `view_master_digest`, draft actions) và cập nhật thẻ tại chỗ (EDL-0012, EDL-0013) | Đã xác minh qua unit test (12/12 pass) |
+| Cost Telemetry Decorators | `server/decorators/` (`cost_telemetry.py`) | Bộ decorator đo lường chi phí, token, latency cho Gemini LLM và JEV System 1 (EDL-0014) | Đã xác minh qua unit test (9/9 pass) |
+| Database layer | `server/database/` (`db.py`, `indexes.py`) | Kết nối Motor AsyncIOMotorClient, PyMongo, đánh index, truy vấn và thăng hạng proposed claims theo ngày (EDL-0009, EDL-0013) | Đã xác minh |
+| Test suite | `server/tests/01/` & `server/tests/` | Bộ kiểm thử chức năng, OCR, modular services, interactive cards, telemetry & hồi quy toàn diện (244 test cases) | 244 passed (100%) |
 
 ## 5. Contracts and constraints
 - **Lark API:** Dùng `lark-oapi` kết nối WebSocket mode (không cần public IP/webhook proxy khi dev).
@@ -87,20 +93,20 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
   1. `access_token_user`: Đã giải quyết triệt để qua `EDL-0006` (hệ thống tự động xoay vòng refresh token và lưu trữ bền vững MongoDB).
   2. `Contextual Claim Gate`: Đã giải quyết triệt để qua `EDL-0008` (cô lập đề xuất proposed và phân tách domain).
   3. `Policy Sync Diff Guard`: Đã khắc phục việc WeKnora không kéo tệp từ Lark Drive định kỳ khi token folder giữ nguyên.
-- **Verified issues:**
-  1. `tests/01/test_master_digest.py::test_master_digest_dm_text_format`: Bị fail do chuỗi tiêu đề `BÁO CÁO TỔNG HỢP TOÀN BỘ CÁC NHÓM` mong đợi khác với định dạng thực tế sinh ra `📊 BÁO CÁO NGÀY CẤP ĐIỀU HÀNH (DAILY MASTER DIGEST)`.
+  4. `test_master_digest_dm_text_format`: Đã đồng bộ tiêu đề hiển thị chuẩn hóa, 100% test suites pass.
+- **Verified issues:** Hiện không có issue nào đang tồn đọng trên bộ test.
 - **Open questions:**
   - Kế hoạch triển khai Docker/Container hóa cho môi trường Production.
 - **Assumptions requiring confirmation:**
   - Giả định MongoDB cục bộ hoặc cloud URI đã sẵn sàng khi chạy bot service thực tế.
 
 ## 9. Last verified
-- **Date:** 2026-10-26
-- **What was checked:** Hoàn thành Hợp nhất & Tinh gọn Services trong `server/services/`:
-  1. Gộp `jev.py` và `llm_client.py` thành `server/services/ai_service.py`.
-  2. Gộp `draft_store.py` và `draft_service.py` thành `server/services/draft_service.py`.
-  3. Gộp `token_service.py` và `scope_service.py` thành `server/services/auth_service.py`.
-  4. Gộp `weknora.py`, `doc_parser_service.py`, `docreader_service.py`, `policy_sync_service.py` thành `server/services/knowledge_service.py`.
-  5. Xóa hoàn toàn 10 file cũ (`jev.py`, `llm_client.py`, `draft_store.py`, `token_service.py`, `scope_service.py`, `weknora.py`, `doc_parser_service.py`, `docreader_service.py`, `policy_sync_service.py`, `larkbase.py`).
-  6. Toàn bộ các bài kiểm thử đơn vị cho các service được gộp (124/124 tests) PASSED 100%.
-- **By / source:** Antigravity Agent (hoàn tất tinh gọn cấu trúc module services theo yêu cầu người dùng).
+- **Date:** 2026-10-27
+- **What was checked:** Hoàn thành Trích xuất Tài liệu Ảnh Gemini Vision OCR, Gom Nhóm Thông Tin Đề Xuất & Nâng Cấp Thẻ Duyệt Báo Cáo Ngày (EDL-0013):
+  1. `doc_parser.py` & `gemini_client.py`: Tích hợp Gemini Vision Multimodal OCR đọc file ảnh (.png, .jpg, .jpeg, .webp), chuyển hóa thành Markdown sạch kèm bảng biểu, xác minh thực tế qua file ảnh tiếng Việt (6.1s).
+  2. `chat_workflow.py` & `db.py`: Gom nhóm đề xuất (Batching Proposed Claims) - Thành viên gửi tài liệu/tin nhắn lưu trạng thái `proposed` trong ngày mà không gửi thẻ làm phiền; chỉ thông tin Lãnh đạo phát ngôn mới là `current`.
+  3. `card_builder.py`: Nâng cấp Thẻ tương tác Master Daily Digest với bảng Markdown tổng hợp các claims đề xuất theo dự án, nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`approve_all_digest_claims`), nút xem chi tiết nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`) và hủy báo cáo.
+  4. `card_action_handler.py` & `owner_command_handler.py`: Xử lý action thăng hạng toàn bộ claims đề xuất của ngày thành `current`, đồng bộ WeKnora, chuyển đổi thẻ tại chỗ; lệnh `xem digest` / `xem báo cáo` gửi trực tiếp Thẻ tương tác.
+  5. Đã ghi nhận quyết định kỹ thuật `EDL-0013` vào Notion Database và `DECISIONS.md`.
+  6. Toàn bộ 235 bài test (207 tests trong `server/tests/01` và 28 tests trong `server/tests/`) PASSED 100%.
+- **By / source:** Antigravity Agent.

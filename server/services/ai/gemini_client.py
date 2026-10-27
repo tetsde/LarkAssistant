@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Union
 import httpx
 
 from core.config import settings
+from decorators.cost_telemetry import track_llm_cost
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,14 @@ class LLMClient:
         """
         if resp.status_code == 200:
             data = resp.json()
+            usage_meta = data.get("usageMetadata")
+            if usage_meta and isinstance(usage_meta, dict):
+                try:
+                    from decorators.cost_telemetry import last_llm_usage
+                    last_llm_usage.set(usage_meta)
+                except Exception:
+                    pass
+
             candidates = data.get("candidates", [])
             if candidates:
                 candidate = candidates[0]
@@ -187,6 +196,7 @@ class LLMClient:
     # 1. GENERATE JSON (DÀNH CHO ENTITY / FACT EXTRACTION VÀ DỮ LIỆU CÓ CẤU TRÚC)
     # --------------------------------------------------------------------------
 
+    @track_llm_cost(operation="generate_json_async")
     async def generate_json_async(
         self,
         prompt: str,
@@ -205,6 +215,7 @@ class LLMClient:
         )
         return await self._aexecute(payload, model_name=model_name)
 
+    @track_llm_cost(operation="generate_json")
     def generate_json(
         self,
         prompt: str,
@@ -231,6 +242,7 @@ class LLMClient:
     # 2. GENERATE TEXT (DÀNH CHO GROUNDED QA & DAILY DIGEST)
     # --------------------------------------------------------------------------
 
+    @track_llm_cost(operation="generate_text_async")
     async def generate_text_async(
         self,
         prompt: str,
@@ -249,6 +261,7 @@ class LLMClient:
         )
         return await self._aexecute(payload, model_name=model_name)
 
+    @track_llm_cost(operation="generate_text")
     def generate_text(
         self,
         prompt: str,
@@ -264,6 +277,98 @@ class LLMClient:
             max_output_tokens=max_output_tokens,
             thinking_budget=thinking_budget,
             is_json=False,
+        )
+        return self._execute(payload, model_name=model_name)
+
+    # --------------------------------------------------------------------------
+    # 3. GENERATE MULTIMODAL (DÀNH CHO OCR HÌNH ẢNH & THỊ GIÁC MÁY TÍNH)
+    # --------------------------------------------------------------------------
+
+    def _build_multimodal_payload(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str = "image/png",
+        temperature: float = 0.1,
+        max_output_tokens: int = 8192,
+        thinking_budget: int = 0,
+        is_json: bool = False,
+    ) -> Dict[str, Any]:
+        """Tạo payload cho yêu cầu đa phương thức (Ảnh + Prompt)."""
+        import base64
+        b64_data = base64.b64encode(image_bytes).decode("utf-8")
+        gen_config: Dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+            "thinkingConfig": {"thinkingBudget": thinking_budget},
+        }
+        if is_json:
+            gen_config["responseMimeType"] = "application/json"
+
+        return {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": b64_data,
+                            }
+                        },
+                        {
+                            "text": prompt,
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": gen_config,
+        }
+
+    @track_llm_cost(operation="generate_multimodal_async")
+    async def generate_multimodal_async(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str = "image/png",
+        model_name: Optional[str] = None,
+        temperature: float = 0.1,
+        max_output_tokens: int = 8192,
+        thinking_budget: int = 0,
+        is_json: bool = False,
+    ) -> str:
+        """Gọi Gemini API Multimodal (ảnh + text) bất đồng bộ (async)."""
+        payload = self._build_multimodal_payload(
+            prompt=prompt,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=is_json,
+        )
+        return await self._aexecute(payload, model_name=model_name)
+
+    @track_llm_cost(operation="generate_multimodal")
+    def generate_multimodal(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        mime_type: str = "image/png",
+        model_name: Optional[str] = None,
+        temperature: float = 0.1,
+        max_output_tokens: int = 8192,
+        thinking_budget: int = 0,
+        is_json: bool = False,
+    ) -> str:
+        """Gọi Gemini API Multimodal (ảnh + text) đồng bộ (sync)."""
+        payload = self._build_multimodal_payload(
+            prompt=prompt,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            is_json=is_json,
         )
         return self._execute(payload, model_name=model_name)
 

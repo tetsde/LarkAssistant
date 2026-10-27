@@ -742,6 +742,16 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
 
         success = await self.sync_digest_to_weknora(digest, dataset_id=dataset_id)
         if success:
+            try:
+                from database.db import promote_proposed_claims_for_chat
+                promoted = await promote_proposed_claims_for_chat(
+                    chat_id=digest.chat_id,
+                    approver_info={"user_name": "Lãnh đạo", "role": "owner"},
+                )
+                if promoted > 0:
+                    logger.info(f"✔ [Digest Approval] Đã tự động thăng hạng {promoted} claims của nhóm {digest.chat_id} thành CURRENT.")
+            except Exception as e:
+                logger.warning(f"Lỗi khi auto-promote claims theo digest: {e}")
             return True, f"Đã duyệt và nạp thành công Daily Digest ({digest.id}) vào WeKnora KB!", digest
         else:
             return False, f"Duyệt thành công nhưng lỗi khi đẩy lên WeKnora API.", digest
@@ -879,29 +889,40 @@ Yêu cầu:
         master_digest: MasterDailyDigestRecord,
         approver_open_id: Optional[str] = None,
     ) -> bool:
-        """Gửi duy nhất 1 tin nhắn DM chứa toàn bộ Master Daily Digest tới Chủ nhân."""
+        """Gửi Thẻ tin nhắn tương tác Master Daily Digest tới Chủ nhân để duyệt."""
         from services.lark import lark_service
+        from services.lark.card_builder import build_digest_approval_card
+        from services.claim_service import claim_service
 
         target_approver = (
             approver_open_id
             or settings.DIGEST_APPROVER_ID
             or lark_service.owner_open_id
         )
-        dm_text = master_digest.to_executive_dm_text()
+
+        pending_claims = []
+        try:
+            pending_claims = await claim_service.get_pending_claims_for_date(
+                date_str=getattr(master_digest, "date", None)
+            )
+        except Exception as e:
+            logger.warning(f"Không thể lấy danh sách thông tin đề xuất trong ngày cho digest: {e}")
+
+        card_payload = build_digest_approval_card(master_digest, pending_claims=pending_claims)
         try:
             if target_approver:
-                res = await lark_service.send_bot_dm_to_owner(dm_text, target_open_id=target_approver)
+                res = await lark_service.send_bot_card_to_owner(card_payload, target_open_id=target_approver)
                 if not res.get("success"):
                     logger.error(
-                        f"❌ [MASTER DIGEST APPROVAL] Thất bại khi gửi tin duyệt: {res.get('msg') or res.get('error')}"
+                        f"Thất bại khi gửi thẻ duyệt Master Digest: {res.get('msg') or res.get('error')}"
                     )
                     return False
-                logger.info(f"✔ [MASTER DIGEST APPROVAL] Đã gửi tin duyệt Master Digest tới {target_approver}")
+                logger.info(f"Đã gửi thẻ duyệt Master Digest tới {target_approver}")
                 return True
-            logger.warning("⚠️ [MASTER DIGEST APPROVAL] Không có target_approver!")
+            logger.warning("Không tìm thấy target_approver!")
             return False
         except Exception as e:
-            logger.error(f"❌ [MASTER DIGEST APPROVAL] Lỗi gửi DM: {e}", exc_info=True)
+            logger.error(f"Lỗi gửi thẻ duyệt Master Digest: {e}", exc_info=True)
             return False
 
     async def generate_master_daily_digest(
@@ -1044,6 +1065,25 @@ Yêu cầu:
             {"id": master_digest.id},
             {"$set": master_digest.to_dict()},
         )
+
+        # [TIER 3: DAILY MASTER DIGEST AUTO-PROMOTE]
+        # Thăng hạng toàn bộ PROPOSED claims trong ngày của các nhóm được duyệt thành CURRENT
+        try:
+            from database.db import promote_proposed_claims_for_chat
+            approver_info = {
+                "user_id": master_digest.approved_by,
+                "user_name": "Lãnh đạo",
+                "role": "owner",
+            }
+            total_promoted = 0
+            for gd in master_digest.group_digests:
+                if gd.chat_id:
+                    cnt = await promote_proposed_claims_for_chat(gd.chat_id, approver_info=approver_info)
+                    total_promoted += cnt
+            if total_promoted > 0:
+                print(f"🎉 [TIER 3 MASTER DIGEST APPROVAL] Đã tự động thăng hạng {total_promoted} claims tồn đọng thành CURRENT.")
+        except Exception as e:
+            logger.warning(f"Lỗi auto-promote claims khi duyệt Master Digest: {e}")
 
         msg = f"Đã duyệt và đồng bộ thành công Master Daily Digest ngày {master_digest.date} ({synced_count}/{len(master_digest.group_digests)} nhóm đã nạp vào WeKnora)."
         if failed_count > 0:

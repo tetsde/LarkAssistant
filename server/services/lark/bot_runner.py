@@ -78,20 +78,22 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
         print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
         return
 
-    # 2. Xử lý tệp đính kèm hoặc liên kết tài liệu Lark (EDL-0010)
-    if await handle_document_or_links(msg):
-        return
-
-    # 3. Xử lý lệnh của Chủ nhân trong DM 1-1
+    # 2. Xác định danh tính Chủ nhân (Lãnh đạo)
     is_owner = bool(
         msg.is_self
         or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
     )
+
+    # 3. Xử lý tệp đính kèm hoặc liên kết tài liệu Lark (EDL-0010)
+    if await handle_document_or_links(msg, is_owner=is_owner):
+        return
+
+    # 4. Xử lý lệnh của Chủ nhân trong DM 1-1
     if is_owner and msg.chat_type == "p2p":
         if await handle_owner_dm_command(msg):
             return
 
-    # 4. Điều phối tin nhắn thành viên/chủ nhân trong nhóm chat
+    # 5. Điều phối tin nhắn thành viên/chủ nhân trong nhóm chat
     await handle_member_message(msg, is_owner=is_owner)
 
 

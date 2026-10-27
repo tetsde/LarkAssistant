@@ -10,9 +10,12 @@ Exports các handlers chuyên biệt cho Lark Bot:
 from .document_handler import handle_document_or_links
 from .owner_command_handler import handle_owner_dm_command
 from .member_message_handler import handle_member_message
+from .card_action_handler import handle_card_action, parse_card_action_payload
 
 __all__ = [
     "handle_document_or_links",
     "handle_owner_dm_command",
     "handle_member_message",
+    "handle_card_action",
+    "parse_card_action_payload",
 ]

@@ -35,7 +35,7 @@ def _resolve_dependencies():
     return doc_parser, process_claims, lark
 
 
-async def handle_document_or_links(msg: LarkMessage) -> bool:
+async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> bool:
     """
     Kiểm tra và xử lý tệp đính kèm hoặc liên kết tài liệu Lark trong tin nhắn.
     Trả về True nếu tin nhắn chứa tài liệu/liên kết và đã được thụ lý, ngược lại trả về False.
@@ -52,19 +52,19 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
             return True
 
         # Kiểm tra Extension Gate
-        if not doc_parser._docreader.is_supported_file(file_name):
-            print(f"🚫 [ATTACHMENT GATE] Bỏ qua file '{file_name}' vì không thuộc định dạng được hỗ trợ.")
+        if not doc_parser._docreader.is_supported_file(file_name) and not doc_parser.is_image_file(file_name, msg.message_type):
+            print(f"Bỏ qua file '{file_name}' vì không thuộc định dạng được hỗ trợ.")
             if msg.chat_type == "p2p":
                 await lark.areply_text(
                     msg.message_id,
-                    f"⚠️ Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh)."
+                    f"Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh)."
                 )
             return True
 
-        print(f"📄 [ATTACHMENT DETECTED] Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
+        print(f"Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
         await lark.areply_text(
             msg.message_id,
-            f"📄 Trợ lý đang đọc và trích xuất thông tin từ tài liệu \"{file_name}\"..."
+            f"Trợ lý đang đọc và trích xuất thông tin từ tài liệu \"{file_name}\"..."
         )
 
         doc_res = await doc_parser.parse_attachment(
@@ -75,10 +75,10 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
         )
 
         if not doc_res.success:
-            print(f"❌ [ATTACHMENT FAILED] Phân giải thất bại: {doc_res.error}")
+            print(f"Phân giải thất bại: {doc_res.error}")
             await lark.areply_text(
                 msg.message_id,
-                f"⚠️ Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
+                f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
             )
             return True
 
@@ -89,13 +89,18 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
             sender=msg.sender_id,
             sender_id=msg.sender_id,
             message_id=msg.message_id,
+            is_owner=is_owner,
         )
 
         new_count = claims_res.get("new_claims_count", 0)
         superseded_count = claims_res.get("superseded_claims_count", 0)
-        print(f"✅ [ATTACHMENT SUCCESS] Đã lưu {new_count} facts mới vào MongoDB từ {file_name}.")
+        print(f"Đã lưu {new_count} facts mới vào MongoDB từ {file_name} (is_owner={is_owner}).")
 
-        reply_msg = f"✅ Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới vào bộ nhớ nhóm."
+        if is_owner:
+            reply_msg = f"Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới vào bộ nhớ nhóm."
+        else:
+            reply_msg = f"Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới (ở trạng thái đề xuất, chờ Lãnh đạo duyệt cuối ngày)."
+
         if superseded_count > 0:
             reply_msg += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
         await lark.areply_text(msg.message_id, reply_msg)
@@ -105,7 +110,7 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
     if msg.message_type == "text" and msg.text:
         lark_links = doc_parser.extract_lark_links(msg.text)
         if lark_links:
-            print(f"🔗 [LARK LINKS DETECTED] Tìm thấy {len(lark_links)} liên kết tài liệu Lark trong tin nhắn.")
+            print(f"Tìm thấy {len(lark_links)} liên kết tài liệu Lark trong tin nhắn.")
             handled_any = False
             for link in lark_links:
                 if link["type"] == "docx":
@@ -122,10 +127,14 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
                         sender=msg.sender_id,
                         sender_id=msg.sender_id,
                         message_id=msg.message_id,
+                        is_owner=is_owner,
                     )
                     new_count = claims_res.get("new_claims_count", 0)
                     superseded_count = claims_res.get("superseded_claims_count", 0)
-                    confirm_link_text = f"✅ Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới vào bộ nhớ."
+                    if is_owner:
+                        confirm_link_text = f"Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới vào bộ nhớ."
+                    else:
+                        confirm_link_text = f"Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới (ở trạng thái đề xuất, chờ Lãnh đạo duyệt cuối ngày)."
                     if superseded_count > 0:
                         confirm_link_text += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
                     await lark.areply_text(msg.message_id, confirm_link_text)
@@ -135,3 +144,4 @@ async def handle_document_or_links(msg: LarkMessage) -> bool:
                 return True
 
     return False
+

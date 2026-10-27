@@ -47,6 +47,14 @@ class DraftService:
         self.store = _get_draft_store()
         return await self.store.discard_latest_pending(owner_id)
 
+    async def get_latest_pending(self, owner_id: str) -> Optional[PendingDraft]:
+        self.store = _get_draft_store()
+        return await self.store.get_latest_pending(owner_id)
+
+    async def update_content(self, draft_id: str, new_draft_answer: str) -> bool:
+        self.store = _get_draft_store()
+        return await self.store.update_draft_content(draft_id, new_draft_answer)
+
     async def _send_claimed(
         self,
         draft: PendingDraft,

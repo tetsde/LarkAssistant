@@ -130,6 +130,12 @@ def get_auth_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_AUTH_COLLECTION]
 
 
+def get_telemetry_collection() -> AsyncIOMotorCollection:
+    """Collection lưu nhật ký đo lường chi phí LLM & JEV (Cost Telemetry)."""
+    db = get_async_db()
+    return db[settings.MONGO_TELEMETRY_COLLECTION]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client
@@ -308,6 +314,241 @@ async def supersede_facts_by_ids(fact_ids: List[str]) -> int:
         },
     )
     return result.modified_count
+
+
+async def promote_claims_by_ids(
+    fact_ids: List[str],
+    approver_info: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Thăng hạng danh sách claims từ PROPOSED -> CURRENT (Phê duyệt chính thức).
+    Cập nhật status, updated_at và asserted_by (nếu có thông tin người duyệt).
+    """
+    if not fact_ids:
+        return 0
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    update_fields: Dict[str, Any] = {
+        "status": FactStatus.CURRENT.value,
+        "updated_at": now_iso,
+        "promoted_at": now_iso,
+    }
+    if approver_info:
+        update_fields["asserted_by"] = {
+            "user_id": approver_info.get("user_id") or approver_info.get("open_id") or "",
+            "user_name": approver_info.get("user_name") or "Lãnh đạo",
+            "role": "owner",
+        }
+    result = await col.update_many(
+        {"id": {"$in": fact_ids}},
+        {"$set": update_fields},
+    )
+    return result.modified_count
+
+
+async def promote_claims_by_message_id(
+    message_id: str,
+    approver_info: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Thăng hạng các claims PROPOSED phát sinh từ một message_id cụ thể thành CURRENT.
+    Dùng cho Reaction Approval (Tầng 1) hoặc Thread Reply (Tầng 2).
+    """
+    if not message_id:
+        return 0
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    query = {
+        "status": FactStatus.PROPOSED.value,
+        "$or": [
+            {"source.message_id": message_id},
+            {"source_message_id": message_id},
+        ],
+    }
+    update_fields: Dict[str, Any] = {
+        "status": FactStatus.CURRENT.value,
+        "updated_at": now_iso,
+        "promoted_at": now_iso,
+        "promoted_by_message_id": message_id,
+    }
+    if approver_info:
+        update_fields["asserted_by"] = {
+            "user_id": approver_info.get("user_id") or approver_info.get("open_id") or "",
+            "user_name": approver_info.get("user_name") or "Lãnh đạo",
+            "role": "owner",
+        }
+    result = await col.update_many(query, {"$set": update_fields})
+    return result.modified_count
+
+
+async def promote_proposed_claims_for_chat(
+    chat_id: str,
+    approver_info: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Thăng hạng tất cả các claims PROPOSED trong một nhóm chat thành CURRENT.
+    Dùng khi Sếp duyệt Daily Master Digest (Tầng 3).
+    """
+    if not chat_id:
+        return 0
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    query = {
+        "chat_id": chat_id,
+        "status": FactStatus.PROPOSED.value,
+    }
+    update_fields: Dict[str, Any] = {
+        "status": FactStatus.CURRENT.value,
+        "updated_at": now_iso,
+        "promoted_at": now_iso,
+    }
+    if approver_info:
+        update_fields["asserted_by"] = {
+            "user_id": approver_info.get("user_id") or approver_info.get("open_id") or "",
+            "user_name": approver_info.get("user_name") or "Lãnh đạo",
+            "role": "owner",
+        }
+    result = await col.update_many(query, {"$set": update_fields})
+    return result.modified_count
+
+
+async def get_pending_proposed_claims(
+    date_str: Optional[str] = None,
+    chat_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Lấy danh sách các claims đang ở trạng thái PROPOSED.
+    Có thể lọc theo ngày (ví dụ: '2026-10-27') hoặc theo nhóm chat.
+    """
+    col = get_claims_collection()
+    query: Dict[str, Any] = {"status": FactStatus.PROPOSED.value}
+    if chat_id:
+        query["chat_id"] = chat_id
+    if date_str:
+        query["$or"] = [
+            {"created_at": {"$regex": f"^{date_str}"}},
+            {"updated_at": {"$regex": f"^{date_str}"}},
+            {"date": date_str},
+        ]
+    cursor = col.find(query).sort("created_at", -1)
+    return await cursor.to_list(length=200)
+
+
+async def promote_all_proposed_claims(
+    date_str: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    approver_info: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Thăng hạng toàn bộ claims PROPOSED thành CURRENT (duyệt hàng loạt cuối ngày).
+    """
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    query: Dict[str, Any] = {"status": FactStatus.PROPOSED.value}
+    if chat_id:
+        query["chat_id"] = chat_id
+    if date_str:
+        query["$or"] = [
+            {"created_at": {"$regex": f"^{date_str}"}},
+            {"updated_at": {"$regex": f"^{date_str}"}},
+            {"date": date_str},
+        ]
+    update_fields: Dict[str, Any] = {
+        "status": FactStatus.CURRENT.value,
+        "updated_at": now_iso,
+        "promoted_at": now_iso,
+    }
+    if approver_info:
+        update_fields["asserted_by"] = {
+            "user_id": approver_info.get("user_id") or approver_info.get("open_id") or "",
+            "user_name": approver_info.get("user_name") or "Lãnh đạo",
+            "role": "owner",
+        }
+    result = await col.update_many(query, {"$set": update_fields})
+    return result.modified_count
+
+
+
+async def reject_claims_by_message_id(message_id: str) -> int:
+    """
+    Đánh dấu rejected/superseded cho các claims PROPOSED phát sinh từ một message_id cụ thể.
+    """
+    if not message_id:
+        return 0
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    query = {
+        "status": FactStatus.PROPOSED.value,
+        "$or": [
+            {"source.message_id": message_id},
+            {"source_message_id": message_id},
+        ],
+    }
+    result = await col.update_many(
+        query,
+        {
+            "$set": {
+                "status": FactStatus.SUPERSEDED.value,
+                "rejection_reason": "rejected_by_owner",
+                "updated_at": now_iso,
+            }
+        },
+    )
+    return result.modified_count
+
+
+async def reject_claims_by_ids(fact_ids: List[str]) -> int:
+    """Đánh dấu rejected/superseded cho danh sách claims theo ID."""
+    if not fact_ids:
+        return 0
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    result = await col.update_many(
+        {"id": {"$in": fact_ids}},
+        {
+            "$set": {
+                "status": FactStatus.SUPERSEDED.value,
+                "rejection_reason": "rejected_by_owner",
+                "updated_at": now_iso,
+            }
+        },
+    )
+    return result.modified_count
+
+
+async def get_latest_proposed_claim(chat_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Lấy thông tin đề xuất (Claim) ở trạng thái proposed gần nhất."""
+    col = get_claims_collection()
+    query: Dict[str, Any] = {"status": FactStatus.PROPOSED.value}
+    if chat_id:
+        query["chat_id"] = chat_id
+    doc = await col.find_one(query, sort=[("created_at", -1)])
+    return doc
+
+
+async def update_claim_value(
+    claim_id: str,
+    new_value: str,
+    approver_info: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Cập nhật giá trị mới cho claim và đồng thời phê duyệt thành CURRENT."""
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    update_fields: Dict[str, Any] = {
+        "value": new_value,
+        "status": FactStatus.CURRENT.value,
+        "updated_at": now_iso,
+        "promoted_at": now_iso,
+    }
+    if approver_info:
+        update_fields["asserted_by"] = {
+            "user_id": approver_info.get("user_id") or approver_info.get("open_id") or "",
+            "user_name": approver_info.get("user_name") or "Lãnh đạo",
+            "role": "owner",
+        }
+    res = await col.update_one({"id": claim_id}, {"$set": update_fields})
+    return res.modified_count == 1
+
 
 
 # ==========================================

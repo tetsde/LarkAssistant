@@ -279,6 +279,10 @@ class PolicySyncService:
                 "uploaded_attachments_count": len(uploaded_files),
             }
 
+    async def start_loop(self) -> None:
+        """Alias khởi động worker vòng lặp đồng bộ định kỳ."""
+        await start_policy_sync_loop()
+
 
 policy_sync_service = PolicySyncService()
 

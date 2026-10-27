@@ -3,22 +3,32 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Gộp các file dịch vụ phân mảnh trong `server/services/` thành các module hợp nhất gọn gàng, xóa các file cũ và chuẩn hóa import trong toàn bộ dự án.
-- **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100%.
+- **Goal:** Trích xuất Tài liệu Ảnh Gemini Vision OCR, Gom Nhóm Thông Tin Đề Xuất & Nâng Cấp Thẻ Duyệt Báo Cáo Ngày (EDL-0013):
+  1. Tích hợp Gemini Vision Multimodal OCR đọc tài liệu dạng ảnh (.png, .jpg, .jpeg, .webp), chuyển hóa thành Markdown sạch kèm bảng biểu để bóc tách facts.
+  2. Quy trình ghi nhận tri thức trong ngày: Thành viên gửi tài liệu/tin nhắn lưu ở trạng thái `proposed` trong MongoDB, không gửi thẻ lẻ tẻ làm phiền Lãnh đạo trong ngày. Chỉ thông tin do Lãnh đạo phát ngôn/gửi mới được gắn cờ `current`.
+  3. Nâng cấp Thẻ báo cáo Master Daily Digest cuối ngày: Bổ sung Bảng tổng hợp các Claims đề xuất trong ngày theo từng dự án; bổ sung nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`action: approve_all_digest_claims`), nút xem chi tiết nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`), hủy báo cáo (`reject_digest`).
+  4. Xử lý Action callback cho nút bấm `approve_all_digest_claims`, `view_digest_detail`, `view_master_digest` và chuyển đổi lệnh `xem digest` / `xem báo cáo` sang gửi Thẻ tương tác thay vì gửi văn bản thô.
+  5. Đồng bộ Quyết định Kỹ thuật `EDL-0013` vào Notion Database và `DECISIONS.md`.
+  6. Kiểm thử hồi quy toàn diện 235/235 tests pass và hoàn tất tài liệu bộ nhớ dự án.
+- **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100% (207/207 tests trong `tests/01` pass, 28/28 tests trong `server/tests/` pass).
 - **Scope hoàn thành:**
-  1. Gộp `services/jev.py` và `services/llm_client.py` thành `server/services/ai_service.py` (re-export `JEVError`, `JevService`, `jev_service`, `GeminiClient`, `LLMClient`, `llm_client`, `extract_async`, `TextFilter`, `text_filter`, `httpx`).
-  2. Gộp `services/draft_store.py` và `services/draft_service.py` thành `server/services/draft_service.py` (re-export `DraftService`, `draft_service`, `DraftStore`, `draft_store`, `PendingDraft`, `get_draft_logs_collection`).
-  3. Gộp `services/token_service.py` và `services/scope_service.py` thành `server/services/auth_service.py` (re-export Token Lifecycle, OAuth callback, `PRIMARY_TOKEN_DOC_ID`, `VIETNAM_TZ`, `format_remaining_seconds`, `LarkTokenService`, `token_service`, `start_token_refresh_loop`, `ScopeService`, `scope_service`, `ChatScopeRecord`...).
-  4. Gộp `services/weknora.py`, `services/doc_parser_service.py`, `services/docreader_service.py`, `services/policy_sync_service.py` thành `server/services/knowledge_service.py` (re-export `WeKnoraService`, `weknora_service`, `DocParserService`, `doc_parser_service`, `DocReaderService`, `docreader_service`, `PolicySyncService`, `policy_sync_service`, `extract_lark_token`, `start_policy_sync_loop`, `UnifiedRuleEngine`, `rule_engine`, `ContextComposer`, `context_composer`...).
-  5. Xóa hoàn toàn 10 file flat shim cũ: `jev.py`, `llm_client.py`, `draft_store.py`, `token_service.py`, `scope_service.py`, `weknora.py`, `doc_parser_service.py`, `docreader_service.py`, `policy_sync_service.py`, `larkbase.py`.
-  6. Cập nhật lại toàn bộ import trong routers (`auth.py`, `scope.py`, `policy.py`), `main.py`, services và test suite.
-  7. Kiểm thử hồi quy toàn diện: 124/124 tests liên quan trực tiếp đến các service vừa gộp đạt PASSED 100%. Zero breaking changes.
+  1. `server/services/ai/gemini_client.py`: Bổ sung `generate_multimodal_async` gửi file nhị phân kèm MIME type lên Gemini Flash.
+  2. `server/services/knowledge/doc_parser.py`: Thêm `ocr_image_to_markdown`, tự động định tuyến file ảnh sang Gemini Vision OCR (xác minh thực tế ảnh tiếng Việt trong 6.1s).
+  3. `server/database/db.py`: Thêm `get_pending_proposed_claims` và `promote_all_proposed_claims`.
+  4. `server/services/workflows/claim_workflow.py`: Thêm `get_pending_claims_for_date`, `approve_all_pending_claims_for_date`.
+  5. `server/services/workflows/chat_workflow.py`: `process_memory_extraction` và `process_document_to_claims` chỉ gán `current` khi `is_owner=True`; còn lại tự động gán `proposed` và gom vào Digest cuối ngày.
+  6. `server/services/lark/card_builder.py`: Cập nhật `build_digest_approval_card` thêm Bảng Markdown các claims đề xuất theo dự án, nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]`, nút xem chi tiết nhóm; thêm `build_project_digest_detail_card`.
+  7. `server/services/lark/handlers/card_action_handler.py`: Xử lý callback `approve_all_digest_claims`, `view_digest_detail`, `view_master_digest`, cập nhật thẻ tại chỗ sang thẻ xanh trạng thái.
+  8. `server/services/lark/handlers/owner_command_handler.py`: Lệnh `xem digest` / `xem báo cáo` gửi trực tiếp Thẻ tương tác (kèm fallback gửi tin nhắn văn bản nếu gửi thẻ thất bại).
+  9. `server/services/knowledge/context_composer.py`: Bổ sung so khớp synonyms lương (`salary`, `salary_payment_date`) với `chunks_text` và hỗ trợ fallback `source_doc` cho snippet.
+  10. Đồng bộ quyết định kỹ thuật `EDL-0013` lên Notion Decision Log (Page ID: `406590f7-e19e-81fb-92c8-d8e75a1a8b4f`) và `docs/project-memory/DECISIONS.md`.
 
 ## What is confirmed
-- Toàn bộ 5 domain packages (`services/ai/`, `services/auth/`, `services/knowledge/`, `services/lark/`, `services/workflows/`) đã được thiết lập chuẩn modular clean architecture.
-- 100% backward compatibility được bảo lưu thông qua hệ thống Transitional Facade Shims.
-- Không có bất kỳ circular import hay dependency cycle nào giữa các domain packages.
-- Bộ 96 regression tests cốt lõi + 30 workflow tests mới (tổng 126 tests) đạt tỉ lệ pass 100%.
+- Gemini Vision OCR chuyển hóa ảnh chụp văn bản tiếng Việt thành Markdown sạch, có cấu trúc bảng biểu hoàn chỉnh trong 6.1 giây.
+- Thành viên gửi ảnh/tài liệu chỉ tạo claim `proposed` trong database, không phát sinh thẻ duyệt lẻ tẻ làm phiền Lãnh đạo trong giờ làm việc.
+- Bấm nút `[Duyệt toàn bộ thông tin hôm nay]` trên Thẻ Master Daily Digest thăng hạng toàn bộ claims đề xuất của ngày thành `current`, đồng bộ WeKnora và cập nhật thẻ tại chỗ sang trạng thái đã duyệt thành công.
+- Lệnh chat `xem digest` gửi trực tiếp Thẻ tương tác có đầy đủ nút bấm điều hành.
+- Toàn bộ 235 bài kiểm thử (207 tests trong `server/tests/01` và 28 tests trong `server/tests/`) đạt **100% PASSED**.
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:
