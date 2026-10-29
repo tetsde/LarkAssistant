@@ -3,32 +3,21 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Triển khai Kiến trúc Xử lý Thu Hồi Tin Nhắn (Message Recall Architecture & 4-Tier Sync - EDL-0015):
-  1. **Lắng nghe sự kiện Lark:** Bắt sự kiện `im.message.recalled_v1` qua WebSocket Event Dispatcher (`P2ImMessageRecalledV1`).
-  2. **Tầng 1 (Staging & Daily Digest Guard):** Đánh dấu `is_recalled: True`, `recalled_at: ISO` trong `conversation_staging`. Tự động loại trừ các tin nhắn này khỏi `get_staging_messages` để không lọt vào Daily Digest cuối ngày.
-  3. **Tầng 2 (Claims & Facts Revocation):**
-     - Đề xuất tri thức (`status == "proposed"`): Huỷ bỏ đề xuất, chuyển thành `status == "revoked"` với lý do người dùng đã thu hồi phát ngôn.
-     - Tri thức hiện hành (`status == "current"`): Gắn cờ `source_recalled: True` để bảo đảm tính minh bạch về nguồn gốc.
-  4. **Tầng 3 (Draft Logs Cancellation):** Tự động huỷ các bản nháp đang chờ duyệt (`status == "pending"` chuyển thành `"recalled"`).
-  5. **Tầng 4 (Bot Reply Cascade Recall):** Ghi nhận `bot_reply_message_id` vào staging khi bot reply; khi câu hỏi gốc bị thu hồi, bot tự động gọi `arecall_message` (API `client.im.v1.message.adelete`) để thu hồi câu trả lời của chính bot.
+- **Goal:** Xây dựng tính năng Nạp Tài Liệu từ Thư Mục Lark Drive (Folder Document Ingestion - EDL-0016):
+  1. **Lark OpenAPI Client Extension:** Mở rộng `LarkClientMixin` (`server/services/lark/client.py`) bổ sung `alist_drive_folder_files` (lấy danh sách tệp đệ quy kèm phân trang `next_page_token`), `list_drive_folder_files`, `adownload_drive_file` và `download_drive_file`.
+  2. **Nhận diện & Phân giải Thư mục Đa tầng:** Bổ sung regex `FOLDER_URL_PATTERN` vào `server/services/knowledge/doc_parser.py`, phát triển `extract_lark_folders` và `parse_lark_folder` (đệ quy xử lý DocX, Wiki, AnyDoc binary file và ảnh OCR).
+  3. **Lark Base Sync Scope Integration:** Cập nhật `_extract_document_items` và `sync_group_from_base_record` trong `server/services/knowledge/chat_scopes.py`, tự động quét toàn bộ tài liệu trong thư mục nạp vào WeKnora KB và cập nhật `ChatScopeRecord.documents` & `knowledge_ids`.
+  4. **Chat Scope Ingestion API Service:** Phát triển method `ScopeService.ingest_documents_to_scope` và endpoint HTTP `POST /api/v1/scopes/{chat_id}/documents` (`server/routers/scope.py`) cho phép nạp URL tài liệu lẻ hoặc toàn bộ thư mục kèm bóc tách Claims vào MongoDB.
+  5. **Bot Message Handler Integration:** Cập nhật `handle_document_or_links` (`server/services/lark/handlers/document_handler.py`), tự động bóc tách và âm thầm lưu claims từ tất cả tài liệu trong folder khi người dùng gửi link folder vào nhóm chat.
+  6. **Kiểm thử Toàn diện:** Xây dựng bộ test `tests/final_test/test_folder_doc_ingestion.py` (10/10 test cases passed 100%).
 - **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100%.
-- **Các file triển khai chính:**
-  - `server/services/lark/handlers/recall_handler.py`: Module điều phối 4 tầng xử lý thu hồi tin nhắn.
-  - `server/services/lark/messenger.py`: Bổ sung `arecall_message` và `recall_message` gọi `client.im.v1.message.adelete`.
-  - `server/services/lark/dispatcher.py`: Đăng ký `register_p2_im_message_recalled_v1` và callback `_internal_on_message_recalled_event`.
-  - `server/database/db.py`: Bổ sung `recall_staging_message`, `save_bot_reply_to_staging`, `revoke_claims_by_message_id`, `cancel_pending_drafts_by_message_id`.
-  - `server/services/workflows/digest_workflow.py`: Bổ sung điều kiện `{"is_recalled": {"$ne": True}}` trong `get_staging_messages`.
-  - `server/services/workflows/chat_workflow.py`: Lưu `bot_reply_message_id` vào staging sau khi reply thành công.
-  - `server/models/memory.py` & `server/models/digest.py`: Thêm `FactStatus.REVOKED` và các trường `is_recalled`, `recalled_at`, `bot_reply_message_id`.
-  - `server/tests/01/test_message_recall.py`: 8 unit tests mới kiểm thử toàn bộ các tầng recall.
-  - Toàn bộ **269 unit tests** của toàn hệ thống đạt **100% PASSED**.
 
 ## What is confirmed
-- Khi người dùng thu hồi tin nhắn trên Lark (`im.message.recalled_v1`), hệ thống tự động đồng bộ dọn dẹp sạch sẽ qua 4 tầng: Staging, Claims, Drafts, và Bot Reply.
-- Bot tự động thu hồi câu trả lời liên đới nếu tin nhắn hỏi gốc bị xóa/thu hồi.
-- Tin nhắn bị thu hồi không bao giờ xuất hiện trong Daily Digest hoặc Master Digest.
-- Toàn bộ 269 test cases passed 100%.
-- Toàn bộ 261 test cases passed 100%.
+- Hệ thống tự động nhận diện liên kết Lark Drive Folder (`/folder/...` và `/drive/folder/...`).
+- Duyệt đệ quy toàn bộ tài liệu bên trong thư mục (DocX, Wiki, AnyDoc PDF/Office/Hình ảnh).
+- Tự động nạp tài liệu sang WeKnora Knowledge Base của nhóm chat tương ứng và trích xuất Claims/Facts vào MongoDB.
+- Hỗ trợ cả 3 đường dẫn: Lark Base Group Config (`Documents`), Bot Group Chat (tin nhắn chứa link folder), và HTTP REST API (`POST /api/v1/scopes/{chat_id}/documents`).
+- 10/10 test cases mới trong `tests/final_test/test_folder_doc_ingestion.py` đạt 100% PASSED.
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:

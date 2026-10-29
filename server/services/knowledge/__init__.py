@@ -20,6 +20,7 @@ from services.knowledge.doc_parser import (
     doc_parser_service,
     DOCX_URL_PATTERN,
     WIKI_URL_PATTERN,
+    FOLDER_URL_PATTERN,
 )
 from services.knowledge.policy_sync import (
     PolicySyncService,
@@ -56,6 +57,7 @@ __all__ = [
     "doc_parser_service",
     "DOCX_URL_PATTERN",
     "WIKI_URL_PATTERN",
+    "FOLDER_URL_PATTERN",
     "PolicySyncService",
     "policy_sync_service",
     "extract_lark_token",

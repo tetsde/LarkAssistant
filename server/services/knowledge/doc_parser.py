@@ -205,13 +205,13 @@ class DocParserService:
 
     def extract_lark_links(self, text: str) -> List[Dict[str, str]]:
         """
-        Quét và trích xuất tất cả các liên kết Lark DocX và Wiki từ văn bản.
+        Quét và trích xuất tất cả các liên kết Lark DocX, Wiki và Drive Folder từ văn bản.
 
         Args:
             text: Nội dung văn bản (tin nhắn trò chuyện, mô tả task, ...).
 
         Returns:
-            Danh sách các dict: [{"type": "docx"|"wiki", "token": str, "url": str}]
+            Danh sách các dict: [{"type": "docx"|"wiki"|"folder", "token": str, "url": str}]
         """
         if not text:
             return []
@@ -241,6 +241,43 @@ class DocParserService:
                     "url": match.group(0),
                 })
 
+        # 3. Quét Lark Drive Folder URLs
+        for match in FOLDER_URL_PATTERN.finditer(text):
+            token = match.group(1)
+            if token not in seen_tokens:
+                seen_tokens.add(token)
+                results.append({
+                    "type": "folder",
+                    "token": token,
+                    "url": match.group(0),
+                })
+
+        return results
+
+    def extract_lark_folders(self, text: str) -> List[Dict[str, str]]:
+        """
+        Quét và trích xuất danh sách liên kết Lark Drive Folder từ văn bản.
+
+        Args:
+            text: Nội dung văn bản.
+
+        Returns:
+            Danh sách các dict: [{"type": "folder", "token": str, "url": str}]
+        """
+        if not text:
+            return []
+
+        results: List[Dict[str, str]] = []
+        seen_tokens = set()
+        for match in FOLDER_URL_PATTERN.finditer(text):
+            token = match.group(1)
+            if token not in seen_tokens:
+                seen_tokens.add(token)
+                results.append({
+                    "type": "folder",
+                    "token": token,
+                    "url": match.group(0),
+                })
         return results
 
     # =========================================================================
@@ -503,12 +540,141 @@ class DocParserService:
         )
 
     # =========================================================================
-    # 4. BATCH / TEXT LINK PARSER CONVENIENCE
+    # 4. LARK DRIVE FOLDER PARSING
+    # =========================================================================
+
+    async def parse_lark_folder(
+        self,
+        folder_token: str,
+        recursive: bool = True,
+        max_depth: int = 3,
+        current_depth: int = 0,
+    ) -> List[DocParseResult]:
+        """
+        Phân giải toàn bộ tài liệu trong một thư mục Lark Drive.
+        Hỗ trợ đệ quy qua các thư mục con (lên đến max_depth).
+        Hỗ trợ:
+          - DocX -> Lark DocX OpenAPI (0 token cost Markdown)
+          - Wiki -> Lark Wiki Space Node API + DocX
+          - File (PDF, Word, Excel, PPTX, CSV, TXT, MD...) -> Tải nhị phân và AnyDoc gRPC
+          - Image -> Gemini Multimodal Vision OCR
+
+        Args:
+            folder_token: Token của thư mục Drive (e.g. 'fldcnXXXXXXXX').
+            recursive: Cho phép đệ quy vào các thư mục con.
+            max_depth: Độ sâu đệ quy tối đa (mặc định 3).
+            current_depth: Độ sâu hiện tại (bắt đầu từ 0).
+
+        Returns:
+            Danh sách DocParseResult cho tất cả tài liệu hợp lệ trong thư mục.
+        """
+        if not folder_token or current_depth > max_depth:
+            return []
+
+        logger.info(
+            f"📁 [DOC PARSER FOLDER] Bắt đầu quét thư mục {folder_token} "
+            f"(depth={current_depth}/{max_depth}, recursive={recursive})..."
+        )
+
+        files = await self._lark.alist_drive_folder_files(folder_token)
+        if not files:
+            logger.info(f"ℹ️ [DOC PARSER FOLDER] Thư mục {folder_token} rỗng hoặc không thể truy cập.")
+            return []
+
+        results: List[DocParseResult] = []
+
+        for item in files:
+            ftoken = item.get("token", "")
+            fname = item.get("name", "")
+            ftype = item.get("type", "").lower()
+            furl = item.get("url", "")
+
+            if not ftoken:
+                continue
+
+            if ftype == "docx":
+                logger.info(f"📄 [FOLDER ITEM] Phân giải DocX: '{fname}' ({ftoken})")
+                doc_res = await self.parse_lark_docx(document_id=ftoken, title=fname)
+                doc_res.metadata["folder_token"] = folder_token
+                doc_res.metadata["url"] = furl
+                results.append(doc_res)
+
+            elif ftype == "wiki":
+                logger.info(f"🌐 [FOLDER ITEM] Phân giải Wiki: '{fname}' ({ftoken})")
+                doc_res = await self.parse_lark_wiki(wiki_token=ftoken)
+                doc_res.metadata["folder_token"] = folder_token
+                doc_res.metadata["url"] = furl
+                results.append(doc_res)
+
+            elif ftype == "folder":
+                if recursive and current_depth < max_depth:
+                    logger.info(f"📂 [FOLDER ITEM] Phát hiện thư mục con '{fname}' ({ftoken}), tiến hành đệ quy...")
+                    sub_results = await self.parse_lark_folder(
+                        folder_token=ftoken,
+                        recursive=True,
+                        max_depth=max_depth,
+                        current_depth=current_depth + 1,
+                    )
+                    results.extend(sub_results)
+
+            elif ftype == "file":
+                # Tệp nhị phân trên Lark Drive (PDF, Word, Excel, PPTX, TXT, MD, hình ảnh...)
+                if not self._docreader.is_supported_file(fname) and not self.is_image_file(fname):
+                    logger.warning(
+                        f"🚫 [FOLDER ITEM] Bỏ qua file '{fname}' ({ftoken}) vì không nằm trong định dạng hỗ trợ."
+                    )
+                    continue
+
+                logger.info(f"📥 [FOLDER ITEM] Tải tệp nhị phân Drive: '{fname}' ({ftoken})...")
+                file_bytes = await self._lark.adownload_drive_file(ftoken)
+                if not file_bytes:
+                    logger.error(f"❌ [FOLDER ITEM] Không thể tải tệp '{fname}' ({ftoken}) từ Lark Drive.")
+                    results.append(DocParseResult(
+                        success=False,
+                        doc_name=fname,
+                        source_type="drive_file",
+                        error=f"Không thể tải tệp nhị phân '{fname}' từ Lark Drive.",
+                        metadata={"folder_token": folder_token, "file_token": ftoken, "url": furl},
+                    ))
+                    continue
+
+                if self.is_image_file(fname):
+                    logger.info(f"🖼️ [FOLDER ITEM] Chuyển tiếp hình ảnh '{fname}' sang Gemini OCR...")
+                    ocr_res = await self.ocr_image_to_markdown(file_bytes, fname)
+                    ocr_res.metadata["folder_token"] = folder_token
+                    ocr_res.metadata["file_token"] = ftoken
+                    ocr_res.metadata["url"] = furl
+                    results.append(ocr_res)
+                else:
+                    logger.info(f"⚙️ [FOLDER ITEM] Chuyển đổi tệp '{fname}' qua AnyDoc gRPC...")
+                    reader_res = await self._docreader.read(file_bytes, fname)
+                    results.append(DocParseResult(
+                        success=reader_res.success,
+                        markdown_content=reader_res.markdown_content,
+                        doc_name=fname,
+                        source_type="drive_file",
+                        error=reader_res.error,
+                        metadata={
+                            "folder_token": folder_token,
+                            "file_token": ftoken,
+                            "url": furl,
+                            "engine": getattr(reader_res, "engine", "opendataloader"),
+                        },
+                    ))
+
+        logger.info(
+            f"✔ [DOC PARSER FOLDER] Hoàn thành quét thư mục {folder_token}: "
+            f"{len(results)} tài liệu đã được phân giải."
+        )
+        return results
+
+    # =========================================================================
+    # 5. BATCH / TEXT LINK PARSER CONVENIENCE
     # =========================================================================
 
     async def parse_text_links(self, text: str) -> List[DocParseResult]:
         """
-        Quét và phân giải tất cả các tài liệu Lark DocX/Wiki tìm thấy trong văn bản.
+        Quét và phân giải tất cả các tài liệu Lark DocX/Wiki/Folder tìm thấy trong văn bản.
 
         Args:
             text: Chuỗi văn bản chứa liên kết.
@@ -528,6 +694,9 @@ class DocParserService:
             elif link["type"] == "wiki":
                 res = await self.parse_lark_wiki(link["token"])
                 results.append(res)
+            elif link["type"] == "folder":
+                folder_docs = await self.parse_lark_folder(link["token"])
+                results.extend(folder_docs)
         return results
 
 
@@ -539,4 +708,5 @@ __all__ = [
     "doc_parser_service",
     "DOCX_URL_PATTERN",
     "WIKI_URL_PATTERN",
+    "FOLDER_URL_PATTERN",
 ]

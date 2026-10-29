@@ -107,28 +107,34 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             for link in lark_links:
                 if link["type"] == "docx":
                     doc_res = await doc_parser.parse_lark_docx(link["token"])
+                    doc_res_list = [doc_res] if doc_res else []
                 elif link["type"] == "wiki":
                     doc_res = await doc_parser.parse_lark_wiki(link["token"])
+                    doc_res_list = [doc_res] if doc_res else []
+                elif link["type"] == "folder":
+                    print(f"📁 [FOLDER LINK] Bắt đầu phân giải toàn bộ tài liệu trong thư mục Lark Drive {link['token']}...")
+                    doc_res_list = await doc_parser.parse_lark_folder(link["token"])
                 else:
                     continue
 
-                if doc_res.success:
-                    claims_res = await process_claims(
-                        doc_result=doc_res,
-                        chat_id=msg.chat_id,
-                        sender=msg.sender_id,
-                        sender_id=msg.sender_id,
-                        message_id=msg.message_id,
-                        is_owner=is_owner,
-                    )
-                    new_count = claims_res.get("new_claims_count", 0)
-                    superseded_count = claims_res.get("superseded_claims_count", 0)
-                    logger.info(
-                        f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới từ Lark Doc '{doc_res.doc_name}' "
-                        f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
-                    )
-                    print(f"✔ Đã âm thầm lưu {new_count} facts từ Lark Doc '{doc_res.doc_name}' vào MongoDB (không phát ngôn vào nhóm).")
-                    handled_any = True
+                for doc_res in doc_res_list:
+                    if doc_res and doc_res.success:
+                        claims_res = await process_claims(
+                            doc_result=doc_res,
+                            chat_id=msg.chat_id,
+                            sender=msg.sender_id,
+                            sender_id=msg.sender_id,
+                            message_id=msg.message_id,
+                            is_owner=is_owner,
+                        )
+                        new_count = claims_res.get("new_claims_count", 0)
+                        superseded_count = claims_res.get("superseded_claims_count", 0)
+                        logger.info(
+                            f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới từ Lark Doc '{doc_res.doc_name}' "
+                            f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
+                        )
+                        print(f"✔ Đã âm thầm lưu {new_count} facts từ Lark Doc '{doc_res.doc_name}' vào MongoDB (không phát ngôn vào nhóm).")
+                        handled_any = True
 
             if handled_any:
                 return True

@@ -1,3 +1,4 @@
+
 """
 HiLark Scope Service - Phân Quyền Dữ Liệu & Quản Lý Ánh Xạ Nhóm Chat <-> WeKnora KB
 =====================================================================================
@@ -109,7 +110,7 @@ def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[D
             title = text if text and not text.startswith("http") else None
             combined_text = f"{url} {text}".strip()
 
-            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN, FOLDER_URL_PATTERN
             for match in DOCX_URL_PATTERN.finditer(combined_text):
                 token = match.group(1)
                 if token not in seen_tokens:
@@ -132,8 +133,19 @@ def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[D
                         "title": title,
                     })
 
+            for match in FOLDER_URL_PATTERN.finditer(combined_text):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "folder",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": title,
+                    })
+
         elif isinstance(item, str):
-            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN
+            from services.knowledge.doc_parser import DOCX_URL_PATTERN, WIKI_URL_PATTERN, FOLDER_URL_PATTERN
             for match in DOCX_URL_PATTERN.finditer(item):
                 token = match.group(1)
                 if token not in seen_tokens:
@@ -151,6 +163,17 @@ def _extract_document_items(docs_val: Any) -> Tuple[List[Dict[str, Any]], List[D
                     seen_tokens.add(token)
                     lark_links.append({
                         "type": "wiki",
+                        "token": token,
+                        "url": match.group(0),
+                        "title": None,
+                    })
+
+            for match in FOLDER_URL_PATTERN.finditer(item):
+                token = match.group(1)
+                if token not in seen_tokens:
+                    seen_tokens.add(token)
+                    lark_links.append({
+                        "type": "folder",
                         "token": token,
                         "url": match.group(0),
                         "title": None,
@@ -365,6 +388,241 @@ class ScopeService:
             logger.error(f"Lỗi khi lấy danh sách chat scopes: {e}", exc_info=True)
             return []
 
+    async def ingest_documents_to_scope(
+        self,
+        chat_id: str,
+        urls: List[str],
+        operator_open_id: Optional[str] = None,
+        operator_name: Optional[str] = None,
+        extract_claims: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Nạp tài liệu từ danh sách URLs (Lark DocX, Wiki, hoặc Drive Folder) vào nhóm chat.
+        Hỗ trợ phân giải toàn bộ tài liệu bên trong thư mục Lark Drive và nạp vào WeKnora KB & Claims.
+
+        Args:
+            chat_id: ID nhóm chat Lark.
+            urls: Danh sách đường dẫn liên kết (DocX, Wiki hoặc Thư mục Drive).
+            operator_open_id: Lark open_id của người thực hiện.
+            operator_name: Tên người thực hiện.
+            extract_claims: Có tự động bóc tách Claims/Facts vào MongoDB hay không.
+
+        Returns:
+            Dict tóm tắt kết quả xử lý và danh sách tài liệu đã nạp.
+        """
+        if not chat_id:
+            return {"success": False, "message": "chat_id không được để trống.", "processed_docs": []}
+
+        if operator_open_id and not self.is_admin_user(operator_open_id):
+            return {
+                "success": False,
+                "message": "⛔ [TỪ CHỐI] Bạn không có quyền quản trị để nạp tài liệu vào nhóm chat này.",
+                "processed_docs": [],
+            }
+
+        scope = await self.get_scope_by_chat_id(chat_id)
+        effective_dataset_id, _ = await self.get_kb_info_for_chat(chat_id)
+
+        from services.knowledge.doc_parser import doc_parser_service
+
+        processed_docs: List[Dict[str, Any]] = []
+        new_knowledge_ids: List[str] = []
+        total_claims_count = 0
+
+        existing_doc_map = {}
+        if scope and scope.documents:
+            for d in scope.documents:
+                ft = d.get("file_token")
+                kid = d.get("knowledge_id")
+                if ft and kid:
+                    existing_doc_map[ft] = d
+                u = d.get("url")
+                if u and kid:
+                    existing_doc_map[u] = d
+
+        for raw_url in urls:
+            if not raw_url:
+                continue
+            links = doc_parser_service.extract_lark_links(raw_url)
+            if not links:
+                folders = doc_parser_service.extract_lark_folders(raw_url)
+                if folders:
+                    links = folders
+
+            for link in links:
+                ltype = link.get("type", "docx")
+                token = link.get("token", "")
+                url = link.get("url", "")
+
+                if ltype == "folder":
+                    logger.info(f"📁 [Scope Ingest] Phân giải thư mục Lark Drive {token}...")
+                    folder_docs = await doc_parser_service.parse_lark_folder(token)
+                    for doc_res in folder_docs:
+                        if not doc_res.success:
+                            continue
+                        doc_token = doc_res.metadata.get("file_token") or doc_res.metadata.get("document_id") or ""
+                        doc_key = f"lark_{doc_res.source_type}_{doc_token}" if doc_token else f"doc_{_sanitize_filename(doc_res.doc_name)}"
+
+                        existing_doc = existing_doc_map.get(doc_key) or existing_doc_map.get(doc_res.metadata.get("url", ""))
+                        k_id = existing_doc.get("knowledge_id") if existing_doc else None
+                        doc_summary = existing_doc.get("summary") if existing_doc else None
+
+                        if not k_id and doc_res.markdown_content:
+                            safe_name = _sanitize_filename(doc_res.doc_name or "document")
+                            if not safe_name.lower().endswith(".md"):
+                                safe_name = f"{safe_name}.md"
+                            doc_bytes = doc_res.markdown_content.encode("utf-8")
+                            upload_res = await _get_active_weknora().upload_file(
+                                file_name=safe_name,
+                                file_bytes=doc_bytes,
+                                dataset_id=effective_dataset_id,
+                                mime_type="text/markdown",
+                            )
+                            k_id = upload_res.get("knowledge_id", "")
+                            doc_summary = upload_res.get("summary")
+
+                        if k_id:
+                            new_knowledge_ids.append(k_id)
+                            doc_entry = {
+                                "file_token": doc_key,
+                                "name": doc_res.doc_name,
+                                "size": len(doc_res.markdown_content.encode("utf-8")) if doc_res.markdown_content else 0,
+                                "type": doc_res.source_type,
+                                "url": doc_res.metadata.get("url") or url,
+                                "folder_token": token,
+                                "knowledge_id": k_id,
+                                "summary": doc_summary,
+                            }
+                            processed_docs.append(doc_entry)
+                            existing_doc_map[doc_key] = doc_entry
+
+                        if extract_claims:
+                            try:
+                                from services.chat_service import process_document_to_claims
+                                claims_res = await process_document_to_claims(
+                                    doc_result=doc_res,
+                                    chat_id=chat_id,
+                                    sender=operator_name or "Admin",
+                                    sender_id=operator_open_id,
+                                    project_tag=scope.project_tag if scope else None,
+                                    is_owner=True,
+                                )
+                                total_claims_count += claims_res.get("new_claims_count", 0)
+                            except Exception as ce:
+                                logger.warning(f"Không thể bóc tách claims từ {doc_res.doc_name}: {ce}")
+
+                elif ltype in ("docx", "wiki"):
+                    if ltype == "docx":
+                        doc_res = await doc_parser_service.parse_lark_docx(token)
+                    else:
+                        doc_res = await doc_parser_service.parse_lark_wiki(token)
+
+                    if doc_res and doc_res.success:
+                        doc_key = f"lark_{ltype}_{token}"
+                        existing_doc = existing_doc_map.get(doc_key) or existing_doc_map.get(url)
+                        k_id = existing_doc.get("knowledge_id") if existing_doc else None
+                        doc_summary = existing_doc.get("summary") if existing_doc else None
+
+                        if not k_id and doc_res.markdown_content:
+                            safe_name = _sanitize_filename(doc_res.doc_name or f"Lark_{ltype.upper()}_{token}")
+                            if not safe_name.lower().endswith(".md"):
+                                safe_name = f"{safe_name}.md"
+                            doc_bytes = doc_res.markdown_content.encode("utf-8")
+                            upload_res = await _get_active_weknora().upload_file(
+                                file_name=safe_name,
+                                file_bytes=doc_bytes,
+                                dataset_id=effective_dataset_id,
+                                mime_type="text/markdown",
+                            )
+                            k_id = upload_res.get("knowledge_id", "")
+                            doc_summary = upload_res.get("summary")
+
+                        if k_id:
+                            new_knowledge_ids.append(k_id)
+                            doc_entry = {
+                                "file_token": doc_key,
+                                "name": doc_res.doc_name,
+                                "size": len(doc_res.markdown_content.encode("utf-8")) if doc_res.markdown_content else 0,
+                                "type": f"lark_{ltype}",
+                                "url": url,
+                                "knowledge_id": k_id,
+                                "summary": doc_summary,
+                            }
+                            processed_docs.append(doc_entry)
+                            existing_doc_map[doc_key] = doc_entry
+
+                        if extract_claims:
+                            try:
+                                from services.chat_service import process_document_to_claims
+                                claims_res = await process_document_to_claims(
+                                    doc_result=doc_res,
+                                    chat_id=chat_id,
+                                    sender=operator_name or "Admin",
+                                    sender_id=operator_open_id,
+                                    project_tag=scope.project_tag if scope else None,
+                                    is_owner=True,
+                                )
+                                total_claims_count += claims_res.get("new_claims_count", 0)
+                            except Exception as ce:
+                                logger.warning(f"Không thể bóc tách claims từ {doc_res.doc_name}: {ce}")
+
+        # Cập nhật bản ghi ChatScope trong MongoDB
+        now_iso = get_vietnam_now_iso()
+        coll = _get_active_scopes_col()
+
+        if scope:
+            all_docs = list(scope.documents or [])
+            seen_tokens = {d.get("file_token") for d in all_docs if d.get("file_token")}
+            for pd in processed_docs:
+                if pd.get("file_token") not in seen_tokens:
+                    all_docs.append(pd)
+                    seen_tokens.add(pd.get("file_token"))
+
+            all_k_ids = list(dict.fromkeys((scope.knowledge_ids or []) + new_knowledge_ids))
+
+            await coll.update_one(
+                {"chat_id": chat_id},
+                {
+                    "$set": {
+                        "documents": all_docs,
+                        "knowledge_ids": all_k_ids,
+                        "updated_at": now_iso,
+                        "updated_by": operator_open_id or "api_upload",
+                        "updated_by_name": operator_name or "Admin",
+                    }
+                },
+            )
+        else:
+            new_scope = ChatScopeRecord(
+                chat_id=chat_id,
+                chat_name=f"Nhóm {chat_id}",
+                dataset_id=effective_dataset_id,
+                dataset_name="Knowledge Base Nhóm",
+                documents=processed_docs,
+                knowledge_ids=list(dict.fromkeys(new_knowledge_ids)),
+                updated_by=operator_open_id or "api_upload",
+                updated_by_name=operator_name or "Admin",
+                created_at=now_iso,
+                updated_at=now_iso,
+            )
+            await coll.update_one(
+                {"chat_id": chat_id},
+                {"$set": new_scope.to_dict()},
+                upsert=True,
+            )
+
+        msg = f"✔ Đã xử lý {len(processed_docs)} tài liệu, bóc tách {total_claims_count} facts mới vào nhóm {chat_id}."
+        logger.info(f"[ChatScope Ingest] {msg}")
+        return {
+            "success": True,
+            "chat_id": chat_id,
+            "dataset_id": effective_dataset_id,
+            "total_docs_processed": len(processed_docs),
+            "processed_docs": processed_docs,
+            "new_claims_count": total_claims_count,
+            "message": msg,
+        }
+
     async def sync_group_from_base_record(
         self,
         record: Any,
@@ -488,7 +746,7 @@ class ScopeService:
                 })
                 knowledge_ids.append(k_id)
 
-        # 6.2. Xử lý liên kết tài liệu đám mây Lark DocX & Wiki
+        # 6.2. Xử lý liên kết tài liệu đám mây Lark DocX, Wiki & Thư mục Drive
         for link_info in lark_links:
             link_type = link_info.get("type", "docx")
             token = link_info.get("token", "")
@@ -498,6 +756,105 @@ class ScopeService:
             if not token:
                 continue
 
+            # 6.2.1. Xử lý Thư mục Lark Drive (Drive Folder)
+            if link_type == "folder":
+                logger.info(f"📁 [ChatScope Sync] Phát hiện liên kết thư mục Lark Drive ({token}) từ Base...")
+                try:
+                    from services.lark import lark_service
+                    folder_files = await lark_service.alist_drive_folder_files(token)
+                    logger.info(f"📁 [ChatScope Sync] Thư mục {token} chứa {len(folder_files)} tệp/thư mục.")
+
+                    for item in folder_files:
+                        itoken = item.get("token", "")
+                        iname = item.get("name", "")
+                        itype = item.get("type", "").lower()
+                        iurl = item.get("url", "")
+                        if not itoken:
+                            continue
+
+                        doc_key = f"lark_{itype}_{itoken}"
+                        existing_doc = existing_doc_map.get(doc_key) or existing_doc_map.get(iurl)
+                        k_id = existing_doc.get("knowledge_id") if existing_doc else None
+                        doc_summary = existing_doc.get("summary") if existing_doc else None
+                        doc_name = existing_doc.get("name") if existing_doc else None
+                        doc_size = existing_doc.get("size", 0) if existing_doc else 0
+
+                        if not k_id:
+                            try:
+                                if itype == "docx":
+                                    doc_res = await doc_parser_service.parse_lark_docx(document_id=itoken, title=iname)
+                                    if doc_res and doc_res.success and doc_res.markdown_content:
+                                        safe_name = _sanitize_filename(doc_res.doc_name or iname or f"DocX_{itoken}")
+                                        if not safe_name.lower().endswith(".md"):
+                                            safe_name = f"{safe_name}.md"
+                                        doc_bytes = doc_res.markdown_content.encode("utf-8")
+                                        doc_name = safe_name
+                                        doc_size = len(doc_bytes)
+                                        upload_res = await _get_active_weknora().upload_file(
+                                            file_name=doc_name,
+                                            file_bytes=doc_bytes,
+                                            dataset_id=effective_dataset_id,
+                                            mime_type="text/markdown",
+                                        )
+                                        k_id = upload_res.get("knowledge_id", "")
+                                        doc_summary = upload_res.get("summary")
+                                elif itype == "wiki":
+                                    doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=itoken)
+                                    if doc_res and doc_res.success and doc_res.markdown_content:
+                                        safe_name = _sanitize_filename(doc_res.doc_name or iname or f"Wiki_{itoken}")
+                                        if not safe_name.lower().endswith(".md"):
+                                            safe_name = f"{safe_name}.md"
+                                        doc_bytes = doc_res.markdown_content.encode("utf-8")
+                                        doc_name = safe_name
+                                        doc_size = len(doc_bytes)
+                                        upload_res = await _get_active_weknora().upload_file(
+                                            file_name=doc_name,
+                                            file_bytes=doc_bytes,
+                                            dataset_id=effective_dataset_id,
+                                            mime_type="text/markdown",
+                                        )
+                                        k_id = upload_res.get("knowledge_id", "")
+                                        doc_summary = upload_res.get("summary")
+                                elif itype == "file":
+                                    file_bytes = await lark_service.adownload_drive_file(itoken)
+                                    if file_bytes:
+                                        doc_name = iname or f"file_{itoken}"
+                                        doc_size = len(file_bytes)
+                                        upload_res = await _get_active_weknora().upload_file(
+                                            file_name=doc_name,
+                                            file_bytes=file_bytes,
+                                            dataset_id=effective_dataset_id,
+                                        )
+                                        k_id = upload_res.get("knowledge_id", "")
+                                        doc_summary = upload_res.get("summary")
+                            except Exception as file_err:
+                                logger.error(f"❌ [ChatScope Sync] Lỗi khi nạp file '{iname}' ({itoken}) trong thư mục: {file_err}")
+
+                        if k_id and not doc_summary:
+                            try:
+                                doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id)
+                                if doc_info and doc_info.get("summary"):
+                                    doc_summary = doc_info["summary"]
+                            except Exception:
+                                pass
+
+                        if k_id:
+                            synced_docs.append({
+                                "file_token": doc_key,
+                                "name": doc_name or iname or f"Lark_{itype.upper()}_{itoken}",
+                                "size": doc_size,
+                                "type": f"lark_{itype}",
+                                "url": iurl or url,
+                                "folder_token": token,
+                                "knowledge_id": k_id,
+                                "summary": doc_summary,
+                            })
+                            knowledge_ids.append(k_id)
+                except Exception as e:
+                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý Lark Folder link '{url}': {e}", exc_info=True)
+                continue
+
+            # 6.2.2. Xử lý tài liệu đơn lẻ DocX & Wiki
             doc_key = f"lark_{link_type}_{token}"
             existing_doc = existing_doc_map.get(doc_key) or existing_doc_map.get(url)
             k_id = existing_doc.get("knowledge_id") if existing_doc else None

@@ -26,6 +26,13 @@ class SetScopeRequest(BaseModel):
     operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
 
 
+class IngestScopeDocumentsRequest(BaseModel):
+    urls: List[str] = Field(..., description="Danh sách URL tài liệu Lark DocX, Wiki hoặc Thư mục Lark Drive")
+    operator_open_id: Optional[str] = Field(default=None, description="Open ID người thực hiện")
+    operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
+    extract_claims: bool = Field(default=True, description="Tự động bóc tách Claims/Facts vào MongoDB")
+
+
 @router.get("", response_model=List[Dict[str, Any]], summary="Danh sách toàn bộ ánh xạ Chat <-> KB")
 async def list_scopes():
     """Lấy danh sách tất cả các nhóm chat đã được gán Knowledge Base riêng trong MongoDB."""
@@ -95,3 +102,29 @@ async def delete_scope(
         "success": True,
         "message": msg,
     }
+
+
+@router.post("/{chat_id}/documents", summary="Nạp tài liệu hoặc toàn bộ thư mục Lark Drive vào nhóm chat")
+async def ingest_documents_to_group(chat_id: str, req: IngestScopeDocumentsRequest):
+    """
+    Nạp tài liệu hoặc toàn bộ tài liệu trong thư mục Lark Drive vào Knowledge Base và Claims của nhóm chat.
+    Hỗ trợ:
+      - Link tài liệu Lark DocX (https://.../docx/...)
+      - Link Lark Wiki (https://.../wiki/...)
+      - Link Thư mục Lark Drive (https://.../folder/... hoặc https://.../drive/folder/...)
+    """
+    op_id = req.operator_open_id or settings.LARK_USER_OPEN_ID
+    op_name = req.operator_name or "API Admin"
+
+    result = await scope_service.ingest_documents_to_scope(
+        chat_id=chat_id,
+        urls=req.urls,
+        operator_open_id=op_id,
+        operator_name=op_name,
+        extract_claims=req.extract_claims,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Nạp tài liệu thất bại"))
+
+    return result
