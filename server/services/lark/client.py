@@ -522,3 +522,203 @@ class LarkClientMixin:
             logger.error(f"❌ [LARK WIKI] Exception khi tra cứu wiki node {wiki_token}: {e}", exc_info=True)
             return None
 
+    async def alist_drive_folder_files(
+        self,
+        folder_token: str,
+        page_size: int = 50,
+        max_files: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """
+        Liệt kê danh sách các tệp và thư mục con trong một thư mục Lark Drive (async).
+
+        Args:
+            folder_token: Token của thư mục Lark Drive (e.g. 'fldcnXXXXXXXX').
+            page_size: Số lượng tệp mỗi trang (mặc định 50).
+            max_files: Giới hạn tối đa số tệp thu thập để tránh bùng nổ tài nguyên.
+
+        Returns:
+            Danh sách dict: [{"token": str, "name": str, "type": str, "url": str, "parent_token": str}]
+        """
+        if not folder_token:
+            return []
+
+        from lark_oapi.api.drive.v1 import ListFileRequest
+        opt = self._get_request_option(as_user=True)
+        files: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        has_more = True
+
+        try:
+            while has_more and len(files) < max_files:
+                builder = ListFileRequest.builder().folder_token(folder_token).page_size(page_size)
+                if page_token:
+                    builder.page_token(page_token)
+                req = builder.build()
+
+                resp = await self.client.drive.v1.file.alist(req, opt)
+                if not resp.success() and opt is not None:
+                    logger.warning(
+                        f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    )
+                    resp = await self.client.drive.v1.file.alist(req)
+
+                if not resp.success():
+                    logger.error(
+                        f"❌ [LARK DRIVE] Liệt kê tệp trong thư mục {folder_token} thất bại: "
+                        f"code={resp.code}, msg={resp.msg}"
+                    )
+                    break
+
+                if resp.data and hasattr(resp.data, "files") and resp.data.files:
+                    for f in resp.data.files:
+                        files.append({
+                            "token": getattr(f, "token", "") or "",
+                            "name": getattr(f, "name", "") or "",
+                            "type": getattr(f, "type", "") or "",
+                            "url": getattr(f, "url", "") or "",
+                            "parent_token": getattr(f, "parent_token", "") or folder_token,
+                        })
+
+                has_more = getattr(resp.data, "has_more", False) if resp.data else False
+                page_token = getattr(resp.data, "next_page_token", None) if resp.data else None
+                if not page_token:
+                    break
+
+            logger.info(f"✔ [LARK DRIVE] Quét thư mục {folder_token}: tìm thấy {len(files)} tệp/thư mục.")
+            return files
+        except Exception as e:
+            logger.error(f"❌ [LARK DRIVE] Exception khi liệt kê tệp trong thư mục {folder_token}: {e}", exc_info=True)
+            return files
+
+    def list_drive_folder_files(
+        self,
+        folder_token: str,
+        page_size: int = 50,
+        max_files: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Phiên bản đồng bộ của alist_drive_folder_files."""
+        if not folder_token:
+            return []
+
+        from lark_oapi.api.drive.v1 import ListFileRequest
+        opt = self._get_request_option(as_user=True)
+        files: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        has_more = True
+
+        try:
+            while has_more and len(files) < max_files:
+                builder = ListFileRequest.builder().folder_token(folder_token).page_size(page_size)
+                if page_token:
+                    builder.page_token(page_token)
+                req = builder.build()
+
+                resp = self.client.drive.v1.file.list(req, opt)
+                if not resp.success() and opt is not None:
+                    logger.warning(
+                        f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    )
+                    resp = self.client.drive.v1.file.list(req)
+
+                if not resp.success():
+                    logger.error(
+                        f"❌ [LARK DRIVE] Liệt kê tệp trong thư mục {folder_token} thất bại: "
+                        f"code={resp.code}, msg={resp.msg}"
+                    )
+                    break
+
+                if resp.data and hasattr(resp.data, "files") and resp.data.files:
+                    for f in resp.data.files:
+                        files.append({
+                            "token": getattr(f, "token", "") or "",
+                            "name": getattr(f, "name", "") or "",
+                            "type": getattr(f, "type", "") or "",
+                            "url": getattr(f, "url", "") or "",
+                            "parent_token": getattr(f, "parent_token", "") or folder_token,
+                        })
+
+                has_more = getattr(resp.data, "has_more", False) if resp.data else False
+                page_token = getattr(resp.data, "next_page_token", None) if resp.data else None
+                if not page_token:
+                    break
+
+            logger.info(f"✔ [LARK DRIVE] Quét thư mục {folder_token}: tìm thấy {len(files)} tệp/thư mục.")
+            return files
+        except Exception as e:
+            logger.error(f"❌ [LARK DRIVE] Exception khi liệt kê tệp trong thư mục {folder_token}: {e}", exc_info=True)
+            return files
+
+    async def adownload_drive_file(self, file_token: str) -> Optional[bytes]:
+        """
+        Tải nội dung nhị phân của tệp từ Lark Drive qua OpenAPI (async).
+
+        Args:
+            file_token: Token của tệp trên Drive.
+
+        Returns:
+            bytes nếu thành công, None nếu thất bại.
+        """
+        if not file_token:
+            return None
+
+        from lark_oapi.api.drive.v1 import DownloadFileRequest
+        opt = self._get_request_option(as_user=True)
+        req = DownloadFileRequest.builder().file_token(file_token).build()
+
+        try:
+            resp = await self.client.drive.v1.file.adownload(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                resp = await self.client.drive.v1.file.adownload(req)
+
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK DRIVE] Tải tệp {file_token} thất bại: code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if hasattr(resp, "file") and resp.file:
+                if hasattr(resp.file, "read"):
+                    return resp.file.read()
+                elif isinstance(resp.file, (bytes, bytearray)):
+                    return bytes(resp.file)
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK DRIVE] Exception khi tải tệp {file_token}: {e}", exc_info=True)
+            return None
+
+    def download_drive_file(self, file_token: str) -> Optional[bytes]:
+        """Phiên bản đồng bộ của adownload_drive_file."""
+        if not file_token:
+            return None
+
+        from lark_oapi.api.drive.v1 import DownloadFileRequest
+        opt = self._get_request_option(as_user=True)
+        req = DownloadFileRequest.builder().file_token(file_token).build()
+
+        try:
+            resp = self.client.drive.v1.file.download(req, opt)
+            if not resp.success() and opt is not None:
+                logger.warning(
+                    f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                )
+                resp = self.client.drive.v1.file.download(req)
+
+            if not resp.success():
+                logger.error(
+                    f"❌ [LARK DRIVE] Tải tệp {file_token} thất bại: code={resp.code}, msg={resp.msg}"
+                )
+                return None
+
+            if hasattr(resp, "file") and resp.file:
+                if hasattr(resp.file, "read"):
+                    return resp.file.read()
+                elif isinstance(resp.file, (bytes, bytearray)):
+                    return bytes(resp.file)
+            return None
+        except Exception as e:
+            logger.error(f"❌ [LARK DRIVE] Exception khi tải tệp {file_token}: {e}", exc_info=True)
+            return None
+

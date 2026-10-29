@@ -38,13 +38,17 @@ from services.knowledge.docreader_client import docreader_service, DocReaderServ
 
 logger = logging.getLogger("hilark.docparser")
 
-# Regex nhận diện các liên kết Lark DocX và Wiki
+# Regex nhận diện các liên kết Lark DocX, Wiki và Drive Folder
 DOCX_URL_PATTERN = re.compile(
     r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/docx/([a-zA-Z0-9]+)",
     re.IGNORECASE,
 )
 WIKI_URL_PATTERN = re.compile(
     r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/wiki/([a-zA-Z0-9]+)",
+    re.IGNORECASE,
+)
+FOLDER_URL_PATTERN = re.compile(
+    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/(?:drive/)?folder/([a-zA-Z0-9]+)",
     re.IGNORECASE,
 )
 
