@@ -102,11 +102,10 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
 
 ## 9. Last verified
 - **Date:** 2026-10-27
-- **What was checked:** Hoàn thành Trích xuất Tài liệu Ảnh Gemini Vision OCR, Gom Nhóm Thông Tin Đề Xuất & Nâng Cấp Thẻ Duyệt Báo Cáo Ngày (EDL-0013):
-  1. `doc_parser.py` & `gemini_client.py`: Tích hợp Gemini Vision Multimodal OCR đọc file ảnh (.png, .jpg, .jpeg, .webp), chuyển hóa thành Markdown sạch kèm bảng biểu, xác minh thực tế qua file ảnh tiếng Việt (6.1s).
-  2. `chat_workflow.py` & `db.py`: Gom nhóm đề xuất (Batching Proposed Claims) - Thành viên gửi tài liệu/tin nhắn lưu trạng thái `proposed` trong ngày mà không gửi thẻ làm phiền; chỉ thông tin Lãnh đạo phát ngôn mới là `current`.
-  3. `card_builder.py`: Nâng cấp Thẻ tương tác Master Daily Digest với bảng Markdown tổng hợp các claims đề xuất theo dự án, nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`approve_all_digest_claims`), nút xem chi tiết nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`) và hủy báo cáo.
-  4. `card_action_handler.py` & `owner_command_handler.py`: Xử lý action thăng hạng toàn bộ claims đề xuất của ngày thành `current`, đồng bộ WeKnora, chuyển đổi thẻ tại chỗ; lệnh `xem digest` / `xem báo cáo` gửi trực tiếp Thẻ tương tác.
-  5. Đã ghi nhận quyết định kỹ thuật `EDL-0013` vào Notion Database và `DECISIONS.md`.
-  6. Toàn bộ 235 bài test (207 tests trong `server/tests/01` và 28 tests trong `server/tests/`) PASSED 100%.
+- **What was checked:** Hoàn thành Bộ Decorator Đo Lường Chi Phí LLM & JEV (EDL-0014) & Trích xuất Tài liệu Ảnh Gemini Vision OCR, Gom Nhóm Thông Tin Đề Xuất (EDL-0013):
+  1. `server/decorators/cost_telemetry.py`: Xây dựng package decorators riêng biệt, cung cấp `@track_llm_cost` và `@track_jev_cost` đo lường chính xác token (từ usageMetadata của Gemini), thời gian phản hồi (latency_ms), chi phí ước tính USD/VND, ghi log có cấu trúc và lưu ngầm vào MongoDB collection `cost_telemetry`.
+  2. Bọc decorator vào toàn bộ các phương thức gọi LLM trong `gemini_client.py` và JEV trong `jev_classifier.py`.
+  3. Cập nhật `indexes.py`, `config.py`, `db.py` quản lý chỉ mục và kết nối cho collection `cost_telemetry`.
+  4. Đã bổ sung bộ kiểm thử `server/tests/test_cost_telemetry.py` (9/9 passed).
+  5. Toàn bộ 244 bài test (207 tests trong `server/tests/01` và 37 tests trong `server/tests/`) PASSED 100%.
 - **By / source:** Antigravity Agent.

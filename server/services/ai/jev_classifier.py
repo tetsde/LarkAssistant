@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Union
 import httpx
@@ -204,15 +205,15 @@ class JevService:
         self,
         query: str,
         chunks: list,
-        max_snippet_chars: int = 300,
-        timeout: float = 10.0,
+        max_snippet_chars: int = 1500,
+        timeout: float = 12.0,
         project_context: Optional[str] = None,
         client: Optional[httpx.AsyncClient] = None,
     ) -> list:
         """
         [RAG Gate Tier 2] Lọc mức độ liên quan ngữ nghĩa của các Chunks bằng JEV:
           - Gửi 1 API batch duy nhất gồm nhiều câu hỏi (mỗi chunk là 1 question trong payload).
-          - Tránh quá tải token bằng cách chỉ gửi tiêu đề tài liệu + snippet ngắn (~300 ký tự).
+          - Snippet rộng (1500 ký tự) kết hợp Smart Windowing theo từ khóa câu hỏi để chống chém cụt thông tin.
           - Giữ lại các chunks có nhãn RELEVANT (loại bỏ hoàn toàn tài liệu rác, lạc đề).
           - Graceful Fallback: Nếu JEV lỗi, timeout hoặc lọc rỗng, giữ lại chunks ban đầu để không crash RAG.
         """
@@ -228,6 +229,9 @@ class JevService:
 
         ctx_label = f"liên quan đến {project_context.strip()}" if project_context else "liên quan đến bối cảnh dự án/công việc đang trao đổi"
 
+        # Trích xuất các từ khóa câu hỏi (> 2 ký tự) để định vị snippet
+        query_words = [w.lower() for w in re.findall(r"\w+", query) if len(w) >= 2 and w.lower() not in ("cho", "mình", "hỏi", "với", "nhé", "ạ", "ơi", "là", "ai", "gì", "cái", "thế", "nào")]
+
         for idx, c in enumerate(candidate_chunks, 1):
             doc_title = (
                 c.get("knowledge_title")
@@ -236,7 +240,23 @@ class JevService:
                 or f"Tài liệu {idx}"
             )
             raw_content = c.get("matched_content") or c.get("content") or ""
-            snippet = raw_content[:max_snippet_chars].strip().replace("\n", " ")
+            
+            # Smart Windowing: nếu văn bản dài, tìm vị trí từ khóa câu hỏi xuất hiện sớm nhất
+            best_pos = -1
+            if len(raw_content) > max_snippet_chars and query_words:
+                raw_lower = raw_content.lower()
+                for qw in query_words:
+                    pos = raw_lower.find(qw)
+                    if pos != -1 and (best_pos == -1 or pos < best_pos):
+                        best_pos = pos
+
+            if best_pos != -1 and best_pos > 200:
+                start_idx = max(0, best_pos - 200)
+                end_idx = min(len(raw_content), start_idx + max_snippet_chars)
+                snippet = raw_content[start_idx:end_idx].strip().replace("\n", " ")
+            else:
+                snippet = raw_content[:max_snippet_chars].strip().replace("\n", " ")
+
             questions[f"chunk_{idx}"] = {
                 "type": "choice",
                 "instructions": (

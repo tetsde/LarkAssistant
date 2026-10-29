@@ -15,15 +15,16 @@ Lợi ích:
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 import httpx
 
 logger = logging.getLogger("hilark.core.http_client")
 
-# Singleton persistent client instance
-_http_client: Optional[httpx.AsyncClient] = None
+# Map lưu trữ Persistent Client instance theo từng Event Loop (Loop ID -> AsyncClient)
+_clients_by_loop: Dict[int, httpx.AsyncClient] = {}
 
 # Cấu hình Connection Pool & Timeout tối ưu cho hệ thống
 DEFAULT_LIMITS = httpx.Limits(
@@ -36,17 +37,25 @@ DEFAULT_TIMEOUT = httpx.Timeout(timeout=30.0, connect=10.0)
 
 def get_http_client() -> httpx.AsyncClient:
     """
-    Lấy persistent HTTP client dùng chung.
-    Tự động khởi tạo lazy nếu client chưa được tạo hoặc đã bị đóng (an toàn cho unit test/scripts).
+    Lấy persistent HTTP client theo event loop hiện tại.
+    Mỗi event loop (FastAPI Main Loop, Lark WebSocket Thread Loop, Test Loops)
+    sở hữu một connection pool riêng để tránh xung đột asyncio.locks giữa các loop.
     """
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
+    try:
+        current_loop = asyncio.get_running_loop()
+        loop_id = id(current_loop)
+    except RuntimeError:
+        loop_id = 0
+
+    client = _clients_by_loop.get(loop_id)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
             limits=DEFAULT_LIMITS,
             timeout=DEFAULT_TIMEOUT,
         )
-        logger.debug("Khởi tạo mới Persistent httpx.AsyncClient (Lazy Init).")
-    return _http_client
+        _clients_by_loop[loop_id] = client
+        logger.debug(f"Khởi tạo mới Persistent httpx.AsyncClient cho loop {loop_id}.")
+    return client
 
 
 async def init_http_client() -> httpx.AsyncClient:
@@ -61,15 +70,15 @@ async def init_http_client() -> httpx.AsyncClient:
 
 async def close_http_client() -> None:
     """
-    Đóng sạch sẽ connection pool và giải phóng toàn bộ sockets.
+    Đóng sạch sẽ connection pool của tất cả event loops và giải phóng toàn bộ sockets.
     Được gọi trong FastAPI lifespan shutdown.
     """
-    global _http_client
-    if _http_client is not None and not _http_client.is_closed:
-        try:
-            await _http_client.aclose()
-            logger.info("✔ [HTTP POOL] Đã đóng persistent httpx.AsyncClient an toàn.")
-        except Exception as e:
-            logger.warning(f"Lỗi khi đóng httpx.AsyncClient: {e}")
-        finally:
-            _http_client = None
+    global _clients_by_loop
+    for loop_id, client in list(_clients_by_loop.items()):
+        if client and not client.is_closed:
+            try:
+                await client.aclose()
+                logger.info(f"✔ [HTTP POOL] Đã đóng persistent httpx.AsyncClient cho loop {loop_id} an toàn.")
+            except Exception as e:
+                logger.warning(f"Lỗi khi đóng httpx.AsyncClient loop {loop_id}: {e}")
+    _clients_by_loop.clear()

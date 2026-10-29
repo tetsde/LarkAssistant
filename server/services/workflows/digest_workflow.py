@@ -214,6 +214,7 @@ class DigestService:
         query: Dict[str, Any] = {
             "chat_id": chat_id,
             "timestamp": {"$regex": f"^{target_date}"},
+            "is_recalled": {"$ne": True},
         }
         if unprocessed_only:
             query["processed"] = False
@@ -908,7 +909,18 @@ Yêu cầu:
         except Exception as e:
             logger.warning(f"Không thể lấy danh sách thông tin đề xuất trong ngày cho digest: {e}")
 
-        card_payload = build_digest_approval_card(master_digest, pending_claims=pending_claims)
+        cost_summary = None
+        try:
+            from decorators.cost_telemetry import get_cost_telemetry_summary
+            cost_summary = await get_cost_telemetry_summary(hours=24)
+        except Exception as e:
+            logger.warning(f"Không thể lấy tổng hợp chi phí telemetry cho master digest: {e}")
+
+        card_payload = build_digest_approval_card(
+            master_digest,
+            pending_claims=pending_claims,
+            cost_summary=cost_summary,
+        )
         try:
             if target_approver:
                 res = await lark_service.send_bot_card_to_owner(card_payload, target_open_id=target_approver)

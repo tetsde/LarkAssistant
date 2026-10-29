@@ -19,7 +19,50 @@ Quy tắc trình bày:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from models.memory import VIETNAM_TZ
+
+
+def _format_time_badge(ts_str: Optional[str]) -> str:
+    """
+    Định dạng hiển thị mốc thời gian dạng ' (lúc HH:MM)'.
+    Nếu không có giờ hợp lệ, trả về chuỗi rỗng ''.
+    """
+    if not ts_str:
+        return ""
+    ts_clean = str(ts_str).strip()
+    try:
+        if "T" in ts_clean:
+            dt = datetime.fromisoformat(ts_clean)
+            if dt.tzinfo:
+                dt = dt.astimezone(VIETNAM_TZ)
+            return f" (lúc {dt.strftime('%H:%M')})"
+    except Exception:
+        pass
+
+    m = re.search(r"\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b", ts_clean)
+    if m:
+        hh = int(m.group(1))
+        mm = m.group(2)
+        return f" (lúc {hh:02d}:{mm})"
+    return ""
+
+
+def _extract_source_time(item: Any) -> str:
+    """Trích xuất timestamp an toàn từ item (Pydantic model hoặc dict)."""
+    if not item:
+        return ""
+    src = getattr(item, "source", None)
+    if src is None and isinstance(item, dict):
+        src = item.get("source")
+    if not src:
+        return ""
+    ts = getattr(src, "timestamp", None)
+    if ts is None and isinstance(src, dict):
+        ts = src.get("timestamp")
+    return str(ts or "").strip()
 
 
 def _clean_group_name(raw_name: Optional[str]) -> str:
@@ -350,6 +393,7 @@ def build_claim_approval_card(
 def build_digest_approval_card(
     master_digest: Any,
     pending_claims: Optional[List[Dict[str, Any]]] = None,
+    cost_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Xây dựng Thẻ tương tác phê duyệt báo cáo ngày cấp điều hành (Master Daily Digest).
@@ -378,19 +422,23 @@ def build_digest_approval_card(
     decisions: List[str] = []
 
     for gd in group_digests:
-        cname = _clean_group_name(getattr(gd, "chat_name", None) or getattr(gd, "chat_id", "Nhóm"))
-        for sc in getattr(gd, "status_changes", []) or []:
-            cat = str(getattr(sc, "category", "")).lower()
+        cname = _clean_group_name(getattr(gd, "chat_name", None) or (gd.get("chat_name") if isinstance(gd, dict) else None) or getattr(gd, "chat_id", "Nhóm"))
+        raw_sc = getattr(gd, "status_changes", []) or (gd.get("status_changes") if isinstance(gd, dict) else []) or []
+        for sc in raw_sc:
+            cat = str(getattr(sc, "category", None) or (sc.get("category") if isinstance(sc, dict) else "")).lower()
             if "blocker" in cat:
-                summary = getattr(sc, "summary", "")
-                reason = getattr(sc, "blocker_reason", "")
+                summary = getattr(sc, "summary", None) or (sc.get("summary") if isinstance(sc, dict) else "")
+                reason = getattr(sc, "blocker_reason", None) or (sc.get("blocker_reason") if isinstance(sc, dict) else "")
                 r_text = f" (Lý do: {reason})" if reason else ""
-                blockers.append(f"[{cname}] {summary}{r_text}")
+                t_badge = _format_time_badge(_extract_source_time(sc))
+                blockers.append(f"[{cname}]{t_badge} {summary}{r_text}")
 
-        for d in getattr(gd, "decisions", []) or []:
-            d_title = getattr(d, "title", "")
-            d_content = getattr(d, "content", "")
-            decisions.append(f"[{cname}] {d_title}: {d_content}")
+        raw_dec = getattr(gd, "decisions", []) or (gd.get("decisions") if isinstance(gd, dict) else []) or []
+        for d in raw_dec:
+            d_title = getattr(d, "title", None) or (d.get("title") if isinstance(d, dict) else "")
+            d_content = getattr(d, "content", None) or (d.get("content") if isinstance(d, dict) else "")
+            t_badge = _format_time_badge(_extract_source_time(d))
+            decisions.append(f"[{cname}]{t_badge} {d_title}: {d_content}")
 
     # Lấy pending claims nếu chưa truyền trực tiếp
     actual_pending_claims = pending_claims
@@ -458,22 +506,25 @@ def build_digest_approval_card(
             },
         })
 
-    # Bảng thông tin đề xuất (Claims/Facts) trong ngày
+    # Danh sách thông tin đề xuất (Claims/Facts) trong ngày dạng phân cấp tinh gọn
     if actual_pending_claims:
-        table_lines = [
-            "| Dự án / Thực thể | Thuộc tính | Giá trị đề xuất | Người gửi |",
-            "| :--- | :--- | :--- | :--- |",
-        ]
+        claim_lines: List[str] = []
         for c in actual_pending_claims[:8]:
-            ent = str(c.get("entity_id") or c.get("project_id") or "Chung").replace("|", "/").strip()
+            raw_ent = str(c.get("entity_name") or c.get("entity_id") or c.get("project_id") or "Dự án").strip()
+            # Nếu tên vẫn dính tiền tố ent_ mã hash mà không có tên thực, dùng project_tag/chat_name hoặc Dự án
+            if raw_ent.startswith("ent_"):
+                raw_ent = str(c.get("project_tag") or c.get("chat_name") or "Dự án / Hạng mục").strip()
+
             raw_p = str(c.get("property") or c.get("predicate") or "thông tin").strip()
-            prop = PROPERTY_LABELS.get(raw_p.lower(), raw_p).replace("|", "/")
-            val = str(c.get("value") or "").replace("|", "/").strip()
-            speaker = str(c.get("speaker_name") or "Thành viên").replace("|", "/").strip()
-            table_lines.append(f"| {ent} | {prop} | {val} | {speaker} |")
+            prop = PROPERTY_LABELS.get(raw_p.lower(), raw_p)
+            val = str(c.get("value") or "").strip()
+            speaker = str(c.get("speaker_name") or "").strip()
+            speaker_tag = f" *(Người gửi: {speaker})*" if speaker and speaker.lower() not in ("thành viên", "user") else ""
+
+            claim_lines.append(f"• **[{raw_ent}]** {prop}: `{val}`{speaker_tag}")
 
         if len(actual_pending_claims) > 8:
-            table_lines.append(f"\n*... và còn {len(actual_pending_claims) - 8} thông tin khác.*")
+            claim_lines.append(f"\n*(... và còn {len(actual_pending_claims) - 8} thông tin đề xuất khác)*")
 
         elements.extend([
             {"tag": "hr"},
@@ -481,7 +532,7 @@ def build_digest_approval_card(
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**Thông tin đề xuất mới trong ngày ({len(actual_pending_claims)} mục):**\n" + "\n".join(table_lines),
+                    "content": f"**Thông tin đề xuất mới trong ngày ({len(actual_pending_claims)} mục):**\n" + "\n".join(claim_lines),
                 },
             },
         ])
@@ -496,6 +547,57 @@ def build_digest_approval_card(
                 },
             },
         ])
+
+    # Khối thống kê chi phí và hiệu năng AI (nếu có cost_summary)
+    if cost_summary:
+        total_calls = cost_summary.get("total_calls", 0)
+        total_tokens = cost_summary.get("total_tokens", 0)
+        total_usd = cost_summary.get("total_cost_usd", 0.0)
+        total_vnd = cost_summary.get("total_cost_vnd", 0.0)
+        by_service = cost_summary.get("by_service", {})
+
+        if total_calls > 0:
+            gemini_info = by_service.get("gemini", {})
+            jev_info = by_service.get("jev", {})
+
+            gemini_calls = gemini_info.get("total_calls", 0)
+            gemini_tokens = gemini_info.get("total_tokens", 0)
+            gemini_cost_usd = gemini_info.get("total_cost_usd", 0.0)
+            gemini_latency = int(gemini_info.get("avg_latency_ms", 0.0))
+
+            jev_calls = jev_info.get("total_calls", 0)
+            jev_latency = int(jev_info.get("avg_latency_ms", 0.0))
+
+            fastlane_ratio = int((jev_calls / total_calls) * 100) if total_calls > 0 else 0
+
+            cost_lines = [
+                "**Thống kê Chi phí AI hôm nay:**",
+                f"- **Tổng ngân sách:** ${total_usd:.4f} USD (~{int(total_vnd):,} VND) | **Tokens:** {total_tokens:,}",
+                f"- **Gemini LLM:** {gemini_calls} lượt ({gemini_tokens:,} tokens) - ${gemini_cost_usd:.4f} - Phản hồi TB: {gemini_latency}ms",
+                f"- **JEV System 1:** {jev_calls} lượt phân loại nhanh - Phản hồi TB: {jev_latency}ms",
+                f"- **Tiết kiệm Fast-lane:** {fastlane_ratio}% tác vụ được lọc sơ bộ qua JEV giúp tối ưu token gọi LLM.",
+            ]
+            elements.extend([
+                {"tag": "hr"},
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "\n".join(cost_lines),
+                    },
+                },
+            ])
+        else:
+            elements.extend([
+                {"tag": "hr"},
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "**Thống kê Chi phí AI hôm nay:** Chưa ghi nhận lượt gọi AI/LLM nào phát sinh trong chu kỳ này.",
+                    },
+                },
+            ])
 
     elements.extend([
         {"tag": "hr"},
@@ -585,9 +687,9 @@ def build_project_digest_detail_card(master_digest: Any) -> Dict[str, Any]:
     """
     Xây dựng Thẻ tương tác xem chi tiết hoạt động từng dự án / nhóm trong ngày.
     """
-    digest_id = getattr(master_digest, "id", "") or "latest"
-    date_str = getattr(master_digest, "date", "") or "Hôm nay"
-    group_digests = getattr(master_digest, "group_digests", []) or []
+    digest_id = getattr(master_digest, "id", None) or (master_digest.get("id") if isinstance(master_digest, dict) else "") or "latest"
+    date_str = getattr(master_digest, "date", None) or (master_digest.get("date") if isinstance(master_digest, dict) else "") or "Hôm nay"
+    group_digests = getattr(master_digest, "group_digests", None) or (master_digest.get("group_digests") if isinstance(master_digest, dict) else []) or []
 
     elements: List[Dict[str, Any]] = [
         {
@@ -610,9 +712,21 @@ def build_project_digest_detail_card(master_digest: Any) -> Dict[str, Any]:
         })
     else:
         for idx, gd in enumerate(group_digests):
-            cname = _clean_group_name(getattr(gd, "chat_name", None) or getattr(gd, "chat_id", "Nhóm"))
-            msg_count = getattr(gd, "message_count", 0)
-            summary = getattr(gd, "summary", "") or "Không có tóm tắt riêng."
+            cname = _clean_group_name(
+                getattr(gd, "chat_name", None)
+                or (gd.get("chat_name") if isinstance(gd, dict) else None)
+                or getattr(gd, "chat_id", None)
+                or (gd.get("chat_id") if isinstance(gd, dict) else None)
+                or "Nhóm"
+            )
+            msg_count = getattr(gd, "message_count", None) or (gd.get("message_count") if isinstance(gd, dict) else 0) or 0
+            summary = (
+                getattr(gd, "summary", None)
+                or (gd.get("summary") if isinstance(gd, dict) else None)
+                or (getattr(gd, "overview_summary", None) if hasattr(gd, "overview_summary") else None)
+                or (gd.get("overview_summary") if isinstance(gd, dict) else None)
+                or "Không có tóm tắt riêng."
+            )
 
             group_lines = [
                 f"**{idx + 1}. Nhóm: {cname}** ({msg_count} tin nhắn)",
@@ -620,25 +734,42 @@ def build_project_digest_detail_card(master_digest: Any) -> Dict[str, Any]:
             ]
 
             # Quyết định
-            decisions = getattr(gd, "decisions", []) or []
+            decisions = getattr(gd, "decisions", []) or (gd.get("decisions") if isinstance(gd, dict) else []) or []
             if decisions:
                 d_items = []
-                for d in decisions[:2]:
-                    t = getattr(d, "title", "")
-                    c = getattr(d, "content", "")
-                    d_items.append(f"- Quyết định: {t} - {c}" if t else f"- Quyết định: {c}")
+                for d in decisions[:3]:
+                    t = getattr(d, "title", None) or (d.get("title") if isinstance(d, dict) else "")
+                    c = getattr(d, "content", None) or (d.get("content") if isinstance(d, dict) else "")
+                    t_badge = _format_time_badge(_extract_source_time(d))
+                    d_items.append(f"- Quyết định{t_badge}: {t} - {c}" if t else f"- Quyết định{t_badge}: {c}")
                 group_lines.append("\n".join(d_items))
 
             # Điểm nghẽn
-            status_changes = getattr(gd, "status_changes", []) or []
+            status_changes = getattr(gd, "status_changes", []) or (gd.get("status_changes") if isinstance(gd, dict) else []) or []
             blockers = [
-                getattr(sc, "summary", "")
-                for sc in status_changes
-                if "blocker" in str(getattr(sc, "category", "")).lower()
+                sc for sc in status_changes
+                if "blocker" in str(getattr(sc, "category", None) or (sc.get("category") if isinstance(sc, dict) else "")).lower()
             ]
             if blockers:
-                b_items = [f"- Điểm nghẽn: {b}" for b in blockers[:2]]
+                b_items = []
+                for sc in blockers[:2]:
+                    summary = getattr(sc, "summary", None) or (sc.get("summary") if isinstance(sc, dict) else "")
+                    t_badge = _format_time_badge(_extract_source_time(sc))
+                    b_items.append(f"- Điểm nghẽn{t_badge}: {summary}")
                 group_lines.append("\n".join(b_items))
+
+            # Cam kết
+            commitments = getattr(gd, "commitments", []) or (gd.get("commitments") if isinstance(gd, dict) else []) or []
+            if commitments:
+                c_items = []
+                for cmt in commitments[:2]:
+                    p_name = getattr(cmt, "promiser_name", None) or (cmt.get("promiser_name") if isinstance(cmt, dict) else "") or "Thành viên"
+                    task = getattr(cmt, "task", None) or (cmt.get("task") if isinstance(cmt, dict) else "")
+                    dl = getattr(cmt, "deadline", None) or (cmt.get("deadline") if isinstance(cmt, dict) else "")
+                    t_badge = _format_time_badge(_extract_source_time(cmt))
+                    dl_text = f" (Hạn chót: {dl})" if dl else ""
+                    c_items.append(f"- Cam kết{t_badge}: {p_name} - {task}{dl_text}")
+                group_lines.append("\n".join(c_items))
 
             elements.append({
                 "tag": "div",

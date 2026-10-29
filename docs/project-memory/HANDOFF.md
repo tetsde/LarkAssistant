@@ -3,32 +3,32 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Trích xuất Tài liệu Ảnh Gemini Vision OCR, Gom Nhóm Thông Tin Đề Xuất & Nâng Cấp Thẻ Duyệt Báo Cáo Ngày (EDL-0013):
-  1. Tích hợp Gemini Vision Multimodal OCR đọc tài liệu dạng ảnh (.png, .jpg, .jpeg, .webp), chuyển hóa thành Markdown sạch kèm bảng biểu để bóc tách facts.
-  2. Quy trình ghi nhận tri thức trong ngày: Thành viên gửi tài liệu/tin nhắn lưu ở trạng thái `proposed` trong MongoDB, không gửi thẻ lẻ tẻ làm phiền Lãnh đạo trong ngày. Chỉ thông tin do Lãnh đạo phát ngôn/gửi mới được gắn cờ `current`.
-  3. Nâng cấp Thẻ báo cáo Master Daily Digest cuối ngày: Bổ sung Bảng tổng hợp các Claims đề xuất trong ngày theo từng dự án; bổ sung nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`action: approve_all_digest_claims`), nút xem chi tiết nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`), hủy báo cáo (`reject_digest`).
-  4. Xử lý Action callback cho nút bấm `approve_all_digest_claims`, `view_digest_detail`, `view_master_digest` và chuyển đổi lệnh `xem digest` / `xem báo cáo` sang gửi Thẻ tương tác thay vì gửi văn bản thô.
-  5. Đồng bộ Quyết định Kỹ thuật `EDL-0013` vào Notion Database và `DECISIONS.md`.
-  6. Kiểm thử hồi quy toàn diện 235/235 tests pass và hoàn tất tài liệu bộ nhớ dự án.
-- **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100% (207/207 tests trong `tests/01` pass, 28/28 tests trong `server/tests/` pass).
-- **Scope hoàn thành:**
-  1. `server/services/ai/gemini_client.py`: Bổ sung `generate_multimodal_async` gửi file nhị phân kèm MIME type lên Gemini Flash.
-  2. `server/services/knowledge/doc_parser.py`: Thêm `ocr_image_to_markdown`, tự động định tuyến file ảnh sang Gemini Vision OCR (xác minh thực tế ảnh tiếng Việt trong 6.1s).
-  3. `server/database/db.py`: Thêm `get_pending_proposed_claims` và `promote_all_proposed_claims`.
-  4. `server/services/workflows/claim_workflow.py`: Thêm `get_pending_claims_for_date`, `approve_all_pending_claims_for_date`.
-  5. `server/services/workflows/chat_workflow.py`: `process_memory_extraction` và `process_document_to_claims` chỉ gán `current` khi `is_owner=True`; còn lại tự động gán `proposed` và gom vào Digest cuối ngày.
-  6. `server/services/lark/card_builder.py`: Cập nhật `build_digest_approval_card` thêm Bảng Markdown các claims đề xuất theo dự án, nút 1 chạm `[Duyệt toàn bộ thông tin hôm nay]`, nút xem chi tiết nhóm; thêm `build_project_digest_detail_card`.
-  7. `server/services/lark/handlers/card_action_handler.py`: Xử lý callback `approve_all_digest_claims`, `view_digest_detail`, `view_master_digest`, cập nhật thẻ tại chỗ sang thẻ xanh trạng thái.
-  8. `server/services/lark/handlers/owner_command_handler.py`: Lệnh `xem digest` / `xem báo cáo` gửi trực tiếp Thẻ tương tác (kèm fallback gửi tin nhắn văn bản nếu gửi thẻ thất bại).
-  9. `server/services/knowledge/context_composer.py`: Bổ sung so khớp synonyms lương (`salary`, `salary_payment_date`) với `chunks_text` và hỗ trợ fallback `source_doc` cho snippet.
-  10. Đồng bộ quyết định kỹ thuật `EDL-0013` lên Notion Decision Log (Page ID: `406590f7-e19e-81fb-92c8-d8e75a1a8b4f`) và `docs/project-memory/DECISIONS.md`.
+- **Goal:** Triển khai Kiến trúc Xử lý Thu Hồi Tin Nhắn (Message Recall Architecture & 4-Tier Sync - EDL-0015):
+  1. **Lắng nghe sự kiện Lark:** Bắt sự kiện `im.message.recalled_v1` qua WebSocket Event Dispatcher (`P2ImMessageRecalledV1`).
+  2. **Tầng 1 (Staging & Daily Digest Guard):** Đánh dấu `is_recalled: True`, `recalled_at: ISO` trong `conversation_staging`. Tự động loại trừ các tin nhắn này khỏi `get_staging_messages` để không lọt vào Daily Digest cuối ngày.
+  3. **Tầng 2 (Claims & Facts Revocation):**
+     - Đề xuất tri thức (`status == "proposed"`): Huỷ bỏ đề xuất, chuyển thành `status == "revoked"` với lý do người dùng đã thu hồi phát ngôn.
+     - Tri thức hiện hành (`status == "current"`): Gắn cờ `source_recalled: True` để bảo đảm tính minh bạch về nguồn gốc.
+  4. **Tầng 3 (Draft Logs Cancellation):** Tự động huỷ các bản nháp đang chờ duyệt (`status == "pending"` chuyển thành `"recalled"`).
+  5. **Tầng 4 (Bot Reply Cascade Recall):** Ghi nhận `bot_reply_message_id` vào staging khi bot reply; khi câu hỏi gốc bị thu hồi, bot tự động gọi `arecall_message` (API `client.im.v1.message.adelete`) để thu hồi câu trả lời của chính bot.
+- **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100%.
+- **Các file triển khai chính:**
+  - `server/services/lark/handlers/recall_handler.py`: Module điều phối 4 tầng xử lý thu hồi tin nhắn.
+  - `server/services/lark/messenger.py`: Bổ sung `arecall_message` và `recall_message` gọi `client.im.v1.message.adelete`.
+  - `server/services/lark/dispatcher.py`: Đăng ký `register_p2_im_message_recalled_v1` và callback `_internal_on_message_recalled_event`.
+  - `server/database/db.py`: Bổ sung `recall_staging_message`, `save_bot_reply_to_staging`, `revoke_claims_by_message_id`, `cancel_pending_drafts_by_message_id`.
+  - `server/services/workflows/digest_workflow.py`: Bổ sung điều kiện `{"is_recalled": {"$ne": True}}` trong `get_staging_messages`.
+  - `server/services/workflows/chat_workflow.py`: Lưu `bot_reply_message_id` vào staging sau khi reply thành công.
+  - `server/models/memory.py` & `server/models/digest.py`: Thêm `FactStatus.REVOKED` và các trường `is_recalled`, `recalled_at`, `bot_reply_message_id`.
+  - `server/tests/01/test_message_recall.py`: 8 unit tests mới kiểm thử toàn bộ các tầng recall.
+  - Toàn bộ **269 unit tests** của toàn hệ thống đạt **100% PASSED**.
 
 ## What is confirmed
-- Gemini Vision OCR chuyển hóa ảnh chụp văn bản tiếng Việt thành Markdown sạch, có cấu trúc bảng biểu hoàn chỉnh trong 6.1 giây.
-- Thành viên gửi ảnh/tài liệu chỉ tạo claim `proposed` trong database, không phát sinh thẻ duyệt lẻ tẻ làm phiền Lãnh đạo trong giờ làm việc.
-- Bấm nút `[Duyệt toàn bộ thông tin hôm nay]` trên Thẻ Master Daily Digest thăng hạng toàn bộ claims đề xuất của ngày thành `current`, đồng bộ WeKnora và cập nhật thẻ tại chỗ sang trạng thái đã duyệt thành công.
-- Lệnh chat `xem digest` gửi trực tiếp Thẻ tương tác có đầy đủ nút bấm điều hành.
-- Toàn bộ 235 bài kiểm thử (207 tests trong `server/tests/01` và 28 tests trong `server/tests/`) đạt **100% PASSED**.
+- Khi người dùng thu hồi tin nhắn trên Lark (`im.message.recalled_v1`), hệ thống tự động đồng bộ dọn dẹp sạch sẽ qua 4 tầng: Staging, Claims, Drafts, và Bot Reply.
+- Bot tự động thu hồi câu trả lời liên đới nếu tin nhắn hỏi gốc bị xóa/thu hồi.
+- Tin nhắn bị thu hồi không bao giờ xuất hiện trong Daily Digest hoặc Master Digest.
+- Toàn bộ 269 test cases passed 100%.
+- Toàn bộ 261 test cases passed 100%.
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:

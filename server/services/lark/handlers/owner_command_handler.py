@@ -70,7 +70,18 @@ async def handle_owner_dm_command(msg: LarkMessage) -> bool:
                 except Exception as e:
                     print(f"Lỗi khi lấy pending claims cho lệnh xem digest: {e}")
 
-            card = build_digest_approval_card(latest_master, pending_claims=pending_claims)
+            cost_summary = None
+            try:
+                from decorators.cost_telemetry import get_cost_telemetry_summary
+                cost_summary = await get_cost_telemetry_summary(hours=24)
+            except Exception as e:
+                print(f"Lỗi khi lấy cost_summary cho lệnh xem digest: {e}")
+
+            card = build_digest_approval_card(
+                latest_master,
+                pending_claims=pending_claims,
+                cost_summary=cost_summary,
+            )
             card_res = await lark_service.send_bot_card_to_owner(card, target_open_id=msg.sender_id)
             if not card_res or not card_res.get("success"):
                 dm_text = latest_master.to_executive_dm_text()

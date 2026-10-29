@@ -32,6 +32,7 @@ class FactStatus(str, Enum):
     SUPERSEDED = "superseded"  # Replaced by a newer fact
     CONFLICTED = "conflicted"  # Direct contradiction across sources
     UNCERTAIN = "uncertain"    # Ambiguous, speculative, unconfirmed
+    REVOKED = "revoked"        # Thu hồi do tin nhắn gốc bị thu hồi
 
 
 class AssertedBy(BaseModel):

@@ -11,6 +11,7 @@ from .document_handler import handle_document_or_links
 from .owner_command_handler import handle_owner_dm_command
 from .member_message_handler import handle_member_message
 from .card_action_handler import handle_card_action, parse_card_action_payload
+from .recall_handler import handle_message_recalled
 
 __all__ = [
     "handle_document_or_links",
@@ -18,4 +19,5 @@ __all__ = [
     "handle_member_message",
     "handle_card_action",
     "parse_card_action_payload",
+    "handle_message_recalled",
 ]

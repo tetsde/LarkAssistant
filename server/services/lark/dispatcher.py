@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     P2ImMessageReceiveV1,
+    P2ImMessageRecalledV1,
     P2ImChatMemberBotAddedV1,
     P2ImChatMemberBotDeletedV1,
     P2ImMessageReactionCreatedV1,
@@ -79,6 +80,7 @@ class LarkDispatcherMixin:
             self.verification_token or "",
         )
         builder.register_p2_im_message_receive_v1(self._internal_on_message_event)
+        builder.register_p2_im_message_recalled_v1(self._internal_on_message_recalled_event)
         builder.register_p2_im_message_reaction_created_v1(self._internal_on_reaction_created_event)
         builder.register_p2_im_chat_member_bot_added_v1(self._internal_on_bot_added_event)
         builder.register_p2_im_chat_member_bot_deleted_v1(self._internal_on_bot_deleted_event)
@@ -374,6 +376,32 @@ class LarkDispatcherMixin:
 
         except Exception as e:
             logger.error(f"Lỗi xử lý reaction created event: {e}", exc_info=True)
+
+    def _internal_on_message_recalled_event(self, data: P2ImMessageRecalledV1) -> None:
+        """
+        Xử lý sự kiện tin nhắn bị thu hồi từ Lark (im.message.recalled_v1).
+        Kích hoạt đồng bộ dọn dẹp trên 4 tầng: Staging, Claims, Drafts, và Bot Reply.
+        """
+        print("⚡ [LARK DISPATCHER] Bắt được sự kiện thu hồi tin nhắn (im.message.recalled_v1) từ Lark!")
+        try:
+            from services.lark.handlers.recall_handler import handle_message_recalled
+
+            async def _run():
+                try:
+                    await handle_message_recalled(data)
+                except Exception as e:
+                    logger.error(f"Lỗi khi thực thi handle_message_recalled: {e}", exc_info=True)
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_run())
+            except RuntimeError:
+                try:
+                    asyncio.run(_run())
+                except Exception as e:
+                    logger.error(f"Lỗi chạy async recall task: {e}")
+        except Exception as e:
+            logger.error(f"Lỗi khi tiếp nhận sự kiện message recalled: {e}", exc_info=True)
 
     def _internal_on_bot_added_event(self, data: P2ImChatMemberBotAddedV1) -> None:
         """Xử lý sự kiện Bot được thêm vào nhóm chat (im.chat.member.bot.added_v1)."""

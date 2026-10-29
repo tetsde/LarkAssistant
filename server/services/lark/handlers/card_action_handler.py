@@ -305,7 +305,18 @@ async def handle_card_action(
                 )
             except Exception as e:
                 logger.warning(f"Không thể lấy pending claims khi quay lại master digest: {e}")
-            master_card = build_digest_approval_card(latest_master, pending_claims=pending_claims)
+
+            cost_summary = None
+            try:
+                from decorators.cost_telemetry import get_cost_telemetry_summary
+                cost_summary = await get_cost_telemetry_summary(hours=24)
+            except Exception as e:
+                logger.warning(f"Không thể lấy cost_summary khi quay lại master digest: {e}")
+            master_card = build_digest_approval_card(
+                latest_master,
+                pending_claims=pending_claims,
+                cost_summary=cost_summary,
+            )
             if message_id:
                 try:
                     await lark_svc.update_card_message(message_id, master_card)

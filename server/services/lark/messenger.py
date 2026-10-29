@@ -29,6 +29,7 @@ from fastapi import Request, Response
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    DeleteMessageRequest,
     GetMessageRequest,
     ListMessageRequest,
     PatchMessageRequest,
@@ -275,12 +276,13 @@ class LarkMessengerMixin:
             }
 
         # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình (có TTL & Bounded Cache)
-        if response.data and getattr(response.data, "message_id", None):
-            sent_mid = getattr(response.data, "message_id")
+        resp_data = getattr(response, "data", None)
+        if resp_data and getattr(resp_data, "message_id", None):
+            sent_mid = getattr(resp_data, "message_id")
             self._record_sent_message_id(sent_mid)
 
-        logger.info(f"✔ Đã {action_desc} thành công nhân danh User")
-        return {"success": True, "data": response.data}
+        logger.info(f"✔ Đã {action_desc} thành công")
+        return {"success": True, "data": resp_data}
 
     # -------------------------------------------------------------------------
     # REPLY TIN NHẮN (ASYNC & SYNC)
@@ -395,6 +397,81 @@ class LarkMessengerMixin:
         except Exception as e:
             logger.error(f"Exception khi gửi sync tin nhắn tới {receive_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    # -------------------------------------------------------------------------
+    # THU HỒI TIN NHẮN (RECALL / DELETE MESSAGE)
+    # -------------------------------------------------------------------------
+
+    async def arecall_message(
+        self,
+        message_id: str,
+        as_user: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Thu hồi (Delete/Recall) tin nhắn trên Lark (async).
+        Nếu as_user=True: thu hồi với User Access Token.
+        Nếu as_user=False: thu hồi với Tenant/Bot Access Token.
+        Nếu as_user=None: tự động thử với User Access Token (nếu có), nếu lỗi/không có thì thử với Tenant Token.
+        """
+        if not message_id:
+            return {"success": False, "error": "message_id không được rỗng"}
+
+        request = DeleteMessageRequest.builder().message_id(message_id).build()
+
+        async def _do_delete(opt: Optional[lark.RequestOption]):
+            return await self.client.im.v1.message.adelete(request, option=opt)
+
+        if as_user is True:
+            opt = self._get_request_option(as_user=True)
+            try:
+                response = await _do_delete(opt)
+                return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
+            except Exception as e:
+                logger.error(f"Lỗi khi thu hồi tin nhắn {message_id} as user: {e}", exc_info=True)
+                return {"success": False, "error": str(e)}
+
+        elif as_user is False:
+            try:
+                response = await _do_delete(None)
+                return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as bot")
+            except Exception as e:
+                logger.error(f"Lỗi khi thu hồi tin nhắn {message_id} as bot: {e}", exc_info=True)
+                return {"success": False, "error": str(e)}
+
+        else:
+            opt = None
+            try:
+                token_check = self.check_user_access_token()
+                if token_check.is_valid:
+                    opt = self._get_request_option(as_user=True)
+            except Exception:
+                opt = None
+
+            try:
+                response = await _do_delete(opt)
+                if response.success():
+                    return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
+                if opt is not None:
+                    fallback_resp = await _do_delete(None)
+                    if fallback_resp.success():
+                        return self._handle_im_response(fallback_resp, f"thu hồi tin nhắn {message_id} as bot fallback")
+                return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
+            except Exception as e:
+                logger.error(f"Exception khi thu hồi tin nhắn {message_id}: {e}", exc_info=True)
+                return {"success": False, "error": str(e)}
+
+    def recall_message(
+        self,
+        message_id: str,
+        as_user: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Thu hồi (Delete/Recall) tin nhắn trên Lark (sync)."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(self.arecall_message(message_id, as_user=as_user))
+        except RuntimeError:
+            return asyncio.run(self.arecall_message(message_id, as_user=as_user))
 
     # -------------------------------------------------------------------------
     # ĐỌC TIN NHẮN TRÊN DANH NGHĨA USER (READ MESSAGES AS USER)

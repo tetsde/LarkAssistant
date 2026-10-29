@@ -62,10 +62,6 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             return True
 
         print(f"Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
-        await lark.areply_text(
-            msg.message_id,
-            f"Trợ lý đang đọc và trích xuất thông tin từ tài liệu \"{file_name}\"..."
-        )
 
         doc_res = await doc_parser.parse_attachment(
             message_id=msg.message_id,
@@ -76,13 +72,14 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
 
         if not doc_res.success:
             print(f"Phân giải thất bại: {doc_res.error}")
-            await lark.areply_text(
-                msg.message_id,
-                f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
-            )
+            if msg.chat_type == "p2p":
+                await lark.areply_text(
+                    msg.message_id,
+                    f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
+                )
             return True
 
-        # Trích xuất Claims & Entities vào MongoDB
+        # Trích xuất Claims & Entities vào MongoDB (Chế độ âm thầm - Silent Ingestion)
         claims_res = await process_claims(
             doc_result=doc_res,
             chat_id=msg.chat_id,
@@ -94,16 +91,11 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
 
         new_count = claims_res.get("new_claims_count", 0)
         superseded_count = claims_res.get("superseded_claims_count", 0)
-        print(f"Đã lưu {new_count} facts mới vào MongoDB từ {file_name} (is_owner={is_owner}).")
-
-        if is_owner:
-            reply_msg = f"Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới vào bộ nhớ nhóm."
-        else:
-            reply_msg = f"Đã tiếp thu tri thức từ \"{file_name}\": Ghi nhận {new_count} sự thật mới (ở trạng thái đề xuất, chờ Lãnh đạo duyệt cuối ngày)."
-
-        if superseded_count > 0:
-            reply_msg += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
-        await lark.areply_text(msg.message_id, reply_msg)
+        logger.info(
+            f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới vào MongoDB từ '{file_name}' "
+            f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
+        )
+        print(f"✔ Đã âm thầm lưu {new_count} facts mới từ '{file_name}' vào MongoDB (không phát ngôn vào nhóm).")
         return True
 
     # 2. Xử lý liên kết Lark Cloud DocX / Wiki (Lark Doc Links - EDL-0010)
@@ -131,13 +123,11 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                     )
                     new_count = claims_res.get("new_claims_count", 0)
                     superseded_count = claims_res.get("superseded_claims_count", 0)
-                    if is_owner:
-                        confirm_link_text = f"Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới vào bộ nhớ."
-                    else:
-                        confirm_link_text = f"Đã tiếp thu tri thức từ {doc_res.doc_name}: Ghi nhận {new_count} sự thật mới (ở trạng thái đề xuất, chờ Lãnh đạo duyệt cuối ngày)."
-                    if superseded_count > 0:
-                        confirm_link_text += f" (Đã cập nhật thay thế {superseded_count} thông tin cũ)."
-                    await lark.areply_text(msg.message_id, confirm_link_text)
+                    logger.info(
+                        f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới từ Lark Doc '{doc_res.doc_name}' "
+                        f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
+                    )
+                    print(f"✔ Đã âm thầm lưu {new_count} facts từ Lark Doc '{doc_res.doc_name}' vào MongoDB (không phát ngôn vào nhóm).")
                     handled_any = True
 
             if handled_any:

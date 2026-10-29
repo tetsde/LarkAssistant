@@ -76,6 +76,10 @@ class StagingMessage(BaseModel):
     message_link: str = Field(default="", description="Deep link mở tin nhắn trên Lark")
     project_tag: Optional[str] = Field(default=None, description="Tag dự án liên quan (nếu có)")
     processed: bool = Field(default=False, description="Đã tổng hợp vào digest chưa")
+    is_recalled: bool = Field(default=False, description="Đánh dấu tin nhắn đã bị thu hồi trên Lark")
+    recalled_at: Optional[str] = Field(default=None, description="Thời điểm thu hồi")
+    recall_type: Optional[str] = Field(default=None, description="Loại thu hồi (message_owner/group_owner/admin)")
+    bot_reply_message_id: Optional[str] = Field(default=None, description="ID tin nhắn bot đã phản hồi (nếu có)")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -356,14 +360,22 @@ class MasterDailyDigestRecord(BaseModel):
                 if gd.decisions:
                     lines.append("   • Quyết định:")
                     for d in gd.decisions:
-                        lines.append(f"     ✔ {d.title}: {d.content} (Chốt bởi: {d.source.speaker_name})")
+                        src = getattr(d, "source", None)
+                        ts = getattr(src, "timestamp", "") if src else ""
+                        m_time = re.search(r"\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b", str(ts))
+                        time_lbl = f" lúc {m_time.group(0)}" if m_time else ""
+                        lines.append(f"     ✔ {d.title}: {d.content} (Chốt bởi: {d.source.speaker_name}{time_lbl})")
 
                 # 2. Cam kết & Hạn chót (chỉ in khi có dữ liệu)
                 if gd.commitments:
                     lines.append("   • Cam kết:")
                     for c in gd.commitments:
+                        src = getattr(c, "source", None)
+                        ts = getattr(src, "timestamp", "") if src else ""
+                        m_time = re.search(r"\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b", str(ts))
+                        time_lbl = f" (lúc {m_time.group(0)})" if m_time else ""
                         dl = f" [Hạn: {c.deadline}]" if c.deadline else ""
-                        lines.append(f"     ⏰ {c.promiser_name}: {c.task}{dl}")
+                        lines.append(f"     ⏰ {c.promiser_name}{time_lbl}: {c.task}{dl}")
 
                 # 3. Blocker & Mốc quan trọng (chỉ in khi có dữ liệu)
                 if gd.status_changes:
@@ -371,7 +383,11 @@ class MasterDailyDigestRecord(BaseModel):
                     for s in gd.status_changes:
                         prefix = "🔴 [BLOCKER]" if s.category == StatusCategory.BLOCKER else ("🟢 [MỐC]" if s.category == StatusCategory.MILESTONE else "🔵 [TIẾN ĐỘ]")
                         reason = f" (Lý do: {s.blocker_reason})" if s.blocker_reason else ""
-                        lines.append(f"     {prefix} {s.target_object}: {s.new_state} - {s.summary}{reason}")
+                        src = getattr(s, "source", None)
+                        ts = getattr(src, "timestamp", "") if src else ""
+                        m_time = re.search(r"\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b", str(ts))
+                        time_lbl = f" (lúc {m_time.group(0)})" if m_time else ""
+                        lines.append(f"     {prefix}{time_lbl} {s.target_object}: {s.new_state} - {s.summary}{reason}")
 
         lines.extend([
             "",

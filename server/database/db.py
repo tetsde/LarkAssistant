@@ -431,7 +431,27 @@ async def get_pending_proposed_claims(
             {"date": date_str},
         ]
     cursor = col.find(query).sort("created_at", -1)
-    return await cursor.to_list(length=200)
+    claims = await cursor.to_list(length=200)
+    if claims:
+        # Tự động ánh xạ tên thực thể từ collection memories để hiển thị thân thiện
+        entity_ids = list({c.get("entity_id") for c in claims if c.get("entity_id")})
+        if entity_ids:
+            try:
+                memories_col = get_memories_collection()
+                ent_cursor = memories_col.find({"id": {"$in": entity_ids}})
+                ent_docs = await ent_cursor.to_list(length=len(entity_ids) + 50)
+                ent_map = {
+                    e["id"]: (e.get("name") or e.get("canonical_name"))
+                    for e in ent_docs
+                    if e.get("id") and (e.get("name") or e.get("canonical_name"))
+                }
+                for c in claims:
+                    eid = c.get("entity_id")
+                    if eid in ent_map and ent_map[eid]:
+                        c["entity_name"] = ent_map[eid]
+            except Exception as e:
+                logger.debug(f"Không thể ánh xạ entity_name cho pending claims: {e}")
+    return claims
 
 
 async def promote_all_proposed_claims(
@@ -514,6 +534,126 @@ async def reject_claims_by_ids(fact_ids: List[str]) -> int:
         },
     )
     return result.modified_count
+
+
+async def recall_staging_message(
+    message_id: str,
+    recall_time: Optional[str] = None,
+    recall_type: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Đánh dấu tin nhắn trong staging là đã bị thu hồi trên Lark.
+    Trả về document staging để lấy bot_reply_message_id nếu có.
+    """
+    if not message_id:
+        return None
+    from pymongo import ReturnDocument
+    col = get_staging_collection()
+    now_iso = get_vietnam_now_iso()
+    doc = await col.find_one_and_update(
+        {"message_id": message_id},
+        {
+            "$set": {
+                "is_recalled": True,
+                "recalled_at": recall_time or now_iso,
+                "recall_type": recall_type,
+                "updated_at": now_iso,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    return _clean_mongo_doc(doc) if doc else None
+
+
+async def save_bot_reply_to_staging(
+    message_id: str,
+    bot_reply_message_id: str,
+) -> bool:
+    """Ghi nhận message_id câu trả lời của bot vào tin nhắn gốc trong staging."""
+    if not message_id or not bot_reply_message_id:
+        return False
+    col = get_staging_collection()
+    now_iso = get_vietnam_now_iso()
+    res = await col.update_one(
+        {"message_id": message_id},
+        {"$set": {"bot_reply_message_id": bot_reply_message_id, "updated_at": now_iso}},
+    )
+    return res.modified_count > 0
+
+
+async def revoke_claims_by_message_id(
+    message_id: str,
+    reason: str = "Tin nhắn gốc đã bị thu hồi",
+) -> Dict[str, int]:
+    """
+    Xử lý thu hồi facts/claims khi tin nhắn gốc bị thu hồi:
+      1. Với các facts PROPOSED: Chuyển thành REVOKED (thu hồi hoàn toàn đề xuất).
+      2. Với các facts CURRENT: Đánh dấu source_recalled = True (nguồn đã bị rút lại).
+    """
+    if not message_id:
+        return {"proposed_revoked": 0, "current_flagged": 0}
+
+    col = get_claims_collection()
+    now_iso = get_vietnam_now_iso()
+    query_base = {
+        "$or": [
+            {"source.message_id": message_id},
+            {"source_message_id": message_id},
+        ]
+    }
+
+    # 1. Thu hồi các claim PROPOSED
+    res_proposed = await col.update_many(
+        {"status": FactStatus.PROPOSED.value, **query_base},
+        {
+            "$set": {
+                "status": FactStatus.REVOKED.value,
+                "revocation_reason": reason,
+                "revoked_at": now_iso,
+                "updated_at": now_iso,
+            }
+        },
+    )
+
+    # 2. Gắn cờ nguồn đã bị thu hồi cho các claim CURRENT
+    res_current = await col.update_many(
+        {"status": FactStatus.CURRENT.value, **query_base},
+        {
+            "$set": {
+                "source_recalled": True,
+                "source_recalled_at": now_iso,
+                "source_recalled_reason": reason,
+                "updated_at": now_iso,
+            }
+        },
+    )
+
+    return {
+        "proposed_revoked": res_proposed.modified_count,
+        "current_flagged": res_current.modified_count,
+    }
+
+
+async def cancel_pending_drafts_by_message_id(
+    message_id: str,
+    reason: str = "Tin nhắn gốc đã bị thu hồi",
+) -> int:
+    """Hủy các bản nháp (draft logs) đang ở trạng thái pending gắn với tin nhắn bị thu hồi."""
+    if not message_id:
+        return 0
+    col = get_draft_logs_collection()
+    now_iso = get_vietnam_now_iso()
+    res = await col.update_many(
+        {"message_id": message_id, "status": "pending"},
+        {
+            "$set": {
+                "status": "recalled",
+                "cancellation_reason": reason,
+                "updated_at": now_iso,
+            }
+        },
+    )
+    return res.modified_count
 
 
 async def get_latest_proposed_claim(chat_id: Optional[str] = None) -> Optional[Dict[str, Any]]:

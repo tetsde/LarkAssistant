@@ -97,11 +97,14 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
 6. BẢO TOÀN ĐỊNH DANH DỰ ÁN (TUYỆT ĐỐI CẤM NHẦM TÊN TÀI LIỆU THÀNH TÊN DỰ ÁN):
    - Đọc kỹ PHẦN 0: BỐI CẢNH DỰ ÁN để xác định đúng "Tên nhóm chat" hoặc "Dự án phụ trách". Đó là tên chính thức duy nhất của dự án (ví dụ: "Project Atlas").
    - TUYỆT ĐỐI CẤM lấy tên của các file tài liệu đính kèm (như "04_So_tay_chinh_sach_cong_ty.pdf", "Ngan_sach_du_an.xlsx", "Code_of_Conduct.docx") để gán nhầm làm tên dự án! Các file này chỉ là tài liệu tham khảo nội bộ.
+7. BẢO TOÀN PHÂN CÔNG NHÂN SỰ DỰ ÁN (TUYỆT ĐỐI CẤM GÁN SAI HOẶC BỊA ĐẶT NGƯỜI QUẢN LÝ):
+   - Khi được hỏi ai là Quản lý dự án (PM), Tech Lead hay người phụ trách, BẮT BUỘC phải tra cứu tài liệu/tri thức để nêu đúng tên người được phân công (ví dụ: Hoàng Minh Tuấn là Quản lý dự án).
+   - Tuyệt đối không nhầm lẫn giữa Lãnh đạo cấp cao của công ty với Quản lý dự án cụ thể.
 """
 
 GROUNDED_QA_USER_PERSONA_PROMPT = """Bạn là {responder_name} ({role}).
 Bạn đang trực tiếp trả lời tin nhắn trên Lark cho thành viên/đồng nghiệp: {user_name}.
-Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identity). Bạn là một người quản lý/nhà điều hành thực tế, dày dặn kinh nghiệm, quyết đoán nhưng văn minh, điềm tĩnh, tôn trọng và đồng hành cùng đội ngũ.
+Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identity). Bạn là Lãnh đạo cấp cao / Chủ quản chung của doanh nghiệp, có phong cách điều hành quyết đoán, điềm tĩnh, tôn trọng và đồng hành cùng đội ngũ.
 
 === BỘ BỐI CẢNH TRI THỨC (KNOWLEDGE CONTEXT) ===
 {context_text}
@@ -160,6 +163,13 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
    - NGUYÊN TẮC ĐỊNH DANH BẤT BIẾN (CẤM NHẦM TÊN FILE THÀNH TÊN DỰ ÁN): 
      * Tên dự án chính thức của nhóm là tên ghi trong PHẦN 0 (ví dụ: "Project Atlas").
      * TUYỆT ĐỐI CẤM lấy tên của các file tài liệu đính kèm (như "04_So_tay_chinh_sach_cong_ty.pdf", "Ngan_sach_du_an.xlsx", "Code_of_Conduct.docx") để nói làm tên dự án (Ví dụ: CẤM TUYỆT ĐỐI các câu như: "Dự án mình đang triển khai là 04 Sổ Tay Chính Sách Công Ty"). Các file này chỉ là văn bản chính sách/tham khảo nội bộ!
+
+8. NGUYÊN TẮC PHÂN ĐỊNH RÕ RÀNG VAI TRÒ DỰ ÁN (TUYỆT ĐỐI CẤM TỰ NHẬN LÀM QUẢN LÝ DỰ ÁN / LEAD):
+   - BẠN LÀ {responder_name} ({role}): Bạn là Lãnh đạo cấp cao / Chủ quản chung của doanh nghiệp, KHÔNG PHẢI là người phụ trách trực tiếp mọi vị trí chuyên môn cụ thể của từng dự án!
+   - KHI THÀNH VIÊN HỎI: "ai làm quản lý", "ai là PM", "ai làm quản lý dự án", "ai phụ trách dự án", "ai lead", "ai phụ trách kỹ thuật":
+     * BẮT BUỘC phải tra cứu BỘ BỐI CẢNH TRI THỨC để trả lời chính xác họ tên của nhân sự được phân công vị trí đó (Ví dụ: "Dự án này do anh Hoàng Minh Tuấn làm Quản lý dự án (PM)", "Về phần kỹ thuật do anh Nguyễn Văn Nam đảm nhiệm").
+     * TUYỆT ĐỐI CẤM tự nhận mình "đang trực tiếp quản lý", "anh làm quản lý", "anh lead" khi trong tài liệu/tri thức đã ghi rõ người khác đảm nhận vai trò Quản lý dự án (PM) hoặc Người phụ trách!
+     * Chỉ nói mình trực tiếp quản lý NẾU trong tài liệu ghi rõ đích danh {responder_name} là Quản lý dự án / PM của dự án đó.
 """
 
 
@@ -743,7 +753,8 @@ async def process_chat_pipeline(
         # Context-Driven Query Expansion cho câu hỏi dự án
         retrieval_query = clean_query
         if proj_context_name and proj_context_name.lower() not in clean_query.lower():
-            retrieval_query = f"{clean_query} {proj_context_name}"
+            if not any(kw in proj_context_name.lower() for kw in ("knowledge base", "lark base", "mặc định", "default")):
+                retrieval_query = f"{clean_query} {proj_context_name}"
 
         # ── [RAG TWO-TIER PIGGYBACK ROUTING] ──
         # Pessimistic Threshold: Chỉ khi confidence >= 0.85 mới định tuyến đơn kho, còn lại fallback HYBRID song song
@@ -777,6 +788,15 @@ async def process_chat_pipeline(
                 knowledge_ids=target_knowledge_ids,
                 match_count=retrieve_count,
             )
+            # Fallback an toàn: Nếu tìm theo target_knowledge_ids trả về 0 chunks (do stale ID), quét dataset và để Strict Isolation lọc theo tên file
+            if not chunks and target_knowledge_ids:
+                logger.info(f"🔄 [RAG Fallback] Retrieve theo target_knowledge_ids trả về 0 -> Fallback quét project dataset {project_dataset_id}...")
+                chunks = await _weknora.retrieve(
+                    query=retrieval_query,
+                    knowledge_base_ids=[project_dataset_id],
+                    knowledge_ids=None,
+                    match_count=retrieve_count,
+                )
         else:
             # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả kho dự án và kho chính sách
             if project_dataset_id and global_policy_kbs:
@@ -799,6 +819,16 @@ async def process_chat_pipeline(
                 ]
                 res_proj, res_policy = await asyncio.gather(*tasks, return_exceptions=True)
                 chunks_proj = res_proj if isinstance(res_proj, list) else []
+                # Fallback kho dự án nếu target_knowledge_ids bị 0 chunks
+                if not chunks_proj and target_knowledge_ids:
+                    logger.info(f"🔄 [RAG Fallback Hybrid] Kho dự án trả về 0 với target_knowledge_ids -> Quét project dataset...")
+                    fb_res = await _weknora.retrieve(
+                        query=retrieval_query,
+                        knowledge_base_ids=[project_dataset_id],
+                        knowledge_ids=None,
+                        match_count=retrieve_count,
+                    )
+                    chunks_proj = fb_res if isinstance(fb_res, list) else []
                 chunks_policy = res_policy if isinstance(res_policy, list) else []
 
                 # Hợp nhất và lọc trùng chunks theo id/content, sắp xếp theo score cao nhất
@@ -817,6 +847,13 @@ async def process_chat_pipeline(
                     knowledge_ids=target_knowledge_ids,
                     match_count=retrieve_count,
                 )
+                if not chunks and target_knowledge_ids:
+                    chunks = await _weknora.retrieve(
+                        query=retrieval_query,
+                        knowledge_base_ids=[project_dataset_id],
+                        knowledge_ids=None,
+                        match_count=retrieve_count,
+                    )
             elif global_policy_kbs:
                 chunks = await _weknora.retrieve(
                     query=clean_query,
@@ -1093,6 +1130,17 @@ async def process_chat_pipeline(
                 text=answer,
                 as_user=True,
             )
+            if isinstance(lark_reply_result, dict) and lark_reply_result.get("success"):
+                reply_data = lark_reply_result.get("data")
+                bot_msg_id = getattr(reply_data, "message_id", None) if reply_data else None
+                if not bot_msg_id and isinstance(reply_data, dict):
+                    bot_msg_id = reply_data.get("message_id")
+                if bot_msg_id:
+                    try:
+                        from database.db import save_bot_reply_to_staging
+                        await save_bot_reply_to_staging(message_id, bot_msg_id)
+                    except Exception as stg_err:
+                        logger.debug(f"Không thể lưu bot_reply_message_id vào staging: {stg_err}")
         except Exception as e:
             logger.error(f"Lỗi khi gửi reply tới Lark: {e}")
             lark_reply_result = {"error": str(e), "success": False}
