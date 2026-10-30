@@ -962,6 +962,15 @@ class ScopeService:
         """Quét và đồng bộ toàn bộ bảng Lark Base sang MongoDB và WeKnora."""
         try:
             from services.lark.bitable import lark_base_service
+            from services.lark.base_provision_service import base_provision_service
+            
+            # Phân giải động app_token và table_id
+            active_app_token, active_table_id = await base_provision_service.get_chat_scope_target()
+            if active_app_token:
+                lark_base_service.app_token = active_app_token
+            if active_table_id:
+                lark_base_service.table_id = active_table_id
+
             if not lark_base_service.app_token:
                 logger.debug("[ChatScope Sync] LARK_BASE_APP_TOKEN chưa được cấu hình, bỏ qua sync toàn bảng.")
                 return []

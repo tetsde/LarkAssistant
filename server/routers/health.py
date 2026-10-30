@@ -5,6 +5,7 @@ from database.db import check_mongo_connection
 router = APIRouter(tags=["health"])
 
 @router.get("/")
+@router.get("/health")
 async def health_check():
     mongo_status = await check_mongo_connection()
     return {

@@ -27,7 +27,11 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
 
 class TestKeyRequest(BaseModel):
-    api_key: str = Field(..., description="Gemini API Key cần kiểm tra")
+    api_key: str = Field(..., description="API Key cần kiểm tra")
+    provider: Optional[str] = Field(default="google", description="Nhà cung cấp: google, openai, chatgpt, anthropic, custom")
+    base_url: Optional[str] = Field(default=None, description="Base URL tùy chỉnh")
+    model_name: Optional[str] = Field(default=None, description="Tên mô hình")
+    timeout: Optional[float] = Field(default=30.0, description="Thời gian chờ timeout (giây)")
 
 
 class SaveSettingsRequest(BaseModel):
@@ -35,14 +39,48 @@ class SaveSettingsRequest(BaseModel):
     user_name: Optional[str] = Field(default=None, description="Tên người dùng")
     is_byok_enabled: bool = Field(default=False, description="Kích hoạt BYOK hay không")
     raw_gemini_key: Optional[str] = Field(default=None, description="Khóa API mới (nếu có)")
+    llm_provider: Optional[str] = Field(default="google", description="Nhà cung cấp LLM: google, openai, anthropic, custom")
+    llm_base_url: Optional[str] = Field(default=None, description="Base URL tùy chỉnh")
+    llm_model: Optional[str] = Field(default=None, description="Tên mô hình")
+    llm_timeout: Optional[float] = Field(default=60.0, description="Timeout (giây)")
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
 
 
+class ProvisionBaseRequest(BaseModel):
+    admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
+
+
+@router.post("/api/provision-base")
+async def provision_base_endpoint(req: ProvisionBaseRequest):
+    """Tự động khởi tạo 100% Lark Base Quản trị Doanh nghiệp qua Lark OpenAPI."""
+    try:
+        from services.lark.base_provision_service import base_provision_service
+        record = await base_provision_service.provision_enterprise_base(admin_open_id=req.admin_open_id)
+        return {
+            "success": True,
+            "message": "Đã tự động khởi tạo Lark Base Quản trị thành công!",
+            "data": record.to_dict(),
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi auto-provision Lark Base: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/test-key")
 async def test_key_endpoint(req: TestKeyRequest):
-    """Kiểm tra trực tiếp độ sống và độ trễ của Gemini API Key qua AJAX."""
-    ok, msg, latency = await user_settings_service.test_gemini_key(req.api_key)
+    """Kiểm tra trực tiếp độ sống và độ trễ của LLM API Key qua AJAX."""
+    provider_norm = (req.provider or "google").strip().lower()
+    if provider_norm == "google" and not req.base_url:
+        ok, msg, latency = await user_settings_service.test_gemini_key(req.api_key)
+    else:
+        ok, msg, latency = await user_settings_service.test_llm_connection(
+            raw_key=req.api_key,
+            provider=provider_norm,
+            base_url=req.base_url,
+            model=req.model_name,
+            timeout=req.timeout or 30.0,
+        )
     return {
         "success": ok,
         "message": msg,
@@ -61,6 +99,10 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
             digest_schedule_time=req.digest_schedule_time,
             hitl_mode_enabled=req.hitl_mode_enabled,
             user_name=req.user_name,
+            llm_provider=req.llm_provider or "google",
+            llm_base_url=req.llm_base_url,
+            llm_model=req.llm_model,
+            llm_timeout=req.llm_timeout or 60.0,
         )
         return {
             "success": True,
@@ -75,6 +117,14 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
 @router.get("/api/settings/{open_id}")
 async def get_settings_endpoint(open_id: str):
     """Lấy thông tin cấu hình hiện hành để hiển thị trên Wizard."""
+    from services.lark.base_provision_service import base_provision_service
+    base_cfg = await base_provision_service.get_active_base_config()
+    base_info = {
+        "app_token": base_cfg.app_token,
+        "app_url": base_cfg.app_url,
+        "is_auto_provisioned": base_cfg.is_auto_provisioned,
+    }
+
     record = await user_settings_service.get_user_settings(open_id)
     if not record:
         return {
@@ -82,15 +132,47 @@ async def get_settings_endpoint(open_id: str):
             "data": {
                 "open_id": open_id,
                 "is_byok_enabled": False,
+                "llm_provider": "google",
                 "masked_gemini_api_key": "",
+                "llm_base_url": "",
+                "llm_model": "gemini-2.0-flash",
+                "llm_timeout": 60.0,
                 "digest_schedule_time": "18:00",
                 "hitl_mode_enabled": True,
+                "base_info": base_info,
             },
         }
+    data = record.to_dict()
+    data["base_info"] = base_info
     return {
         "success": True,
-        "data": record.to_dict(),
+        "data": data,
     }
+    data = record.to_dict()
+    data["base_info"] = base_info
+    return {
+        "success": True,
+        "data": data,
+    }
+
+
+@router.get("/api/auth-status")
+async def get_onboarding_auth_status():
+    """Tra cứu nhanh tình trạng xác thực Lark OAuth cho Wizard UI."""
+    try:
+        from services.auth_service import token_service
+        status = await token_service.get_token_status()
+        return {
+            "success": True,
+            "data": status,
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi lấy auth status trong onboarding router: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "data": {"has_token": False, "is_valid": False},
+        }
 
 
 @router.get("/wizard", response_class=HTMLResponse)
@@ -104,32 +186,51 @@ async def onboarding_wizard_page(
     effective_user_name = user_name or settings.LARK_USER_NAME or "Lãnh đạo"
 
     base_url = str(request.base_url).rstrip("/")
-    oauth_url = f"{base_url}/auth/lark/login?redirect=true"
+    oauth_url = f"{base_url}/auth/lark/login?redirect=true&source=wizard"
 
     html_content = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HiLark — Hướng Dẫn Cài Đặt Trợ Lý AI (Screen Guide)</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>HiLark — Hướng Dẫn Cài Đặt Trợ Lý AI</title>
     <style>
         :root {{
-            --primary: #6366f1;
-            --primary-hover: #4f46e5;
-            --bg-dark: #090d16;
-            --card-bg: rgba(19, 26, 43, 0.85);
-            --border: rgba(255, 255, 255, 0.08);
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --success: #22c55e;
-            --danger: #ef4444;
+            --bg-page: #F5F6F8;
+            --surface: #FFFFFF;
+            --surface-secondary: #F9FAFB;
+            --surface-tertiary: #F3F4F6;
+            --text-primary: #111827;
+            --text-secondary: #6B7280;
+            --text-tertiary: #9CA3AF;
+            --border: #E5E7EB;
+            --border-hover: #D1D5DB;
+            --accent: #2563EB;
+            --accent-hover: #1D4ED8;
+            --accent-light: #EFF6FF;
+            --accent-border: #BFDBFE;
+            --success: #16A34A;
+            --success-light: #F0FDF4;
+            --success-border: #BBF7D0;
+            --danger: #DC2626;
+            --danger-light: #FEF2F2;
+            --danger-border: #FECACA;
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
         }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        * {{
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }}
         body {{
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            background: radial-gradient(circle at top, #1e1b4b 0%, #090d16 100%);
-            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            background-color: var(--bg-page);
+            color: var(--text-primary);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -138,245 +239,452 @@ async def onboarding_wizard_page(
             overflow-x: hidden;
         }}
         .wizard-container {{
-            background: var(--card-bg);
-            backdrop-filter: blur(24px);
+            background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 24px;
+            border-radius: var(--radius-lg);
             width: 100%;
             max-width: 540px;
-            box-shadow: 0 30px 60px -15px rgba(0, 0, 0, 0.7);
+            box-shadow: var(--shadow-card);
             position: relative;
             overflow: hidden;
         }}
+        /* Initializing Screen Overlay */
+        .init-screen {{
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--bg-page);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }}
+        .init-screen.hidden {{
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }}
+        .init-box {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 32px 36px;
+            text-align: center;
+            box-shadow: var(--shadow-card);
+            max-width: 360px;
+            width: 90%;
+        }}
+        .init-spinner {{
+            width: 28px;
+            height: 28px;
+            border: 2.5px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto 16px;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        .init-title {{
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }}
+        .init-desc {{
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }}
+
         /* Stepper Header */
         .stepper-header {{
-            padding: 24px 32px 16px;
+            padding: 20px 28px 16px;
             border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
             justify-content: space-between;
         }}
+        .step-label {{
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+        }}
         .step-dots {{
             display: flex;
-            gap: 8px;
+            gap: 6px;
         }}
         .dot {{
-            width: 32px;
-            height: 6px;
+            width: 24px;
+            height: 4px;
             border-radius: 999px;
-            background: rgba(255, 255, 255, 0.15);
-            transition: all 0.3s ease;
+            background: var(--surface-tertiary);
+            transition: all 0.25s ease;
         }}
         .dot.active {{
-            background: var(--primary);
-            box-shadow: 0 0 12px rgba(99, 102, 241, 0.6);
-            width: 48px;
+            background: var(--accent);
+            width: 36px;
         }}
         .dot.completed {{
             background: var(--success);
-        }}
-        .step-label {{
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
         }}
 
         /* Carousel Slides */
         .slider-wrapper {{
             position: relative;
             width: 100%;
-            min-height: 420px;
         }}
         .slide {{
             display: none;
-            padding: 32px;
-            animation: fadeIn 0.35s ease forwards;
+            padding: 26px 28px;
+            animation: fadeIn 0.25s ease-out forwards;
         }}
         .slide.active {{
             display: block;
         }}
         @keyframes fadeIn {{
-            from {{ opacity: 0; transform: translateX(20px); }}
-            to {{ opacity: 1; transform: translateX(0); }}
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
         }}
 
         h2 {{
-            font-size: 22px;
-            font-weight: 800;
-            color: #fff;
-            margin-bottom: 8px;
-            letter-spacing: -0.02em;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+            letter-spacing: -0.015em;
         }}
         p.desc {{
-            color: var(--text-muted);
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 24px;
+            color: var(--text-secondary);
+            font-size: 13.5px;
+            line-height: 1.5;
+            margin-bottom: 20px;
         }}
 
         /* Feature Cards (Screen 1) */
         .feature-box {{
-            background: rgba(15, 23, 42, 0.6);
+            background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 16px;
-            margin-bottom: 12px;
+            border-radius: var(--radius-md);
+            padding: 14px 16px;
+            margin-bottom: 10px;
             display: flex;
-            align-items: center;
-            gap: 16px;
+            flex-direction: column;
+            gap: 4px;
+            transition: border-color 0.15s ease;
         }}
-        .feat-icon {{
-            font-size: 24px;
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: rgba(99, 102, 241, 0.15);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            flex-shrink: 0;
+        .feature-box:hover {{
+            border-color: var(--border-hover);
         }}
-        .feat-title {{ font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 2px; }}
-        .feat-desc {{ font-size: 12px; color: var(--text-muted); line-height: 1.4; }}
+        .feat-title {{
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }}
+        .feat-desc {{
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }}
 
-        /* Radio Options & Inputs (Screen 2 & 3) */
+        /* Option Cards (Screen 2) */
         .option-card {{
             border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 16px;
-            margin-bottom: 12px;
+            border-radius: var(--radius-md);
+            padding: 14px 16px;
+            margin-bottom: 10px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s ease;
             display: flex;
             align-items: flex-start;
             gap: 12px;
-            background: rgba(15, 23, 42, 0.4);
+            background: var(--surface);
         }}
         .option-card:hover {{
-            background: rgba(99, 102, 241, 0.08);
-            border-color: rgba(99, 102, 241, 0.4);
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
         }}
         .option-card.selected {{
-            background: rgba(99, 102, 241, 0.12);
-            border-color: var(--primary);
-            box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+            background: var(--accent-light);
+            border-color: var(--accent);
         }}
         .radio-circle {{
             width: 18px;
             height: 18px;
             border-radius: 50%;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            margin-top: 2px;
+            border: 1.5px solid var(--border-hover);
+            margin-top: 1px;
             display: flex;
             align-items: center;
             justify-content: center;
             flex-shrink: 0;
+            background: var(--surface);
+            transition: all 0.15s ease;
         }}
         .option-card.selected .radio-circle {{
-            border-color: var(--primary);
+            border-color: var(--accent);
         }}
         .option-card.selected .radio-circle::after {{
             content: '';
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: var(--primary);
+            background: var(--accent);
         }}
         .input-group {{
-            margin-top: 16px;
+            margin-top: 14px;
+            background: var(--surface-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 16px;
+        }}
+        .input-label {{
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: block;
+            margin-bottom: 6px;
         }}
         .input-wrapper {{
             display: flex;
-            background: #0f172a;
+            background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 8px;
             overflow: hidden;
-            margin-top: 8px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }}
+        .input-wrapper:focus-within {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }}
+        .form-input {{
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 12px;
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }}
+        .form-input:focus {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         }}
         .key-input {{
             flex: 1;
             background: transparent;
             border: none;
-            padding: 14px;
-            color: #38bdf8;
-            font-family: monospace;
+            padding: 9px 12px;
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 13px;
             outline: none;
         }}
-        .test-btn {{
-            background: rgba(99, 102, 241, 0.2);
-            color: #818cf8;
-            border: none;
-            padding: 0 16px;
-            font-weight: 600;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.2s;
-            border-left: 1px solid var(--border);
+        .key-input::placeholder, .form-input::placeholder {{
+            color: var(--text-tertiary);
         }}
-        .test-btn:hover {{ background: var(--primary); color: #fff; }}
-        .feedback-badge {{
-            display: inline-block;
-            font-size: 12px;
-            padding: 6px 12px;
-            border-radius: 8px;
-            margin-top: 8px;
-            font-weight: 600;
+        .form-grid-2 {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
         }}
-        .badge-success {{ background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }}
-        .badge-danger {{ background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }}
 
-        /* Select styling */
+        .feedback-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            padding: 5px 10px;
+            border-radius: 6px;
+            margin-top: 8px;
+            font-weight: 500;
+        }}
+        .badge-success {{
+            background: var(--success-light);
+            color: var(--success);
+            border: 1px solid var(--success-border);
+        }}
+        .badge-danger {{
+            background: var(--danger-light);
+            color: var(--danger);
+            border: 1px solid var(--danger-border);
+        }}
+
+        /* Select dropdown */
         select.custom-select {{
             width: 100%;
-            background: #0f172a;
+            background: var(--surface);
             border: 1px solid var(--border);
-            color: #fff;
-            padding: 14px;
-            border-radius: 12px;
-            font-size: 14px;
+            color: var(--text-primary);
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-size: 13px;
             outline: none;
-            margin-top: 8px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            cursor: pointer;
+        }}
+        select.custom-select:focus {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }}
+        .setting-card {{
+            margin-top: 14px;
+            padding: 14px 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            transition: border-color 0.15s ease;
+        }}
+        .setting-card:hover {{
+            border-color: var(--border-hover);
         }}
 
-        /* Buttons Footer */
+        /* Admin & OAuth Cards (Screen 4) */
+        .admin-card {{
+            padding: 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-bottom: 12px;
+            text-align: left;
+        }}
+        .admin-card-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }}
+        .admin-card-title {{
+            font-weight: 600;
+            font-size: 13.5px;
+            color: var(--text-primary);
+        }}
+        .status-pill {{
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }}
+        .status-pill.inactive {{
+            background: var(--surface-tertiary);
+            color: var(--text-secondary);
+        }}
+        .status-pill.connected {{
+            background: var(--success-light);
+            color: var(--success);
+            border: 1px solid var(--success-border);
+        }}
+        .status-pill.unlinked {{
+            background: var(--danger-light);
+            color: var(--danger);
+            border: 1px solid var(--danger-border);
+        }}
+        .admin-card-desc {{
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+            margin-bottom: 12px;
+        }}
+        .admin-actions {{
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }}
+
+        /* Buttons & Footer */
         .wizard-footer {{
-            padding: 20px 32px 28px;
+            padding: 16px 28px 20px;
             border-top: 1px solid var(--border);
+            background: var(--surface-secondary);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }}
         .btn {{
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 700;
-            font-size: 14px;
+            padding: 9px 18px;
+            border-radius: 9px;
+            font-weight: 600;
+            font-size: 13.5px;
             cursor: pointer;
-            transition: all 0.2s;
-            border: none;
+            transition: all 0.15s ease;
+            border: 1px solid transparent;
             text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1.2;
         }}
         .btn-prev {{
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--text-muted);
+            background: var(--surface);
+            border-color: var(--border);
+            color: var(--text-secondary);
         }}
-        .btn-prev:hover {{ background: rgba(255, 255, 255, 0.15); color: #fff; }}
+        .btn-prev:hover {{
+            background: var(--surface-secondary);
+            color: var(--text-primary);
+            border-color: var(--border-hover);
+        }}
         .btn-next {{
-            background: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%);
-            color: #fff;
-            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+            background: var(--accent);
+            color: #FFFFFF;
+            box-shadow: var(--shadow-sm);
         }}
         .btn-next:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.5);
+            background: var(--accent-hover);
+        }}
+        .btn-next:disabled {{
+            opacity: 0.6;
+            cursor: not-allowed;
+        }}
+        .btn-secondary {{
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 12.5px;
+            padding: 7px 14px;
+        }}
+        .btn-secondary:hover {{
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }}
+        .btn-primary-action {{
+            background: var(--accent);
+            color: #FFFFFF;
+            font-size: 12.5px;
+            padding: 7px 14px;
+        }}
+        .btn-primary-action:hover {{
+            background: var(--accent-hover);
+        }}
+
+        @media (max-width: 580px) {{
+            body {{ padding: 10px; }}
+            .wizard-container {{ border-radius: 12px; }}
+            .slide {{ padding: 20px 18px; }}
+            .stepper-header, .wizard-footer {{ padding: 14px 18px; }}
+            .form-grid-2 {{ grid-template-columns: 1fr; }}
         }}
     </style>
 </head>
 <body>
+    <!-- Initializing Screen Overlay -->
+    <div id="initScreen" class="init-screen">
+        <div class="init-box">
+            <div class="init-spinner"></div>
+            <div class="init-title">Đang khởi tạo cấu hình</div>
+            <div class="init-desc">Nạp dữ liệu workspace và kiểm tra trạng thái dịch vụ...</div>
+        </div>
+    </div>
+
     <div class="wizard-container">
         <!-- Stepper Bar -->
         <div class="stepper-header">
@@ -392,82 +700,98 @@ async def onboarding_wizard_page(
         <div class="slider-wrapper">
             <!-- SLIDE 1: WELCOME & OVERVIEW -->
             <div class="slide active" id="slide1">
-                <h2>Chào mừng Sếp {effective_user_name}! 🚀</h2>
+                <h2>Chào mừng {effective_user_name}</h2>
                 <p class="desc">Trợ lý AI HiLark đã được nạp thành công vào workspace. Dưới đây là 3 khả năng cốt lõi phục vụ điều hành:</p>
                 
                 <div class="feature-box">
-                    <div class="feat-icon">🧠</div>
-                    <div>
-                        <div class="feat-title">Phân Loại JEV 0ms</div>
-                        <div class="feat-desc">Lọc tin rác tức thì, tự động bóc tách tiến độ, quyết định và cam kết vào bộ nhớ.</div>
-                    </div>
+                    <div class="feat-title">Phân Loại JEV Tức Thì</div>
+                    <div class="feat-desc">Lọc tin rác 0ms, tự động bóc tách tiến độ, quyết định và cam kết vào kho tri thức.</div>
                 </div>
                 <div class="feature-box">
-                    <div class="feat-icon">🛡️</div>
-                    <div>
-                        <div class="feat-title">Bảo Mật Vùng Cấm 0% Rò Rỉ</div>
-                        <div class="feat-desc">Chặn tự động số liệu nhạy cảm (ngân sách, lương bổng), chuyển thành bản nháp gửi riêng Sếp duyệt.</div>
-                    </div>
+                    <div class="feat-title">Bảo Mật Vùng Cấm An Toàn</div>
+                    <div class="feat-desc">Chặn tự động số liệu nhạy cảm (ngân sách, lương bổng), chuyển thành bản nháp gửi riêng duyệt.</div>
                 </div>
                 <div class="feature-box">
-                    <div class="feat-icon">📊</div>
-                    <div>
-                        <div class="feat-title">Báo Cáo Điều Hành Cuối Ngày</div>
-                        <div class="feat-desc">Tự động tổng hợp nhật ký ngày (Daily Digest) kèm nguồn tin và duyệt 1-chạm.</div>
-                    </div>
+                    <div class="feat-title">Báo Cáo Điều Hành Cuối Ngày</div>
+                    <div class="feat-desc">Tự động tổng hợp nhật ký ngày (Daily Digest) kèm trích dẫn nguồn tin và duyệt một chạm.</div>
                 </div>
             </div>
 
-            <!-- SLIDE 2: AI ENGINE & BYOK -->
+            <!-- SLIDE 2: AI ENGINE & MULTI-PROVIDER BYOK -->
             <div class="slide" id="slide2">
-                <h2>Cấu Hình Bộ Não AI &amp; API Key 🔑</h2>
-                <p class="desc">Chọn nguồn hạn mức AI phục vụ trả lời câu hỏi và tổng hợp tri thức:</p>
+                <h2>Cấu Hình Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</h2>
+                <p class="desc">Chọn nguồn tài nguyên và cấu hình thông số kết nối mô hình trí tuệ nhân tạo:</p>
 
                 <div class="option-card selected" id="optSystemKey" onclick="selectApiKeyMode(false)">
                     <div class="radio-circle"></div>
                     <div>
-                        <div class="feat-title">Dùng Hạn Mức Mặc Định Của Hệ Thống (Khuyên dùng)</div>
-                        <div class="feat-desc">Miễn phí, sử dụng cụm Gemini của công ty. Không cần cài đặt thêm.</div>
+                        <div class="feat-title">Hạn mức mặc định của hệ thống</div>
+                        <div class="feat-desc">Sử dụng cụm mô hình mặc định do tổ chức cung cấp sẵn. Không cần cấu hình thêm.</div>
                     </div>
                 </div>
 
                 <div class="option-card" id="optByok" onclick="selectApiKeyMode(true)">
                     <div class="radio-circle"></div>
                     <div>
-                        <div class="feat-title">Tự Mang API Key Riêng (BYOK - Google Gemini)</div>
-                        <div class="feat-desc">Sử dụng tài khoản Google AI Studio riêng của bạn để không lo giới hạn quota.</div>
+                        <div class="feat-title">Tự cấu hình khóa riêng (BYOK)</div>
+                        <div class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</div>
                     </div>
                 </div>
 
                 <div class="input-group" id="byokInputGroup" style="display: none;">
-                    <label style="font-size: 12px; color: var(--text-muted); font-weight: 600;">DÁN GEMINI API KEY CỦA BẠN:</label>
-                    <div class="input-wrapper">
-                        <input type="password" id="geminiKeyInput" class="key-input" placeholder="AIzaSyBxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
-                        <button type="button" class="test-btn" onclick="testKeyLive()">⚡ Kiểm tra key</button>
+                    <label class="input-label">Nhà cung cấp (Provider):</label>
+                    <select id="llmProviderSelect" class="custom-select" onchange="onProviderChange()" style="margin-bottom: 12px;">
+                        <option value="google">Google (Gemini)</option>
+                        <option value="openai">ChatGPT (OpenAI)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="custom">Tùy chỉnh (Khác / OpenAI-Compatible)</option>
+                    </select>
+
+                    <label class="input-label">Khóa API (API Key):</label>
+                    <div class="input-wrapper" style="margin-bottom: 12px;">
+                        <input type="password" id="geminiKeyInput" class="key-input" placeholder="Nhập API Key">
                     </div>
-                    <div id="testFeedback"></div>
+
+                    <div class="form-grid-2">
+                        <div>
+                            <label class="input-label">Tên mô hình (Model):</label>
+                            <input type="text" id="llmModelInput" class="form-input" placeholder="gemini-2.0-flash">
+                        </div>
+                        <div>
+                            <label class="input-label">Thời gian chờ (Timeout - giây):</label>
+                            <input type="number" id="llmTimeoutInput" class="form-input" min="5" max="300" value="60">
+                        </div>
+                    </div>
+
+                    <label class="input-label">Base URL (Tùy chọn):</label>
+                    <input type="text" id="llmBaseUrlInput" class="form-input" placeholder="https://generativelanguage.googleapis.com" style="margin-bottom: 12px;">
+
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button type="button" id="btnTestKey" class="btn btn-secondary" onclick="testKeyLive()">Kiểm tra kết nối</button>
+                        <span id="testFeedback"></span>
+                    </div>
                 </div>
             </div>
 
             <!-- SLIDE 3: DAILY DIGEST & HITL -->
             <div class="slide" id="slide3">
-                <h2>Lịch Nhận Báo Cáo &amp; Kiểm Duyệt ⏰</h2>
+                <h2>Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</h2>
                 <p class="desc">Thiết lập thời gian nhận bản tóm tắt Master Daily Digest gửi riêng vào tin nhắn của bạn:</p>
 
-                <label style="font-size: 13px; font-weight: 700; color: #fff;">Khung giờ nhận báo cáo tổng hợp:</label>
-                <select id="digestTimeSelect" class="custom-select">
-                    <option value="18:00" selected>18:00 (Cuối giờ làm việc - Khuyên dùng)</option>
+                <label style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Khung giờ nhận báo cáo tổng hợp:</label>
+                <select id="digestTimeSelect" class="custom-select" style="margin-top: 6px;">
+                    <option value="18:00" selected>18:00 (Cuối giờ làm việc)</option>
                     <option value="17:30">17:30 (Trước giờ tan ca)</option>
                     <option value="21:00">21:00 (Buổi tối)</option>
                     <option value="23:00">23:00 (Tổng kết đêm muộn)</option>
                 </select>
 
-                <div style="margin-top: 24px; padding: 16px; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border); border-radius: 14px;">
-                    <label style="display: flex; align-items: center; gap: 12px; cursor: pointer;">
-                        <input type="checkbox" id="hitlCheckbox" checked style="width: 18px; height: 18px; accent-color: var(--primary);">
+                <div class="setting-card">
+                    <label style="display: flex; align-items: flex-start; gap: 12px; cursor: pointer;">
+                        <input type="checkbox" id="hitlCheckbox" checked style="width: 17px; height: 17px; accent-color: var(--accent); margin-top: 2px;">
                         <div>
-                            <div style="font-size: 14px; font-weight: 700; color: #fff;">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
-                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
+                            <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
+                            <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
                         </div>
                     </label>
                 </div>
@@ -475,16 +799,49 @@ async def onboarding_wizard_page(
 
             <!-- SLIDE 4: OAUTH & COMPLETE -->
             <div class="slide" id="slide4">
-                <h2>Ủy Quyền Đại Diện &amp; Hoàn Tất 🚀</h2>
+                <h2>Quản Trị Base &amp; Ủy Quyền Đại Diện</h2>
                 <p class="desc">Bước cuối cùng để Bot có thể thay mặt bạn trả lời câu hỏi và đọc tài liệu dự án:</p>
 
-                <div style="text-align: center; padding: 24px 16px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 16px; margin-bottom: 20px;">
-                    <div style="font-size: 32px; margin-bottom: 12px;">🔗</div>
-                    <div style="font-weight: 700; font-size: 15px; color: #fff; margin-bottom: 6px;">Ủy quyền Lark OAuth 2.0 (1 Lần Duy Nhất)</div>
-                    <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">Tự động gia hạn vĩnh viễn trong MongoDB, an toàn bảo mật.</div>
-                    <a href="{oauth_url}" target="_blank" class="btn" style="background: rgba(99, 102, 241, 0.25); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.4); display: inline-block;">
-                        👉 Bấm vào đây để Ủy quyền Lark
-                    </a>
+                <!-- Lark Base Status & Auto-Provision Box -->
+                <div class="admin-card">
+                    <div class="admin-card-header">
+                        <div class="admin-card-title">Lark Base Quản Trị Doanh Nghiệp</div>
+                        <span id="baseStatusBadge" class="status-pill inactive">Chưa kích hoạt</span>
+                    </div>
+                    <div class="admin-card-desc">
+                        Trung tâm điều hành danh mục 3 dự án (Atlas, Pulse, Sentinel) và chính sách công ty.
+                    </div>
+                    <div id="baseActionContainer" class="admin-actions">
+                        <button type="button" id="btnProvisionBase" onclick="provisionLarkBase()" class="btn btn-secondary">
+                            Khởi tạo Base tự động
+                        </button>
+                        <a id="linkOpenBase" href="#" target="_blank" class="btn btn-secondary" style="display: none; color: var(--accent);">
+                            Mở Lark Base
+                        </a>
+                    </div>
+                    <div id="baseFeedback" style="font-size: 12.5px; margin-top: 8px;"></div>
+                </div>
+
+                <!-- Lark OAuth Authorization In-Place Box -->
+                <div class="admin-card">
+                    <div class="admin-card-header">
+                        <div class="admin-card-title">Ủy Quyền Tài Khoản Lark Đại Diện</div>
+                        <span id="authStatusBadge" class="status-pill unlinked">
+                            Đang kiểm tra...
+                        </span>
+                    </div>
+                    <div id="authAccountInfo" style="font-size: 13px; color: var(--text-primary); margin-bottom: 3px;">
+                        Kiểm tra kết nối tài khoản Lark...
+                    </div>
+                    <div id="authExpiryInfo" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+                        Token được mã hóa và tự động làm mới trong cơ sở dữ liệu.
+                    </div>
+                    <div class="admin-actions">
+                        <button type="button" id="btnConnectLark" onclick="startLarkOAuthFlow()" class="btn btn-primary-action">
+                            Ủy quyền tài khoản Lark
+                        </button>
+                        <span id="authSpinner" style="display: none; font-size: 12px; color: var(--accent);">Đang mở cửa sổ ủy quyền...</span>
+                    </div>
                 </div>
 
                 <div id="saveFeedback" style="text-align: center; margin-top: 10px;"></div>
@@ -493,9 +850,9 @@ async def onboarding_wizard_page(
 
         <!-- Footer Navigation -->
         <div class="wizard-footer">
-            <button type="button" class="btn btn-prev" id="btnPrev" onclick="navigateStep(-1)" style="display: none;">← Quay lại</button>
+            <button type="button" class="btn btn-prev" id="btnPrev" onclick="navigateStep(-1)" style="display: none;">Quay lại</button>
             <div style="flex: 1;"></div>
-            <button type="button" class="btn btn-next" id="btnNext" onclick="navigateStep(1)">Bắt đầu thiết lập →</button>
+            <button type="button" class="btn btn-next" id="btnNext" onclick="navigateStep(1)">Bắt đầu thiết lập</button>
         </div>
     </div>
 
@@ -506,6 +863,35 @@ async def onboarding_wizard_page(
         const userOpenId = "{effective_open_id}";
         const userName = "{effective_user_name}";
 
+        const providerDefaults = {{
+            google: {{
+                model: "gemini-2.0-flash",
+                baseUrl: "https://generativelanguage.googleapis.com"
+            }},
+            openai: {{
+                model: "gpt-4o-mini",
+                baseUrl: "https://api.openai.com/v1"
+            }},
+            anthropic: {{
+                model: "claude-3-5-sonnet-20241022",
+                baseUrl: "https://api.anthropic.com/v1"
+            }},
+            custom: {{
+                model: "deepseek-chat",
+                baseUrl: "https://api.deepseek.com/v1"
+            }}
+        }};
+
+        function onProviderChange() {{
+            const sel = document.getElementById("llmProviderSelect").value;
+            const def = providerDefaults[sel] || providerDefaults.google;
+            const modelInput = document.getElementById("llmModelInput");
+            const baseUrlInput = document.getElementById("llmBaseUrlInput");
+
+            modelInput.placeholder = def.model;
+            baseUrlInput.placeholder = def.baseUrl;
+        }}
+
         const stepTitles = [
             "BƯỚC 1 / 4: GIỚI THIỆU",
             "BƯỚC 2 / 4: CẤU HÌNH AI & BYOK",
@@ -515,7 +901,6 @@ async def onboarding_wizard_page(
 
         function navigateStep(direction) {{
             if (direction === 1 && currentStep === totalSteps) {{
-                // Hoàn tất và lưu
                 saveFinalSettings();
                 return;
             }}
@@ -551,14 +936,14 @@ async def onboarding_wizard_page(
             const btnPrev = document.getElementById("btnPrev");
             const btnNext = document.getElementById("btnNext");
 
-            btnPrev.style.display = currentStep > 1 ? "block" : "none";
+            btnPrev.style.display = currentStep > 1 ? "inline-flex" : "none";
 
             if (currentStep === 1) {{
-                btnNext.innerText = "Bắt đầu thiết lập →";
+                btnNext.innerText = "Bắt đầu thiết lập";
             }} else if (currentStep === totalSteps) {{
-                btnNext.innerText = "💾 Hoàn tất & Kích hoạt";
+                btnNext.innerText = "Hoàn tất & Lưu";
             }} else {{
-                btnNext.innerText = "Tiếp tục →";
+                btnNext.innerText = "Tiếp tục";
             }}
         }}
 
@@ -581,25 +966,36 @@ async def onboarding_wizard_page(
 
         async function testKeyLive() {{
             const keyInput = document.getElementById("geminiKeyInput").value.trim();
+            const provider = document.getElementById("llmProviderSelect").value;
+            const model = document.getElementById("llmModelInput").value.trim() || document.getElementById("llmModelInput").placeholder;
+            const baseUrl = document.getElementById("llmBaseUrlInput").value.trim();
+            const timeout = parseFloat(document.getElementById("llmTimeoutInput").value) || 30;
             const feedback = document.getElementById("testFeedback");
+
             if (!keyInput) {{
                 feedback.innerHTML = '<span class="feedback-badge badge-danger">Vui lòng nhập API Key trước khi kiểm tra.</span>';
                 return;
             }}
 
-            feedback.innerHTML = '<span class="feedback-badge" style="background: rgba(255,255,255,0.1); color: #fff;">Đang ping tới Google Gemini API...</span>';
+            feedback.innerHTML = '<span class="feedback-badge" style="background: var(--surface-tertiary); color: var(--text-secondary);">Đang kiểm tra kết nối...</span>';
 
             try {{
                 const res = await fetch("/onboarding/api/test-key", {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ api_key: keyInput }})
+                    body: JSON.stringify({{
+                        api_key: keyInput,
+                        provider: provider,
+                        model_name: model,
+                        base_url: baseUrl || null,
+                        timeout: timeout
+                    }})
                 }});
                 const data = await res.json();
                 if (data.success) {{
-                    feedback.innerHTML = `<span class="feedback-badge badge-success">✔ ${{data.message}} (Độ trễ: ${{data.latency_ms}}ms)</span>`;
+                    feedback.innerHTML = `<span class="feedback-badge badge-success">${{data.message}} (${{data.latency_ms}} ms)</span>`;
                 }} else {{
-                    feedback.innerHTML = `<span class="feedback-badge badge-danger">❌ ${{data.message}}</span>`;
+                    feedback.innerHTML = `<span class="feedback-badge badge-danger">${{data.message}}</span>`;
                 }}
             }} catch (err) {{
                 feedback.innerHTML = `<span class="feedback-badge badge-danger">Lỗi kết nối kiểm tra: ${{err.message}}</span>`;
@@ -612,11 +1008,20 @@ async def onboarding_wizard_page(
             btnNext.innerText = "Đang lưu cấu hình...";
             btnNext.disabled = true;
 
+            const provider = document.getElementById("llmProviderSelect").value;
+            const modelVal = document.getElementById("llmModelInput").value.trim();
+            const baseUrlVal = document.getElementById("llmBaseUrlInput").value.trim();
+            const timeoutVal = parseFloat(document.getElementById("llmTimeoutInput").value) || 60;
+
             const payload = {{
                 open_id: userOpenId,
                 user_name: userName,
                 is_byok_enabled: isByok,
                 raw_gemini_key: isByok ? document.getElementById("geminiKeyInput").value.trim() : null,
+                llm_provider: isByok ? provider : "google",
+                llm_model: isByok && modelVal ? modelVal : null,
+                llm_base_url: isByok && baseUrlVal ? baseUrlVal : null,
+                llm_timeout: isByok ? timeoutVal : 60,
                 digest_schedule_time: document.getElementById("digestTimeSelect").value,
                 hitl_mode_enabled: document.getElementById("hitlCheckbox").checked
             }};
@@ -629,44 +1034,268 @@ async def onboarding_wizard_page(
                 }});
                 const result = await res.json();
                 if (result.success) {{
-                    feedback.innerHTML = '<div style="color: #4ade80; font-weight: 700; font-size: 16px; margin-top: 12px;">🎉 CÀI ĐẶT THÀNH CÔNG!<br><span style="font-size: 13px; font-weight: 400; color: #94a3b8;">Cửa sổ sẽ tự đóng lại sau 2 giây. Bạn có thể bắt đầu chat ngay với Bot.</span></div>';
+                    feedback.innerHTML = '<div style="color: var(--success); font-weight: 600; font-size: 14px; margin-top: 12px;">Cài đặt hoàn tất.<br><span style="font-size: 12.5px; font-weight: 400; color: var(--text-secondary);">Cửa sổ sẽ tự đóng sau 2 giây. Bạn có thể bắt đầu nhắn tin với Bot.</span></div>';
                     setTimeout(() => {{
                         window.close();
                     }}, 2200);
                 }} else {{
-                    feedback.innerHTML = `<div style="color: #f87171; font-size: 13px;">❌ ${{result.message || 'Lỗi khi lưu'}}</div>`;
+                    feedback.innerHTML = `<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">${{result.message || 'Lỗi khi lưu cấu hình'}}</div>`;
                     btnNext.innerText = "Thử lại";
                     btnNext.disabled = false;
                 }}
             }} catch (e) {{
-                feedback.innerHTML = `<div style="color: #f87171; font-size: 13px;">❌ Lỗi hệ thống: ${{e.message}}</div>`;
+                feedback.innerHTML = `<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">Lỗi hệ thống: ${{e.message}}</div>`;
                 btnNext.innerText = "Thử lại";
                 btnNext.disabled = false;
             }}
         }}
 
-        // Tự động load cấu hình cũ nếu có
-        window.addEventListener("DOMContentLoaded", async () => {{
+        async function provisionLarkBase() {{
+            const btn = document.getElementById("btnProvisionBase");
+            const feedback = document.getElementById("baseFeedback");
+            btn.disabled = true;
+            btn.innerText = "Đang khởi tạo...";
+            feedback.innerHTML = '<span style="color: var(--text-secondary); font-size: 12.5px;">Đang kết nối Bitable và tạo cấu trúc 3 dự án...</span>';
             try {{
-                const res = await fetch(`/onboarding/api/settings/${{userOpenId}}`);
-                const json = await res.json();
-                if (json.success && json.data) {{
-                    const d = json.data;
-                    if (d.digest_schedule_time) {{
-                        document.getElementById("digestTimeSelect").value = d.digest_schedule_time;
+                const res = await fetch("/onboarding/api/provision-base", {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ admin_open_id: userOpenId }})
+                }});
+                const data = await res.json();
+                if (data.success && data.data) {{
+                    btn.innerText = "Đã khởi tạo thành công";
+                    const bsb = document.getElementById("baseStatusBadge");
+                    if (bsb) {{
+                        bsb.innerText = "Đã kết nối";
+                        bsb.className = "status-pill connected";
+                        bsb.style.background = "#F0FDF4";
+                        bsb.style.color = "#16A34A";
+                        bsb.style.border = "1px solid #BBF7D0";
                     }}
-                    document.getElementById("hitlCheckbox").checked = d.hitl_mode_enabled !== false;
-                    if (d.is_byok_enabled) {{
-                        selectApiKeyMode(true);
-                        if (d.masked_gemini_api_key) {{
-                            document.getElementById("geminiKeyInput").placeholder = d.masked_gemini_api_key;
-                        }}
+                    const link = document.getElementById("linkOpenBase");
+                    if (data.data.app_url && link) {{
+                        link.href = data.data.app_url;
+                        link.style.display = "inline-flex";
+                    }}
+                    feedback.innerHTML = '<span style="color: var(--success); font-weight: 500; font-size: 12.5px;">Đã tạo Base và cấp quyền quản trị thành công.</span>';
+                }} else {{
+                    btn.disabled = false;
+                    btn.innerText = "Thử lại";
+                    feedback.innerHTML = `<span style="color: var(--danger); font-size: 12.5px;">${{data.detail || data.message || "Lỗi khởi tạo"}}</span>`;
+                }}
+            }} catch (e) {{
+                btn.disabled = false;
+                btn.innerText = "Thử lại";
+                feedback.innerHTML = `<span style="color: var(--danger); font-size: 12.5px;">Lỗi kết nối: ${{e.message}}</span>`;
+            }}
+        }}
+
+        function startLarkOAuthFlow() {{
+            const width = 520;
+            const height = 660;
+            const left = (window.screen.width / 2) - (width / 2);
+            const top = (window.screen.height / 2) - (height / 2);
+            const authUrl = "/auth/lark/login?redirect=true&source=wizard";
+            
+            const btn = document.getElementById("btnConnectLark");
+            const spinner = document.getElementById("authSpinner");
+            btn.disabled = true;
+            spinner.style.display = "inline";
+
+            const authPopup = window.open(
+                authUrl,
+                "LarkAuthModal",
+                `width=${{width}},height=${{height}},top=${{top}},left=${{left}},resizable=yes,scrollbars=yes,status=no`
+            );
+
+            const messageHandler = function(event) {{
+                if (event.data && event.data.type === "LARK_AUTH_SUCCESS") {{
+                    window.removeEventListener("message", messageHandler);
+                    btn.disabled = false;
+                    spinner.style.display = "none";
+                    applyAuthConnected(event.data.user_name, event.data.open_id);
+                    const sf = document.getElementById("saveFeedback");
+                    if (sf) {{
+                        sf.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 13px;">Đã liên kết tài khoản Lark thành công.</span>';
                     }}
                 }}
-            }} catch(e) {{}}
+            }};
+            window.addEventListener("message", messageHandler);
+
+            const timer = setInterval(async () => {{
+                if (!authPopup || authPopup.closed) {{
+                    clearInterval(timer);
+                    btn.disabled = false;
+                    spinner.style.display = "none";
+                    await checkAuthStatusLive();
+                }}
+            }}, 1000);
+        }}
+
+        async function checkAuthStatusLive() {{
+            try {{
+                const res = await fetch("/onboarding/api/auth-status");
+                const json = await res.json();
+                if (json.success && json.data && json.data.has_token && json.data.is_valid) {{
+                    applyAuthConnected(json.data.user_name, json.data.open_id, json.data.access_token_remaining);
+                }} else {{
+                    applyAuthDisconnected();
+                }}
+            }} catch (e) {{
+                applyAuthDisconnected();
+            }}
+        }}
+
+        function applyAuthConnected(userName, openId, remaining) {{
+            const badge = document.getElementById("authStatusBadge");
+            const accInfo = document.getElementById("authAccountInfo");
+            const expInfo = document.getElementById("authExpiryInfo");
+            const btn = document.getElementById("btnConnectLark");
+
+            if (badge) {{
+                badge.innerText = "Đã kết nối";
+                badge.className = "status-pill connected";
+                badge.style.background = "#F0FDF4";
+                badge.style.color = "#16A34A";
+                badge.style.border = "1px solid #BBF7D0";
+            }}
+            if (accInfo) {{
+                accInfo.innerHTML = `Đại diện: <strong>${{userName || "Lãnh đạo"}}</strong> (ID: <code style="background:var(--surface-tertiary);padding:2px 6px;border-radius:4px;font-size:11px;color:var(--text-primary);">${{openId || ""}}</code>)`;
+            }}
+            if (expInfo) {{
+                expInfo.innerText = `Tự động gia hạn (Thời hạn hiện tại: ${{remaining || "hoạt động"}})`;
+            }}
+            if (btn) {{
+                btn.innerText = "Cấp quyền lại / Đổi tài khoản";
+                btn.className = "btn btn-secondary";
+                btn.style.background = "var(--surface)";
+                btn.style.color = "var(--text-primary)";
+                btn.style.border = "1px solid var(--border)";
+            }}
+        }}
+
+        function applyAuthDisconnected() {{
+            const badge = document.getElementById("authStatusBadge");
+            const accInfo = document.getElementById("authAccountInfo");
+            const expInfo = document.getElementById("authExpiryInfo");
+            const btn = document.getElementById("btnConnectLark");
+
+            if (badge) {{
+                badge.innerText = "Chưa liên kết";
+                badge.className = "status-pill unlinked";
+                badge.style.background = "#FEF2F2";
+                badge.style.color = "#DC2626";
+                badge.style.border = "1px solid #FECACA";
+            }}
+            if (accInfo) {{
+                accInfo.innerText = "Chưa có tài khoản đại diện gửi tin.";
+            }}
+            if (expInfo) {{
+                expInfo.innerText = "Token sẽ được tự động lưu và làm mới trong MongoDB.";
+            }}
+            if (btn) {{
+                btn.innerText = "Ủy quyền tài khoản Lark";
+                btn.className = "btn btn-primary-action";
+                btn.style.background = "#2563EB";
+                btn.style.color = "#FFFFFF";
+                btn.style.border = "none";
+            }}
+        }}
+
+        function dismissInitScreen() {{
+            const init = document.getElementById("initScreen");
+            if (init) {{
+                init.classList.add("hidden");
+                setTimeout(() => {{
+                    init.style.display = "none";
+                }}, 350);
+            }}
+        }}
+
+        // Tự động load cấu hình cũ nếu có
+        window.addEventListener("DOMContentLoaded", async () => {{
+            onProviderChange();
+
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get("step")) {{
+                const targetStep = parseInt(urlParams.get("step"));
+                if (!isNaN(targetStep) && targetStep >= 1 && targetStep <= totalSteps) {{
+                    currentStep = targetStep;
+                    updateUI();
+                }}
+            }}
+            if (urlParams.get("auth") === "success") {{
+                const sf = document.getElementById("saveFeedback");
+                if (sf) {{
+                    sf.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 13px;">Đã liên kết tài khoản Lark thành công.</span>';
+                }}
+            }}
+
+            try {{
+                await Promise.all([
+                    checkAuthStatusLive(),
+                    (async () => {{
+                        const res = await fetch(`/onboarding/api/settings/${{userOpenId}}`);
+                        const json = await res.json();
+                        if (json.success && json.data) {{
+                            const d = json.data;
+                            if (d.digest_schedule_time) {{
+                                document.getElementById("digestTimeSelect").value = d.digest_schedule_time;
+                            }}
+                            document.getElementById("hitlCheckbox").checked = d.hitl_mode_enabled !== false;
+                            
+                            if (d.llm_provider) {{
+                                document.getElementById("llmProviderSelect").value = d.llm_provider;
+                                onProviderChange();
+                            }}
+                            if (d.llm_model) {{
+                                document.getElementById("llmModelInput").value = d.llm_model;
+                            }}
+                            if (d.llm_base_url) {{
+                                document.getElementById("llmBaseUrlInput").value = d.llm_base_url;
+                            }}
+                            if (d.llm_timeout) {{
+                                document.getElementById("llmTimeoutInput").value = d.llm_timeout;
+                            }}
+
+                            if (d.is_byok_enabled) {{
+                                selectApiKeyMode(true);
+                                if (d.masked_gemini_api_key) {{
+                                    document.getElementById("geminiKeyInput").placeholder = d.masked_gemini_api_key;
+                                }}
+                            }}
+                            if (d.base_info && d.base_info.app_url) {{
+                                const bsb = document.getElementById("baseStatusBadge");
+                                if (bsb) {{
+                                    bsb.innerText = "Đã kết nối";
+                                    bsb.className = "status-pill connected";
+                                    bsb.style.background = "#F0FDF4";
+                                    bsb.style.color = "#16A34A";
+                                    bsb.style.border = "1px solid #BBF7D0";
+                                }}
+                                const link = document.getElementById("linkOpenBase");
+                                if (link) {{
+                                    link.href = d.base_info.app_url;
+                                    link.style.display = "inline-flex";
+                                }}
+                                const btn = document.getElementById("btnProvisionBase");
+                                if (btn) {{
+                                    btn.innerText = "Đã kết nối";
+                                }}
+                            }}
+                        }}
+                    }})()
+                ]);
+            }} catch(e) {{
+            }} finally {{
+                // Dismiss initial screen mượt mà
+                dismissInitScreen();
+            }}
         }});
     </script>
 </body>
 </html>"""
+    return HTMLResponse(content=html_content)
     return HTMLResponse(content=html_content)
 

@@ -73,41 +73,111 @@ class UserSettingsService:
 
     mask_api_key = mask_key
 
-    async def test_gemini_key(self, raw_key: str) -> Tuple[bool, str, float]:
+    async def test_llm_connection(
+        self,
+        raw_key: str,
+        provider: str = "google",
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> Tuple[bool, str, float]:
         """
-        Kiểm tra tính sống còn của Gemini API Key và đo thời gian phản hồi (ms).
+        Kiểm tra trực tiếp kết nối với LLM Provider (Google, ChatGPT/OpenAI, Anthropic, Custom) kèm timeout.
         Trả về: (thành_công, thông_báo, độ_trễ_ms)
         """
         if not raw_key or not raw_key.strip():
             return False, "API Key không được để trống.", 0.0
 
         key = raw_key.strip()
-        test_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-        payload = {
-            "contents": [{"parts": [{"text": "ping"}]}],
-            "generationConfig": {"maxOutputTokens": 5, "thinkingConfig": {"thinkingBudget": 0}},
-        }
+        provider_norm = (provider or "google").strip().lower()
+        timeout_val = float(timeout) if timeout and float(timeout) > 0 else 30.0
 
         start_time = time.time()
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(test_url, json=payload)
-                latency_ms = round((time.time() - start_time) * 1000, 2)
+            async with httpx.AsyncClient(timeout=timeout_val) as client:
+                if provider_norm == "google":
+                    model_target = model or "gemini-2.0-flash"
+                    b_url = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
+                    test_url = f"{b_url}/v1beta/models/{model_target}:generateContent?key={key}"
+                    payload = {
+                        "contents": [{"parts": [{"text": "ping"}]}],
+                        "generationConfig": {"maxOutputTokens": 5, "thinkingConfig": {"thinkingBudget": 0}},
+                    }
+                    res = await client.post(test_url, json=payload)
+                elif provider_norm in ("openai", "chatgpt"):
+                    model_target = model or "gpt-4o-mini"
+                    b_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+                    test_url = f"{b_url}/chat/completions"
+                    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                    payload = {
+                        "model": model_target,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 5,
+                    }
+                    res = await client.post(test_url, headers=headers, json=payload)
+                elif provider_norm == "anthropic":
+                    model_target = model or "claude-3-5-sonnet-20241022"
+                    b_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
+                    if not b_url.endswith("/v1"):
+                        b_url = f"{b_url}/v1"
+                    test_url = f"{b_url}/messages"
+                    headers = {
+                        "x-api-key": key,
+                        "anthropic-version": "2023-06-01",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "model": model_target,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 5,
+                    }
+                    res = await client.post(test_url, headers=headers, json=payload)
+                else:  # "custom" / other OpenAI-compatible
+                    model_target = model or "gpt-3.5-turbo"
+                    b_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+                    if not b_url.endswith("/chat/completions"):
+                        test_url = f"{b_url}/chat/completions"
+                    else:
+                        test_url = b_url
+                    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                    payload = {
+                        "model": model_target,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 5,
+                    }
+                    res = await client.post(test_url, headers=headers, json=payload)
 
+                latency_ms = round((time.time() - start_time) * 1000, 2)
                 if res.status_code == 200:
-                    return True, "API Key hợp lệ và hoạt động tốt.", latency_ms
-                
+                    provider_display = {
+                        "google": "Google Gemini",
+                        "openai": "ChatGPT / OpenAI",
+                        "chatgpt": "ChatGPT / OpenAI",
+                        "anthropic": "Anthropic Claude",
+                        "custom": "Custom Provider",
+                    }.get(provider_norm, provider_norm.upper())
+                    return True, f"Kết nối {provider_display} thành công (độ trễ {latency_ms} ms)", latency_ms
+
                 try:
                     err_json = res.json()
-                    err_msg = err_json.get("error", {}).get("message") or res.text
+                    err_msg = (
+                        err_json.get("error", {}).get("message")
+                        if isinstance(err_json.get("error"), dict)
+                        else str(err_json.get("error") or res.text)
+                    )
                 except Exception:
                     err_msg = res.text
 
-                return False, f"Google API từ chối ({res.status_code}): {err_msg[:120]}", latency_ms
+                return False, f"Provider từ chối ({res.status_code}): {err_msg[:120]}", latency_ms
+
         except httpx.TimeoutException:
-            return False, "Kết nối đến Google Gemini API quá thời gian chờ (Timeout).", 0.0
+            return False, f"Kết nối đến {provider_norm.upper()} quá thời gian chờ (Timeout {timeout_val}s).", 0.0
         except Exception as e:
             return False, f"Lỗi kết nối kiểm tra: {str(e)}", 0.0
+
+    async def test_gemini_key(self, raw_key: str) -> Tuple[bool, str, float]:
+        """Tương thích ngược kiểm tra Gemini API Key."""
+        return await self.test_llm_connection(raw_key=raw_key, provider="google")
 
     async def get_user_settings(self, open_id: str) -> Optional[UserSettingsRecord]:
         """Lấy bản ghi cấu hình của người dùng từ MongoDB."""
@@ -127,6 +197,10 @@ class UserSettingsService:
         digest_schedule_time: str = "18:00",
         hitl_mode_enabled: bool = True,
         user_name: Optional[str] = None,
+        llm_provider: str = "google",
+        llm_base_url: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        llm_timeout: float = 60.0,
     ) -> UserSettingsRecord:
         """Lưu hoặc cập nhật cấu hình người dùng vào MongoDB."""
         coll = get_user_settings_collection()
@@ -148,8 +222,12 @@ class UserSettingsService:
             open_id=open_id,
             user_name=user_name or (existing.user_name if existing else None),
             is_byok_enabled=is_byok_enabled,
+            llm_provider=llm_provider or (existing.llm_provider if existing else "google"),
             encrypted_gemini_api_key=encrypted_key,
             masked_gemini_api_key=masked_key,
+            llm_base_url=llm_base_url or (existing.llm_base_url if existing else None),
+            llm_model=llm_model or (existing.llm_model if existing else None),
+            llm_timeout=llm_timeout if llm_timeout is not None else (existing.llm_timeout if existing else 60.0),
             digest_schedule_time=digest_schedule_time or "18:00",
             hitl_mode_enabled=hitl_mode_enabled,
             created_at=existing.created_at if existing else now_iso,

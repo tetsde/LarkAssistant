@@ -101,9 +101,10 @@ class PolicySyncService:
     async def fetch_policy_records_from_base(self) -> List[Dict[str, Any]]:
         """
         Đọc toàn bộ các dòng từ bảng Chính Sách & Quy Định trên Lark Base.
+        Hỗ trợ phân giải token động qua base_provision_service.
         """
-        table_id = settings.LARK_BASE_POLICY_TABLE_ID
-        app_token = lark_base_service.app_token
+        from services.lark.base_provision_service import base_provision_service
+        app_token, table_id = await base_provision_service.get_policy_target()
         domain = lark_base_service.domain
 
         if not app_token or not table_id:

@@ -25,7 +25,7 @@ services:
     container_name: hilark-mongodb
     restart: unless-stopped
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:${MONGO_PORT:-27018}:27017"
     volumes:
       - hilark-mongo-data:/data/db
     networks:
@@ -60,7 +60,7 @@ services:
       - MONGO_URL=mongodb://mongodb:27017
       - MONGO_DB=LarkAssistant
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
-      - BASE_URL=${base_url:-http://host.docker.internal:8080/api/v1}
+      - BASE_URL=${DOCKER_WEKNORA_BASE_URL:-http://host.docker.internal/api/v1}
       - DOCREADER_GRPC_HOST=${DOCREADER_GRPC_HOST:-host.docker.internal}
       - DOCREADER_GRPC_PORT=${DOCREADER_GRPC_PORT:-50051}
     volumes:

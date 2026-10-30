@@ -82,14 +82,15 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     is_owner = bool(
         msg.is_self
         or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
+        or not lark_service.owner_open_id
     )
 
     # 3. Xử lý tệp đính kèm hoặc liên kết tài liệu Lark (EDL-0010)
     if await handle_document_or_links(msg, is_owner=is_owner):
         return
 
-    # 4. Xử lý lệnh của Chủ nhân trong DM 1-1
-    if is_owner and msg.chat_type == "p2p":
+    # 4. Xử lý lệnh của Chủ nhân hoặc lệnh cấu hình/onboarding trong DM 1-1
+    if msg.chat_type == "p2p" or is_owner:
         if await handle_owner_dm_command(msg):
             return
 

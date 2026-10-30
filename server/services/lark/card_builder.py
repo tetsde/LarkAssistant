@@ -997,3 +997,68 @@ def build_onboarding_welcome_card(
     }
 
 
+def build_base_provisioned_card(
+    app_url: str,
+    admin_name: str = "",
+) -> Dict[str, Any]:
+    """
+    Xây dựng Thẻ thông báo khởi tạo thành công Lark Base Quản trị Doanh nghiệp.
+    Bao gồm nút mở trực tiếp Base và hướng dẫn phân công dự án.
+    """
+    display_name = admin_name.strip() if admin_name else "Sếp"
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**Xin chúc mừng {display_name}!**\n\n"
+                    "Trợ lý HiLark đã tự động khởi tạo thành công **Lark Base Quản Trị Doanh Nghiệp** "
+                    "ngay trên Lark Drive của bạn với đầy đủ cấu trúc chuẩn:\n\n"
+                    "• **Bảng 1: Danh mục Dự án & Nhóm chat** (Quản lý 3 dự án Atlas, Pulse, Sentinel)\n"
+                    "• **Bảng 2: Chính sách & Quy định Công ty** (Sổ tay nhân viên & Quy chế)\n\n"
+                    "Bạn đã được phân quyền **Toàn quyền Quản trị (Owner/Editor)** để phân công nhân sự và tài liệu."
+                ),
+            },
+        },
+        {
+            "tag": "hr",
+        },
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Mở Lark Base Quản Trị",
+                    },
+                    "type": "primary",
+                    "url": app_url,
+                    "multi_url": {
+                        "url": app_url,
+                        "pc_url": app_url,
+                        "android_url": app_url,
+                        "ios_url": app_url,
+                    },
+                }
+            ],
+        },
+    ]
+
+    return {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "turquoise",
+            "title": {
+                "tag": "plain_text",
+                "content": "Khởi Tạo Lark Base Quản Trị Thành Công",
+            },
+        },
+        "elements": elements,
+    }
+
+
+

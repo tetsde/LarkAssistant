@@ -7,15 +7,17 @@
   1. **Phase 1: Group Setup, Baseline Docs, Multimodal OCR & Knowledge Alignment:** Đã hoàn thành 100% (10/10 test cases passed).
   2. **Phase 2: Chat Intent, Safety Guardrails & HITL Interactive Governance:** Đã hoàn thành 100% (9/9 test cases passed).
   3. **Phase 3: End-to-End Daily Digest & Management Reporting:** Đã hoàn thành 100% (9/9 test cases passed).
-  4. **Phase 4: Hybrid BYOK & Onboarding Screen Guide (Production Deployment Stack):** Đã hoàn thành 100% (12/12 test cases passed).
-- **Status:** TẤT CẢ 4 PHASES HOÀN TẤT 100%. TOÀN BỘ 40/40 TEST CASES PASSED TRONG 2.39S. HỆ THỐNG SẴN SÀNG TRIỂN KHAI SẢN XUẤT 1-CLICK.
+  4. **Phase 4: Hybrid BYOK, Auto-Provision Lark Base & Onboarding Screen Guide:** Đã hoàn thành 100% (18/18 test cases passed).
+  5. **Nâng cấp Multi-Provider LLM & Apple Minimalist UI:** Hỗ trợ ChatGPT, Anthropic, Google, và Custom (OpenAI-compatible), timeout tùy chỉnh, base URL tùy biến, Initializing Screen mượt mà và loại bỏ 100% emoji khỏi giao diện.
+- **Status:** TẤT CẢ CÁC PHASES VÀ NÂNG CẤP HOÀN TẤT 100%. TOÀN BỘ 52/52 TEST CASES PASSED TRONG 3.37S. DOCKER PRODUCTION CONTAINER ĐÃ REBUILD VÀ DEPLOYED THÀNH CÔNG.
 
 ## What is confirmed
-- **Toàn bộ 40/40 Unit & Integration Tests Đều Đạt 100% (PASSED):**
+- **Toàn bộ 52/52 Unit & Integration Tests Đều Đạt 100% (PASSED):**
   * **Phase 1 (10 TCs):** Xử lý tài liệu đa định dạng, thư mục lồng nhau, nhận diện OCR link DocX/Wiki.
   * **Phase 2 (9 TCs):** Lọc tin rác JEV 0ms, gom tin bàn việc vào Staging, bảo mật vùng cấm ngân sách, Strict HITL nhóm Tuyệt mật, phân quyền Claims, thu hồi tin 4 tầng.
   * **Phase 3 (9 TCs):** Daily Digest 3 nhánh tri thức, Full Provenance & Applink, Context Continuation K-1 sang K, Master Daily Digest đa dự án, duyệt 1-chạm Interactive Card V2, WeKnora Entity-Centric Sync.
-  * **BYOK & Onboarding (12 TCs):** Mã hóa AES-256 Fernet, Masking khóa, Phân cấp khóa 3-Tier, Live Latency Ping test, Stepper Wizard 4 bước, Interactive Card chào mừng, điều hướng lệnh `cài đặt`/`config`/`byok`.
+  * **BYOK & Screen Guide (18 TCs):** Mã hóa AES-256 Fernet, Masking khóa, Phân cấp khóa 3-Tier, Live Latency Ping test, Stepper Wizard 4 bước, Interactive Card chào mừng, In-App OAuth Popup & PostMessage, Multi-Provider LLM (ChatGPT, Anthropic, Google, Custom), Custom Base URL & Timeout.
+  * **Auto-Provisioning Lark Base (6 TCs):** Tự động tạo Bitable qua OpenAPI, cấu hình bảng Chat Scopes & Policies, nạp 3 dự án mẫu, cấp quyền Owner cho Sếp, phân giải động và fallback về `.env`.
 - **Hạ tầng Sản xuất Hoàn thiện:**
   * Multi-stage `server/Dockerfile` sử dụng `uv` và user bảo mật `appuser`.
   * `docker-compose.prod.yml` cách ly mạng `hilark-network`, Zero Ingress Attack Surface qua Lark WebSocket.

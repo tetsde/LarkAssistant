@@ -42,6 +42,7 @@ async def login_page(
     request: Request,
     redirect: bool = Query(False, description="Nếu True sẽ tự động chuyển hướng sang Lark"),
     redirect_uri: Optional[str] = Query(None, description="Tùy chỉnh redirect_uri"),
+    source: Optional[str] = Query(None, description="Nguồn gọi: wizard, popup..."),
 ):
     """
     Tạo link ủy quyền OAuth2 của Lark.
@@ -53,7 +54,8 @@ async def login_page(
         base_url = str(request.base_url).rstrip("/")
         effective_redirect_uri = f"{base_url}/auth/lark/callback"
 
-    auth_url = token_service.get_authorize_url(redirect_uri=effective_redirect_uri)
+    state_val = f"wizard_{source}" if source == "wizard" else "hilark_oauth"
+    auth_url = token_service.get_authorize_url(redirect_uri=effective_redirect_uri, state=state_val)
 
     if redirect:
         return RedirectResponse(url=auth_url)
@@ -262,13 +264,94 @@ async def oauth_callback(
     if format == "json" or (accept and "application/json" in accept):
         return JSONResponse(content=result)
 
-    # 3. Trả về giao diện HTML hoàn chỉnh, rực rỡ với Refresh Token cho Sếp
     user_name = result.get("user_name", "User")
     open_id = result.get("open_id", "")
     access_token = result.get("access_token", "")
     refresh_token = result.get("refresh_token", "")
     expires_at = result.get("expires_at_readable", "")
     refresh_expires_at = result.get("refresh_expires_at_readable", "")
+
+    # 2.5 Nếu request đến từ Screen Guide Wizard (state chứa 'wizard' hoặc param source=wizard)
+    is_wizard_source = bool((state and "wizard" in state) or request.query_params.get("source") == "wizard")
+    if is_wizard_source:
+        return HTMLResponse(
+            content=f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HiLark — Ủy Quyền Thành Công</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {{
+            font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+            background: #090d16;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 24px;
+            text-align: center;
+        }}
+        .card {{
+            background: rgba(30, 41, 59, 0.85);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            border-radius: 20px;
+            padding: 32px 24px;
+            max-width: 420px;
+            width: 100%;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+        }}
+        .btn {{
+            display: inline-block;
+            margin-top: 18px;
+            background: #10b981;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div style="font-size: 48px; margin-bottom: 12px;">🎉</div>
+        <h2 style="color: #34d399; margin-bottom: 8px;">Ủy Quyền Thành Công!</h2>
+        <p style="color: #94a3b8; font-size: 14px; line-height: 1.5;">
+            Đã kết nối tài khoản đại diện <strong>{user_name}</strong>.<br/>
+            Cửa sổ này sẽ tự đóng lại để quay về Trình thiết lập...
+        </p>
+        <button onclick="finishAuth()" class="btn">Quay lại Wizard</button>
+    </div>
+    <script>
+        function finishAuth() {{
+            if (window.opener) {{
+                try {{
+                    window.opener.postMessage({{
+                        type: 'LARK_AUTH_SUCCESS',
+                        user_name: '{user_name}',
+                        open_id: '{open_id}'
+                    }}, '*');
+                }} catch (e) {{}}
+                window.close();
+            }} else {{
+                window.location.href = '/onboarding/wizard?step=4&auth=success';
+            }}
+        }}
+        setTimeout(finishAuth, 1200);
+    </script>
+</body>
+</html>"""
+        )
+
+    # 3. Trả về giao diện HTML hoàn chỉnh, rực rỡ với Refresh Token cho Sếp
 
     html_content = f"""<!DOCTYPE html>
 <html lang="vi">

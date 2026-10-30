@@ -8,10 +8,10 @@ env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__
 load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
-    WEKNORA_API_KEY: str = os.getenv("api_weknora", "")
-    BASE_URL: str = os.getenv("base_url", "http://localhost/api/v1")
-    JEV_API_KEY: str = os.getenv("jev_api", "")
-    WEKNORA_DATASET_ID: str = os.getenv("dataset_id", "")
+    WEKNORA_API_KEY: str = os.getenv("WEKNORA_API_KEY") or os.getenv("api_weknora", "")
+    BASE_URL: str = os.getenv("BASE_URL") or os.getenv("base_url", "http://localhost/api/v1")
+    JEV_API_KEY: str = os.getenv("JEV_API_KEY") or os.getenv("jev_api", "")
+    WEKNORA_DATASET_ID: str = os.getenv("WEKNORA_DATASET_ID") or os.getenv("dataset_id", "")
     WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
     WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "d715d7ee-1853-4bd9-b22d-779b1ec1e28f")
     WEKNORA_POLICY_DATASOURCE_ID: str = os.getenv("policy_datasource_id") or os.getenv("WEKNORA_POLICY_DATASOURCE_ID", "c853ff6e-68c7-4767-998f-df8eb7820b1d")
@@ -25,8 +25,8 @@ class Settings:
         return self.GEMINI_API_KEY
 
     # MongoDB Settings
-    MONGO_URL: str = os.getenv("mongo_url", "mongodb://localhost:27017")
-    MONGO_DB: str = os.getenv("mongo_db", "LarkAssistant")
+    MONGO_URL: str = os.getenv("MONGO_URL") or os.getenv("mongo_url", "mongodb://localhost:27017")
+    MONGO_DB: str = os.getenv("MONGO_DB") or os.getenv("mongo_db", "LarkAssistant")
     MONGO_MEMORY_COLLECTION: str = os.getenv("mongo_memory_collection", "memories")
     MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
     MONGO_STAGING_COLLECTION: str = os.getenv("mongo_staging_collection", "conversation_staging")
@@ -37,6 +37,7 @@ class Settings:
     MONGO_AUTH_COLLECTION: str = os.getenv("mongo_auth_collection", "lark_auth")
     MONGO_TELEMETRY_COLLECTION: str = os.getenv("mongo_telemetry_collection", "cost_telemetry")
     MONGO_USER_SETTINGS_COLLECTION: str = os.getenv("mongo_user_settings_collection", "user_settings")
+    MONGO_SYSTEM_CONFIG_COLLECTION: str = os.getenv("mongo_system_config_collection", "system_config")
     APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
     LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "http://localhost:8000/auth/lark/callback")
     ENCRYPTION_SECRET_KEY: str = os.getenv("ENCRYPTION_SECRET_KEY", "hilark-secret-key-32bytes-aes256!!")

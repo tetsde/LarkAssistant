@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """Client giao tiếp với Gemini REST API sử dụng httpx."""
+    """Client giao tiếp với LLM API (Google Gemini, OpenAI ChatGPT, Anthropic Claude, Custom) sử dụng httpx."""
 
     DEFAULT_MODELS: List[str] = [
         "gemini-2.5-flash",
@@ -42,16 +42,44 @@ class LLMClient:
         api_key: Optional[str] = None,
         default_models: Optional[List[str]] = None,
         timeout: float = 60.0,
+        provider: str = "google",
+        base_url: Optional[str] = None,
+        model_name: Optional[str] = None,
     ):
         self.api_key = api_key
-        self.default_models = default_models or self.DEFAULT_MODELS
+        self.provider = (provider or "google").strip().lower()
+        self.base_url = base_url
+        self.model_name = model_name
         self.timeout = timeout
+        if default_models:
+            self.default_models = default_models
+        elif self.model_name:
+            self.default_models = [self.model_name]
+        elif self.provider in ("openai", "chatgpt"):
+            self.default_models = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]
+        elif self.provider == "anthropic":
+            self.default_models = ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+        elif self.provider == "custom":
+            self.default_models = [self.model_name or "gpt-3.5-turbo"]
+        else:
+            self.default_models = self.DEFAULT_MODELS
 
     def _ensure_api_key(self) -> str:
         """Lazy validation: lấy API key từ tham số hoặc cấu hình hệ thống."""
+        if self.api_key:
+            return self.api_key
+
+        if self.provider in ("openai", "chatgpt"):
+            key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
+            if key:
+                return key
+        elif self.provider == "anthropic":
+            key = os.getenv("ANTHROPIC_API_KEY") or getattr(settings, "ANTHROPIC_API_KEY", None)
+            if key:
+                return key
+
         key = (
-            self.api_key
-            or getattr(settings, "GEMINI_API_KEY", None)
+            getattr(settings, "GEMINI_API_KEY", None)
             or getattr(settings, "gemini_api", None)
             or os.getenv("GEMINI_API_KEY")
             or os.getenv("gemini_api")
@@ -64,7 +92,8 @@ class LLMClient:
 
     def _get_url(self, model_name: str) -> str:
         key = self._ensure_api_key()
-        return f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+        b_url = (self.base_url or "https://generativelanguage.googleapis.com").rstrip("/")
+        return f"{b_url}/v1beta/models/{model_name}:generateContent?key={key}"
 
     def _build_payload(
         self,
@@ -74,7 +103,7 @@ class LLMClient:
         thinking_budget: int = 0,
         is_json: bool = False,
     ) -> Dict[str, Any]:
-        """Tạo payload cấu hình chuẩn hóa cho Gemini API."""
+        """Tạo payload cấu hình chuẩn hóa cho Gemini API và Multi-provider."""
         gen_config: Dict[str, Any] = {
             "temperature": temperature,
             "maxOutputTokens": max_output_tokens,
@@ -86,6 +115,10 @@ class LLMClient:
         return {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": gen_config,
+            "_raw_prompt": prompt,
+            "_is_json": is_json,
+            "_temperature": temperature,
+            "_max_output_tokens": max_output_tokens,
         }
 
     def _extract_text_from_response(self, resp: httpx.Response, model: str) -> Optional[str]:
@@ -131,18 +164,64 @@ class LLMClient:
     # --------------------------------------------------------------------------
 
     async def _aexecute(self, payload: Dict[str, Any], model_name: Optional[str] = None) -> str:
-        """Thực thi gọi Gemini API bất đồng bộ (Native Async) kèm cơ chế tự động fallback model."""
+        """Thực thi gọi LLM API bất đồng bộ (Native Async) kèm cơ chế tự động fallback model."""
         models_to_try = [model_name] if model_name else self.default_models
         last_error = None
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for model in models_to_try:
-                url = self._get_url(model)
                 try:
-                    resp = await client.post(url, json=payload)
-                    text = self._extract_text_from_response(resp, model)
-                    if text is not None:
-                        return text
+                    if self.provider in ("openai", "chatgpt", "custom"):
+                        b_url = (self.base_url or "https://api.openai.com/v1").rstrip("/")
+                        url = f"{b_url}/chat/completions" if not b_url.endswith("/chat/completions") else b_url
+                        headers = {
+                            "Authorization": f"Bearer {self._ensure_api_key()}",
+                            "Content-Type": "application/json",
+                        }
+                        oai_payload: Dict[str, Any] = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": payload.get("_raw_prompt", "")}],
+                            "temperature": payload.get("_temperature", 0.2),
+                            "max_tokens": payload.get("_max_output_tokens", 4096),
+                        }
+                        if payload.get("_is_json"):
+                            oai_payload["response_format"] = {"type": "json_object"}
+                        resp = await client.post(url, headers=headers, json=oai_payload)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            choices = data.get("choices", [])
+                            if choices:
+                                return choices[0].get("message", {}).get("content", "")
+                            return ""
+                    elif self.provider == "anthropic":
+                        b_url = (self.base_url or "https://api.anthropic.com/v1").rstrip("/")
+                        url = f"{b_url}/messages" if b_url.endswith("/v1") else f"{b_url}/v1/messages"
+                        headers = {
+                            "x-api-key": self._ensure_api_key(),
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json",
+                        }
+                        ant_payload: Dict[str, Any] = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": payload.get("_raw_prompt", "")}],
+                            "max_tokens": payload.get("_max_output_tokens", 4096),
+                            "temperature": payload.get("_temperature", 0.2),
+                        }
+                        if payload.get("_is_json"):
+                            ant_payload["system"] = "You must output strictly valid JSON only. Do not include markdown code block syntax or explanations."
+                        resp = await client.post(url, headers=headers, json=ant_payload)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            content = data.get("content", [])
+                            if content:
+                                return content[0].get("text", "")
+                            return ""
+                    else:  # Google Gemini
+                        url = self._get_url(model)
+                        resp = await client.post(url, json=payload)
+                        text = self._extract_text_from_response(resp, model)
+                        if text is not None:
+                            return text
 
                     if resp.status_code in (404, 400):
                         last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
@@ -156,24 +235,70 @@ class LLMClient:
                         resp.raise_for_status()
                 except Exception as e:
                     last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
+                    logger.warning(f"Lỗi khi gọi model {model} ({self.provider}): {e}")
                     continue
 
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        raise RuntimeError(f"Không thể gọi LLM API ({self.provider}) qua các model {models_to_try}. Lỗi cuối: {last_error}")
 
     def _execute(self, payload: Dict[str, Any], model_name: Optional[str] = None) -> str:
-        """Thực thi gọi Gemini API đồng bộ (Sync) kèm cơ chế tự động fallback model."""
+        """Thực thi gọi LLM API đồng bộ (Sync) kèm cơ chế tự động fallback model."""
         models_to_try = [model_name] if model_name else self.default_models
         last_error = None
 
         with httpx.Client(timeout=self.timeout) as client:
             for model in models_to_try:
-                url = self._get_url(model)
                 try:
-                    resp = client.post(url, json=payload)
-                    text = self._extract_text_from_response(resp, model)
-                    if text is not None:
-                        return text
+                    if self.provider in ("openai", "chatgpt", "custom"):
+                        b_url = (self.base_url or "https://api.openai.com/v1").rstrip("/")
+                        url = f"{b_url}/chat/completions" if not b_url.endswith("/chat/completions") else b_url
+                        headers = {
+                            "Authorization": f"Bearer {self._ensure_api_key()}",
+                            "Content-Type": "application/json",
+                        }
+                        oai_payload: Dict[str, Any] = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": payload.get("_raw_prompt", "")}],
+                            "temperature": payload.get("_temperature", 0.2),
+                            "max_tokens": payload.get("_max_output_tokens", 4096),
+                        }
+                        if payload.get("_is_json"):
+                            oai_payload["response_format"] = {"type": "json_object"}
+                        resp = client.post(url, headers=headers, json=oai_payload)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            choices = data.get("choices", [])
+                            if choices:
+                                return choices[0].get("message", {}).get("content", "")
+                            return ""
+                    elif self.provider == "anthropic":
+                        b_url = (self.base_url or "https://api.anthropic.com/v1").rstrip("/")
+                        url = f"{b_url}/messages" if b_url.endswith("/v1") else f"{b_url}/v1/messages"
+                        headers = {
+                            "x-api-key": self._ensure_api_key(),
+                            "anthropic-version": "2023-06-01",
+                            "Content-Type": "application/json",
+                        }
+                        ant_payload: Dict[str, Any] = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": payload.get("_raw_prompt", "")}],
+                            "max_tokens": payload.get("_max_output_tokens", 4096),
+                            "temperature": payload.get("_temperature", 0.2),
+                        }
+                        if payload.get("_is_json"):
+                            ant_payload["system"] = "You must output strictly valid JSON only. Do not include markdown code block syntax or explanations."
+                        resp = client.post(url, headers=headers, json=ant_payload)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            content = data.get("content", [])
+                            if content:
+                                return content[0].get("text", "")
+                            return ""
+                    else:  # Google Gemini
+                        url = self._get_url(model)
+                        resp = client.post(url, json=payload)
+                        text = self._extract_text_from_response(resp, model)
+                        if text is not None:
+                            return text
 
                     if resp.status_code in (404, 400):
                         last_error = f"Model {model} không khả dụng (status {resp.status_code}): {resp.text}"
@@ -187,10 +312,10 @@ class LLMClient:
                         resp.raise_for_status()
                 except Exception as e:
                     last_error = e
-                    logger.warning(f"Lỗi khi gọi model {model}: {e}")
+                    logger.warning(f"Lỗi khi gọi model {model} ({self.provider}): {e}")
                     continue
 
-        raise RuntimeError(f"Không thể gọi Gemini API qua các model {models_to_try}. Lỗi cuối: {last_error}")
+        raise RuntimeError(f"Không thể gọi LLM API ({self.provider}) qua các model {models_to_try}. Lỗi cuối: {last_error}")
 
     # --------------------------------------------------------------------------
     # 1. GENERATE JSON (DÀNH CHO ENTITY / FACT EXTRACTION VÀ DỮ LIỆU CÓ CẤU TRÚC)

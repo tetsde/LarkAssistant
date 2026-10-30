@@ -106,6 +106,12 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("open_id", ASCENDING)], unique=True, name="idx_user_settings_open_id_unique"),
             IndexModel([("updated_at", DESCENDING)], name="idx_user_settings_updated_at"),
         ],
+
+        # 11. SYSTEM CONFIG & AUTO PROVISIONED BITABLE
+        getattr(settings, "MONGO_SYSTEM_CONFIG_COLLECTION", "system_config"): [
+            IndexModel([("config_key", ASCENDING)], unique=True, name="idx_system_config_key_unique"),
+            IndexModel([("tenant_key", ASCENDING)], name="idx_system_config_tenant"),
+        ],
     }
 
 

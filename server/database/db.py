@@ -142,6 +142,12 @@ def get_user_settings_collection() -> AsyncIOMotorCollection:
     return db[getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings")]
 
 
+def get_system_config_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Cấu hình Hệ thống, Bitable App Token & Table IDs."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_SYSTEM_CONFIG_COLLECTION", "system_config")]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client

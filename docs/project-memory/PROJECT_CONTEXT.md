@@ -16,7 +16,7 @@
   - Lark Open Platform (`lark-oapi` >= 1.7.3)
   - WeKnora Hybrid RAG API
   - JEV Intent Classifier API (System 1)
-  - Google Gemini API (LLM generation)
+  - Multi-Provider LLM Engine (Google Gemini, OpenAI ChatGPT, Anthropic Claude, Custom OpenAI-Compatible)
 - **Build/package manager:** `uv`
 - **Libraries hỗ trợ:** `flashtext` (lọc từ khóa cấm), `httpx` (HTTP client), `python-docx`, `reportlab` (xử lý tài liệu), `python-dotenv`
 
