@@ -100,6 +100,12 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("service", ASCENDING), ("operation", ASCENDING)], name="idx_telemetry_svc_op"),
             IndexModel([("chat_id", ASCENDING)], sparse=True, name="idx_telemetry_chat_id"),
         ],
+
+        # 10. USER SETTINGS & BYOK (Cấu hình người dùng & API Key cá nhân)
+        getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings"): [
+            IndexModel([("open_id", ASCENDING)], unique=True, name="idx_user_settings_open_id_unique"),
+            IndexModel([("updated_at", DESCENDING)], name="idx_user_settings_updated_at"),
+        ],
     }
 
 

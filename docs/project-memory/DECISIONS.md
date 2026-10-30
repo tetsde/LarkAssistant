@@ -19,6 +19,7 @@
 | EDL-0014 | Kiến trúc Decorator Đo Lường Chi Phí LLM & JEV (Cost Telemetry & Tracking Decorators) | Approved | Medium | 2026-10-27 | Local Record | `server/decorators/`, `server/services/ai/gemini_client.py`, `server/services/ai/jev_classifier.py`, `server/database/indexes.py` |
 | EDL-0015 | Kiến trúc Xử lý Thu Hồi Tin Nhắn (Message Recall Architecture & 4-Tier Cascade Sync) | Approved | High | 2026-10-28 | Local Record | `server/services/lark/handlers/recall_handler.py`, `server/services/lark/messenger.py`, `server/services/lark/dispatcher.py`, `server/database/db.py`, `server/services/workflows/digest_workflow.py` |
 | EDL-0016 | Kiến trúc Nạp Tài Liệu Thư Mục Đám Mây Lark Drive (Folder Ingestion & Recursive Traversal Pipeline) | Approved | High | 2026-10-29 | Local Record | `server/services/lark/client.py`, `server/services/knowledge/doc_parser.py`, `server/services/knowledge/chat_scopes.py`, `server/services/lark/handlers/document_handler.py`, `server/routers/scope.py`, `server/tests/final_test/test_folder_doc_ingestion.py` |
+| EDL-0017 | Kiến trúc Hybrid BYOK (AES-256 Fernet), Lark Modal Webview Screen Guide & Cụm Triển khai Sản xuất Zero-Ingress | Approved | High | 2026-10-30 | Local Record | `server/services/user_settings_service.py`, `server/routers/onboarding.py`, `server/services/lark/card_builder.py`, `server/Dockerfile`, `docker-compose.prod.yml`, `deploy.sh`, `docs/DEPLOYMENT_GUIDE.md` |
 
 
 ## Rules

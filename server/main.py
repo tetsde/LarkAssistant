@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from core.http_client import init_http_client, close_http_client
 from database.db import ensure_database_indexes, close_mongo_connections
-from routers import health, chat, lark, digest, scope, policy, auth
+from routers import health, chat, lark, digest, scope, policy, auth, onboarding
 from services.bot_service import start_bot_service, stop_bot_service
 from services.auth_service import token_service
 
@@ -46,6 +46,7 @@ app.include_router(digest.router)
 app.include_router(scope.router)
 app.include_router(policy.router)
 app.include_router(auth.router)
+app.include_router(onboarding.router)
 
 
 

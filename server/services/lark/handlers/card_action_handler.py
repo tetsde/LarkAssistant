@@ -1,3 +1,4 @@
+
 """
 Card Action Handler for Lark Interactive Cards
 ===============================================
@@ -99,12 +100,14 @@ async def handle_card_action(
     if action == "approve_draft":
         ok, detail, draft, _ = await draft_svc.send_latest(open_id)
         if ok and draft:
+            resp_name = getattr(draft, "responder_name", None) or (draft.get("responder_name") if isinstance(draft, dict) else None) or "User"
+            appr_content = getattr(draft, "approved_content", None) or (draft.get("approved_content") if isinstance(draft, dict) else None) or getattr(draft, "draft_answer", None) or (draft.get("draft_answer") if isinstance(draft, dict) else None) or ""
             updated_card = build_updated_status_card(
                 title="Bản nháp câu trả lời",
                 status_message="Đã duyệt và gửi câu trả lời vào nhóm thảo luận",
                 detail_lines=[
-                    f"Người trả lời: {draft.responder_name or 'User'}",
-                    f"Nội dung đã gửi: \"{draft.approved_content}\"",
+                    f"Người trả lời: {resp_name}",
+                    f"Nội dung đã gửi: \"{appr_content}\"",
                 ],
                 template="green",
             )
@@ -119,11 +122,12 @@ async def handle_card_action(
     if action == "discard_draft":
         draft = await draft_svc.discard_latest(open_id)
         if draft:
+            draft_query = getattr(draft, "query", None) or (draft.get("query") if isinstance(draft, dict) else "") or ""
             updated_card = build_updated_status_card(
                 title="Bản nháp câu trả lời",
                 status_message="Đã hủy bỏ bản nháp",
                 detail_lines=[
-                    f"Câu hỏi: \"{draft.query}\"",
+                    f"Câu hỏi: \"{draft_query}\"",
                     "Không có nội dung nào được gửi vào nhóm thảo luận.",
                 ],
                 template="grey",
@@ -337,6 +341,9 @@ async def handle_card_action(
             )
             return True, "Đã gửi tóm tắt ngắn vào tin nhắn", None
         return False, "Không tìm thấy báo cáo để tóm tắt", None
+
+    if action in ("open_onboarding", "open_onboarding_web"):
+        return True, "Đang mở Trình hướng dẫn thiết lập HiLark...", None
 
     return False, f"Chưa hỗ trợ thao tác '{action}'", None
 

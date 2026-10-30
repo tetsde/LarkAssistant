@@ -1,0 +1,45 @@
+# Python byte-code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+.pytest_cache/
+.coverage
+.coverage.*
+*.cover
+nosetests.xml
+coverage.xml
+.cache/
+
+# Git and OS metadata
+.git/
+.gitignore
+.DS_Store
+
+# Environment and sensitive files
+.env*
+
+# Tests and QA suites
+tests/
+
+# Documentation & static media assets (tránh đóng gói vào container)
+docs/
+*.md
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.svg
+
+# Office & Sample documents
+sample_docs/
+*.docx
+*.pdf
+*.xlsx
+*.pptx
+
+# Local scripts & test configs
+deploy.sh
+pytest.ini
+*.log

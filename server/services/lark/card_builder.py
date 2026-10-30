@@ -880,3 +880,120 @@ build_claim_card = build_claim_approval_card
 build_digest_card = build_digest_approval_card
 build_draft_approval_card = build_draft_card
 
+
+def build_onboarding_welcome_card(
+    open_id: str,
+    user_name: str = "",
+    base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Xây dựng Thẻ chào mừng & Điều hướng thiết lập cá nhân hóa (Onboarding Screen Guide).
+    Bao gồm nút bấm mở Webview Dialog (Popup Modal) trực tiếp trong ứng dụng Lark
+    và liên kết dự phòng qua trình duyệt.
+    """
+    import urllib.parse
+    from core.config import settings
+
+    resolved_base = (base_url or settings.APP_BASE_URL).rstrip("/")
+    display_name = user_name.strip() if user_name else "bạn"
+    wizard_url = f"{resolved_base}/onboarding/wizard?open_id={open_id}&user_name={urllib.parse.quote(display_name)}"
+    
+    # Chuỗi mở Modal Webview tiêu chuẩn của Lark Applink
+    applink_url = f"https://applink.larksuite.com/client/web_url/open?url={urllib.parse.quote(wizard_url)}&mode=window&height=660&width=560"
+
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**Xin chào {display_name}!**\n\n"
+                    "Chào mừng bạn đến với **Trợ lý Doanh nghiệp HiLark**. "
+                    "Để cá nhân hóa trải nghiệm và kích hoạt đầy đủ các tính năng thông minh, "
+                    "bạn có thể thiết lập nhanh qua **Screen Guide** (4 bước ngắn gọn):"
+                ),
+            },
+        },
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    "• **AI Engine & BYOK:** Tùy chọn sử dụng Google Gemini API Key riêng hoặc dùng chung hệ thống.\n"
+                    "• **Daily Digest & HITL:** Cấu hình khung giờ nhận báo cáo tóm tắt và phê duyệt tri thức.\n"
+                    "• **Lark OAuth 1-Click:** Ủy quyền truy cập tài liệu và nhóm an toàn theo quyền hạn của bạn."
+                ),
+            },
+        },
+        {
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": "Mọi thông tin cá nhân và khóa API của bạn đều được mã hóa chuẩn quân đội AES-256 bảo mật tuyệt đối.",
+                }
+            ],
+        },
+        {
+            "tag": "hr",
+        },
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Bắt đầu thiết lập (Screen Guide)",
+                    },
+                    "type": "primary",
+                    "url": applink_url,
+                    "multi_url": {
+                        "url": applink_url,
+                        "pc_url": applink_url,
+                        "android_url": applink_url,
+                        "ios_url": applink_url,
+                    },
+                    "value": {
+                        "action": "open_onboarding",
+                        "open_id": open_id,
+                    },
+                },
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Mở bằng trình duyệt",
+                    },
+                    "type": "default",
+                    "url": wizard_url,
+                    "multi_url": {
+                        "url": wizard_url,
+                        "pc_url": wizard_url,
+                        "android_url": wizard_url,
+                        "ios_url": wizard_url,
+                    },
+                    "value": {
+                        "action": "open_onboarding_web",
+                        "open_id": open_id,
+                    },
+                },
+            ],
+        },
+    ]
+
+    return {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "indigo",
+            "title": {
+                "tag": "plain_text",
+                "content": "Trung tâm Thiết lập & Cấu hình HiLark",
+            },
+        },
+        "elements": elements,
+    }
+
+

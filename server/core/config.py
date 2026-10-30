@@ -36,7 +36,10 @@ class Settings:
     MONGO_MASTER_DIGEST_COLLECTION: str = os.getenv("mongo_master_digest_collection", "master_daily_digests")
     MONGO_AUTH_COLLECTION: str = os.getenv("mongo_auth_collection", "lark_auth")
     MONGO_TELEMETRY_COLLECTION: str = os.getenv("mongo_telemetry_collection", "cost_telemetry")
+    MONGO_USER_SETTINGS_COLLECTION: str = os.getenv("mongo_user_settings_collection", "user_settings")
+    APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
     LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "http://localhost:8000/auth/lark/callback")
+    ENCRYPTION_SECRET_KEY: str = os.getenv("ENCRYPTION_SECRET_KEY", "hilark-secret-key-32bytes-aes256!!")
 
     # Lark Settings
     LARK_APP_ID: str = os.getenv("app_id") or os.getenv("LARK_APP_ID", "")

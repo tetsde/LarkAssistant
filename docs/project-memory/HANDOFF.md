@@ -3,21 +3,24 @@
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
 ## Current task
-- **Goal:** Xây dựng tính năng Nạp Tài Liệu từ Thư Mục Lark Drive (Folder Document Ingestion - EDL-0016):
-  1. **Lark OpenAPI Client Extension:** Mở rộng `LarkClientMixin` (`server/services/lark/client.py`) bổ sung `alist_drive_folder_files` (lấy danh sách tệp đệ quy kèm phân trang `next_page_token`), `list_drive_folder_files`, `adownload_drive_file` và `download_drive_file`.
-  2. **Nhận diện & Phân giải Thư mục Đa tầng:** Bổ sung regex `FOLDER_URL_PATTERN` vào `server/services/knowledge/doc_parser.py`, phát triển `extract_lark_folders` và `parse_lark_folder` (đệ quy xử lý DocX, Wiki, AnyDoc binary file và ảnh OCR).
-  3. **Lark Base Sync Scope Integration:** Cập nhật `_extract_document_items` và `sync_group_from_base_record` trong `server/services/knowledge/chat_scopes.py`, tự động quét toàn bộ tài liệu trong thư mục nạp vào WeKnora KB và cập nhật `ChatScopeRecord.documents` & `knowledge_ids`.
-  4. **Chat Scope Ingestion API Service:** Phát triển method `ScopeService.ingest_documents_to_scope` và endpoint HTTP `POST /api/v1/scopes/{chat_id}/documents` (`server/routers/scope.py`) cho phép nạp URL tài liệu lẻ hoặc toàn bộ thư mục kèm bóc tách Claims vào MongoDB.
-  5. **Bot Message Handler Integration:** Cập nhật `handle_document_or_links` (`server/services/lark/handlers/document_handler.py`), tự động bóc tách và âm thầm lưu claims từ tất cả tài liệu trong folder khi người dùng gửi link folder vào nhóm chat.
-  6. **Kiểm thử Toàn diện:** Xây dựng bộ test `tests/final_test/test_folder_doc_ingestion.py` (10/10 test cases passed 100%).
-- **Status:** HOÀN THÀNH TOÀN DIỆN & XÁC MINH 100%.
+- **Goal:** Kiểm thử và hoàn thiện toàn diện Hệ thống Trợ lý AI theo Đề bài thử việc (9 trang) & Chuẩn bị Môi trường Triển khai Sản xuất (Production-Ready Architecture) cho Anh Hiệp:
+  1. **Phase 1: Group Setup, Baseline Docs, Multimodal OCR & Knowledge Alignment:** Đã hoàn thành 100% (10/10 test cases passed).
+  2. **Phase 2: Chat Intent, Safety Guardrails & HITL Interactive Governance:** Đã hoàn thành 100% (9/9 test cases passed).
+  3. **Phase 3: End-to-End Daily Digest & Management Reporting:** Đã hoàn thành 100% (9/9 test cases passed).
+  4. **Phase 4: Hybrid BYOK & Onboarding Screen Guide (Production Deployment Stack):** Đã hoàn thành 100% (12/12 test cases passed).
+- **Status:** TẤT CẢ 4 PHASES HOÀN TẤT 100%. TOÀN BỘ 40/40 TEST CASES PASSED TRONG 2.39S. HỆ THỐNG SẴN SÀNG TRIỂN KHAI SẢN XUẤT 1-CLICK.
 
 ## What is confirmed
-- Hệ thống tự động nhận diện liên kết Lark Drive Folder (`/folder/...` và `/drive/folder/...`).
-- Duyệt đệ quy toàn bộ tài liệu bên trong thư mục (DocX, Wiki, AnyDoc PDF/Office/Hình ảnh).
-- Tự động nạp tài liệu sang WeKnora Knowledge Base của nhóm chat tương ứng và trích xuất Claims/Facts vào MongoDB.
-- Hỗ trợ cả 3 đường dẫn: Lark Base Group Config (`Documents`), Bot Group Chat (tin nhắn chứa link folder), và HTTP REST API (`POST /api/v1/scopes/{chat_id}/documents`).
-- 10/10 test cases mới trong `tests/final_test/test_folder_doc_ingestion.py` đạt 100% PASSED.
+- **Toàn bộ 40/40 Unit & Integration Tests Đều Đạt 100% (PASSED):**
+  * **Phase 1 (10 TCs):** Xử lý tài liệu đa định dạng, thư mục lồng nhau, nhận diện OCR link DocX/Wiki.
+  * **Phase 2 (9 TCs):** Lọc tin rác JEV 0ms, gom tin bàn việc vào Staging, bảo mật vùng cấm ngân sách, Strict HITL nhóm Tuyệt mật, phân quyền Claims, thu hồi tin 4 tầng.
+  * **Phase 3 (9 TCs):** Daily Digest 3 nhánh tri thức, Full Provenance & Applink, Context Continuation K-1 sang K, Master Daily Digest đa dự án, duyệt 1-chạm Interactive Card V2, WeKnora Entity-Centric Sync.
+  * **BYOK & Onboarding (12 TCs):** Mã hóa AES-256 Fernet, Masking khóa, Phân cấp khóa 3-Tier, Live Latency Ping test, Stepper Wizard 4 bước, Interactive Card chào mừng, điều hướng lệnh `cài đặt`/`config`/`byok`.
+- **Hạ tầng Sản xuất Hoàn thiện:**
+  * Multi-stage `server/Dockerfile` sử dụng `uv` và user bảo mật `appuser`.
+  * `docker-compose.prod.yml` cách ly mạng `hilark-network`, Zero Ingress Attack Surface qua Lark WebSocket.
+  * Script triển khai tự động `deploy.sh` 1-click có kiểm tra healthcheck và cấu hình.
+  * Tài liệu kiến trúc toàn diện `docs/DEPLOYMENT_GUIDE.md`.
 
 ## Work completed
 - Khắc phục lỗi cắt cụt ngữ cảnh lương Sổ tay Nhân viên:

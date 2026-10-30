@@ -81,7 +81,6 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA H
    - "PHẦN 2: THỰC TẾ CẬP NHẬT & MỆNH ĐỀ ĐỘNG (MONGODB CLAIMS)" chứa các thông tin cập nhật thời gian thực từ hội thoại trao đổi.
    - Nếu có mâu thuẫn giữa "PHẦN 1: TÀI LIỆU DỰ ÁN & VĂN BẢN (WEKNORA)" và "PHẦN 2: CLAIMS", thông tin có trạng thái [CURRENT] trong Claims LUÔN ĐƯỢC ƯU TIÊN TUYỆT ĐỐI.
    - Khi phát hiện thông tin đã thay đổi (ví dụ: chuyển giao người phụ trách, ngân sách thay đổi, deadline điều chỉnh), bạn PHẢI nêu rõ sự thay đổi và quá trình biến động để người dùng nắm bắt (Ví dụ: "Theo tài liệu ban đầu là Nam làm Project Lead, tuy nhiên theo cập nhật mới nhất đã chuyển giao cho Nguyên đảm nhiệm").
-   - Đối với các thông tin có nhãn [PROPOSED] (Đề xuất / Ghi nhận từ biên bản / Chờ duyệt): Trả lời người dùng dựa trên thông tin cập nhật này (nêu rõ đây là ghi nhận sơ bộ/kế hoạch dự kiến). Tuyệt đối không từ chối nếu trong bối cảnh đã có thông tin.
 2. TRUNG THỰC & GROUNDED:
    - Tuyệt đối không suy diễn hoặc bịa đặt thông tin không có trong bối cảnh.
    - Nếu bối cảnh không có dữ liệu để trả lời câu hỏi, hãy lịch sự thông báo rõ rằng hệ thống chưa ghi nhận thông tin này.
@@ -136,10 +135,8 @@ Tin nhắn gửi đi nhân danh tài khoản cá nhân của bạn (User Identit
    - "PHẦN 2: THỰC TẾ CẬP NHẬT & MỆNH ĐỀ ĐỘNG (MONGODB CLAIMS)" chứa các thông tin cập nhật thời gian thực từ hội thoại trao đổi.
    - Nếu có mâu thuẫn giữa "PHẦN 1: TÀI LIỆU (WEKNORA)" và "PHẦN 2: CLAIMS", thông tin có trạng thái [CURRENT] trong Claims LUÔN ĐƯỢC ƯU TIÊN TUYỆT ĐỐI.
    - Khi có thay đổi (deadline, ngân sách, nhân sự phụ trách), hãy giải thích ngắn gọn, tự nhiên như chính bạn đã nắm việc thay đổi đó (Ví dụ: "Dự án này trước đây do Nam phụ trách, nhưng tuần trước mình đã chuyển giao cho Nguyên lead rồi em nhé").
-   - ĐỐI VỚI THÔNG TIN [PROPOSED] (Ghi nhận từ biên bản / Đề xuất / Chờ duyệt): Hãy trả lời người hỏi dựa trên thông tin cập nhật mới nhất này (Ví dụ: "Theo kết quả nghiệm thu Alpha sơ bộ bên mình đạt 11/12 module, hiện còn module cổng thanh toán đang chờ đối tác cấp sandbox", hoặc "Lịch demo dự kiến dời sang 14h00 thứ Sáu ngày 27/11 tại phòng VIP 3 em nhé"). TUYỆT ĐỐI KHÔNG trả lời rằng "anh chưa nắm được" nếu trong bối cảnh đã có thông tin!
 
-4. XỬ LÝ KHI BỐI CẢNH HOÀN TOÀN THIẾU THÔNG TIN:
-   - CHỈ áp dụng câu "anh chưa nắm được số liệu" khi trong CẢ PHẦN 1 và PHẦN 2 HOÀN TOÀN KHÔNG CÓ bất kỳ dữ liệu nào liên quan đến câu hỏi. Nếu đã có dữ liệu trong PHẦN 1 hoặc PHẦN 2, BẮT BUỘC phải trả lời dựa trên dữ liệu đó.
+4. XỬ LÝ KHI BỐI CẢNH THIẾU THÔNG TIN / CHƯA RÕ:
    - Tuyệt đối KHÔNG bịa đặt số liệu hay chính sách không có trong bối cảnh.
    - Đồng thời, KHÔNG trả lời kiểu máy móc ("Hệ thống chưa tìm thấy dữ liệu...").
    - Hãy trả lời thực tế như một người sếp:
@@ -712,12 +709,12 @@ async def process_chat_pipeline(
         logger.info(f"🏛️ [Domain Separation] Câu hỏi Chính sách công ty -> Cấm nạp Project Claims ({len(all_facts)} facts bị loại bỏ).")
         active_claims = [f for f in all_facts if f.get("scope_type") == "global" and f.get("is_policy")]
     else:
-        # 2. Với câu hỏi Dự án: Nạp các facts hiện hành (current) và các facts đề xuất/ghi nhận mới nhất (proposed, uncertain, conflicted).
-        # ContextComposer sẽ tự động phân loại [CURRENT] (quyết định chính thức) và [PROPOSED] (ghi nhận mới/chờ duyệt).
+        # 2. Với câu hỏi Dự án: CHỈ nạp các facts hiện hành đã được phê duyệt chính thức (status == 'current').
+        # Tuyệt đối cấm nạp PROPOSED vào Chat Q&A để chống nói leo và rò rỉ đề xuất chưa duyệt.
         # Đồng thời kiểm soát nghiêm ngặt Chat Scope: Chỉ nạp facts của đúng chat_id / project_tag / global.
         active_claims = [
             f for f in all_facts
-            if f.get("status", "current") in ("current", "proposed", "uncertain", "conflicted")
+            if f.get("status", "current") == "current"
             and (
                 f.get("scope_type") == "global"
                 or (chat_id and f.get("chat_id") == chat_id)
@@ -1028,7 +1025,14 @@ async def process_chat_pipeline(
         scope_context=scope_ctx_data,
     )
 
-    # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh)
+    # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh & BYOK Key Resolver)
+    effective_api_key = None
+    try:
+        from services.user_settings_service import user_settings_service
+        effective_api_key = await user_settings_service.resolve_effective_llm_key(user_id=sender, chat_id=chat_id)
+    except Exception as key_err:
+        logger.debug(f"Không thể resolve BYOK key: {key_err}")
+
     target_user = user_name or (sender if sender and sender not in ("User", "api", "system") else None)
     answer = await _generate_answer(
         query=clean_query,
@@ -1036,6 +1040,7 @@ async def process_chat_pipeline(
         user_name=target_user,
         responder_name=responder_name,
         role=role,
+        api_key=effective_api_key,
     )
 
     # Fallback WeKnora chat nếu LLM answer trống

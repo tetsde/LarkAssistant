@@ -1,0 +1,39 @@
+# Root .dockerignore for HiLark repository
+# ========================================
+
+# Version control & OS
+.git/
+.gitignore
+.DS_Store
+
+# Heavy external directories
+WeKnora/
+Bo_ho_so_3_du_an/
+docs/
+
+# Python environments and caches
+.venv/
+server/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/*.log
+
+# Server docs and test suites
+server/docs/
+server/tests/
+server/sample_docs/
+
+# Media & static assets
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.gif
+**/*.docx
+**/*.pdf
+**/*.xlsx
+
+# Environment files
+.env*
+!.env.production.example
+

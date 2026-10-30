@@ -1,0 +1,85 @@
+# ==============================================================================
+# HiLark Enterprise AI Assistant - Production Docker Compose Stack
+# ==============================================================================
+# Khởi chạy toàn bộ hệ thống sản xuất với mạng nội bộ an toàn (hilark-network).
+# Kết nối liền mạch với WeKnora On-premise Vault & MongoDB nội bộ.
+# ==============================================================================
+
+networks:
+  hilark-network:
+    name: hilark-network
+    driver: bridge
+
+volumes:
+  hilark-mongo-data:
+    name: hilark-mongo-data
+  hilark-logs:
+    name: hilark-logs
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Cơ sở dữ liệu nội bộ HiLark (MongoDB 7.0 Enterprise-ready)
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: hilark-mongodb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - hilark-mongo-data:/data/db
+    networks:
+      - hilark-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ----------------------------------------------------------------------------
+  # 2. HiLark FastAPI Backend & Lark Bot Service
+  # ----------------------------------------------------------------------------
+  hilark-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: hilark/server:latest
+    container_name: hilark-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MONGO_URL=mongodb://mongodb:27017
+      - MONGO_DB=LarkAssistant
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
+      - BASE_URL=${base_url:-http://host.docker.internal:8080/api/v1}
+      - DOCREADER_GRPC_HOST=${DOCREADER_GRPC_HOST:-host.docker.internal}
+      - DOCREADER_GRPC_PORT=${DOCREADER_GRPC_PORT:-50051}
+    volumes:
+      - hilark-logs:/app/logs
+    networks:
+      - hilark-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"

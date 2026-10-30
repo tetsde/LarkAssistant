@@ -136,6 +136,12 @@ def get_telemetry_collection() -> AsyncIOMotorCollection:
     return db[settings.MONGO_TELEMETRY_COLLECTION]
 
 
+def get_user_settings_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ Cấu hình người dùng & BYOK API Key."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings")]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client
