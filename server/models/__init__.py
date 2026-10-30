@@ -39,8 +39,16 @@ from models.docreader import (
     SUPPORTED_DOCUMENT_EXTENSIONS,
     MAX_FILE_SIZE_BYTES,
 )
+from models.onboarding import (
+    TestKeyRequest,
+    SaveSettingsRequest,
+    ProvisionBaseRequest,
+)
 
 __all__ = [
+    "TestKeyRequest",
+    "SaveSettingsRequest",
+    "ProvisionBaseRequest",
     "ChatQueueItem",
     "DocReaderResult",
     "DocParseResult",
