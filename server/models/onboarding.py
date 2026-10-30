@@ -41,3 +41,4 @@ class SaveSettingsRequest(BaseModel):
 class ProvisionBaseRequest(BaseModel):
     """Payload yêu cầu tự động khởi tạo Lark Base Quản trị Doanh nghiệp."""
     admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
+
