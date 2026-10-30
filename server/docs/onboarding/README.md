@@ -81,3 +81,4 @@ flowchart TD
 | **Core Service** | [`server/services/user_settings_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/user_settings_service.py) | Mã hóa/giải mã AES-256, ping test kết nối đa provider, lưu/đọc MongoDB `user_settings`. |
 | **Card Navigation** | [`server/services/lark/card_builder.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/card_builder.py) | Xây dựng Lark Interactive Card điều hướng mở modal qua liên kết Applink. |
 | **Lark Command** | [`server/services/lark/handlers/owner_command_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/owner_command_handler.py) | Bắt lệnh chat của Sếp trong DM 1-1 (`cài đặt`, `config`, `/config`, `byok`) để bắn thẻ mở Wizard. |
+

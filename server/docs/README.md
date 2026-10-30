@@ -138,3 +138,4 @@ cp .env.production.example .env
 - **Giao diện Screen Guide:** `http://localhost:8000/onboarding/wizard`
 - **Swagger API Docs:** `http://localhost:8000/docs`
 - **Kiểm thử tự động:** `cd server && .venv/bin/python -m pytest tests/final_test/ -v` (Đạt 52/52 test cases).
+
