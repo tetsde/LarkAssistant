@@ -9,7 +9,7 @@
   3. **Phase 3: End-to-End Daily Digest & Management Reporting:** Đã hoàn thành 100% (9/9 test cases passed).
   4. **Phase 4: Hybrid BYOK, Auto-Provision Lark Base & Onboarding Screen Guide:** Đã hoàn thành 100% (18/18 test cases passed).
   5. **Nâng cấp Multi-Provider LLM & Apple Minimalist UI:** Hỗ trợ ChatGPT, Anthropic, Google, và Custom (OpenAI-compatible), timeout tùy chỉnh, base URL tùy biến, Initializing Screen mượt mà và loại bỏ 100% emoji khỏi giao diện.
-- **Status:** TẤT CẢ CÁC PHASES VÀ NÂNG CẤP HOÀN TẤT 100%. TOÀN BỘ 52/52 TEST CASES PASSED TRONG 3.37S. DOCKER PRODUCTION CONTAINER ĐÃ REBUILD VÀ DEPLOYED THÀNH CÔNG.
+- **Status:** TẤT CẢ CÁC PHASES VÀ NÂNG CẤP HOÀN TẤT 100%. TOÀN BỘ 52/52 TEST CASES PASSED TRONG 3.37S. DOCKER PRODUCTION CONTAINER ĐÃ REBUILD VÀ DEPLOYED THÀNH CÔNG. TẤT CẢ 3 SƠ ĐỒ KIẾN TRÚC VÀ TÀI LIỆU KỸ THUẬT ĐÃ ĐƯỢC TÁI TẠO ĐỒNG BỘ 100%.
 
 ## What is confirmed
 - **Toàn bộ 52/52 Unit & Integration Tests Đều Đạt 100% (PASSED):**
