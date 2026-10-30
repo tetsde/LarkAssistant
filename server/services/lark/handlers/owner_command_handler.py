@@ -437,9 +437,7 @@ async def handle_owner_dm_command(msg: LarkMessage) -> bool:
     # H. LỆNH CẤU HÌNH & ONBOARDING SCREEN GUIDE: [cài đặt / config / setup / byok / ...]
     # -------------------------------------------------------------------------
     config_keywords = (
-        "cài đặt", "cai dat", "config", "/config", "setup", "/setup",
-        "byok", "onboarding", "hướng dẫn", "huong dan", "help", "/help", "cấu hình", "cau hinh",
-        "start", "/start", "bắt đầu", "bat dau", "get started"
+         "/config", "/setup"
     )
     if any(text_lower == kw or text_lower.startswith(f"{kw} ") for kw in config_keywords):
         from services.lark.card_builder import build_onboarding_welcome_card

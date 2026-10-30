@@ -96,7 +96,7 @@ class UserSettingsService:
         try:
             async with httpx.AsyncClient(timeout=timeout_val) as client:
                 if provider_norm == "google":
-                    model_target = model or "gemini-2.0-flash"
+                    model_target = model or "gemini-flash-latest"
                     b_url = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
                     test_url = f"{b_url}/v1beta/models/{model_target}:generateContent?key={key}"
                     payload = {
