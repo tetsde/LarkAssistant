@@ -23,6 +23,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from core.config import settings
+from database.scoped_query import get_current_tenant_key, async_tenant_context
 from database import (
     get_all_entities as get_mongo_entities,
     get_all_facts as get_mongo_facts,
@@ -186,8 +187,10 @@ async def process_memory_extraction(
     scope_type: str = "chat",
     is_owner: bool = False,
     notify_realtime: bool = False,
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope."""
+    """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope & tenant_key."""
+    eff_tenant = tenant_key or get_current_tenant_key()
     msg_id = f"msg_{uuid.uuid4().hex[:8]}"
 
     _get_entities = _resolve_dep("get_mongo_entities", get_mongo_entities)
@@ -195,8 +198,8 @@ async def process_memory_extraction(
     _save_extraction = _resolve_dep("save_extraction_to_mongo", save_extraction_to_mongo)
 
     try:
-        existing_entities = await _get_entities()
-        existing_facts = await _get_facts(chat_id=chat_id, project_tag=project_tag)
+        existing_entities = await _get_entities(workspace_id=None, tenant_key=eff_tenant)
+        existing_facts = await _get_facts(chat_id=chat_id, project_tag=project_tag, tenant_key=eff_tenant)
     except Exception as e:
         logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
         existing_entities = []
@@ -230,6 +233,7 @@ async def process_memory_extraction(
         chat_id=chat_id,
         project_tag=project_tag,
         scope_type=scope_type,
+        tenant_key=eff_tenant,
     )
 
     new_facts = mongo_saved.get("facts", [])
@@ -472,6 +476,7 @@ async def process_chat_pipeline(
     responder_name: Optional[str] = None,
     role: Optional[str] = None,
     is_owner: bool = False,
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Quy trình xử lý hội thoại toàn diện (Unified Chat Pipeline):
@@ -483,6 +488,7 @@ async def process_chat_pipeline(
          - REPLY_ONLY: Tra cứu WeKnora Chunks + MongoDB Claims -> ContextComposer -> Gemini Grounded QA -> Reply Lark.
          - MEMORY_AND_DRAFT: Lưu memory -> tra cứu context -> soạn draft, chờ chủ nhân duyệt trước khi reply.
     """
+    eff_tenant = tenant_key or get_current_tenant_key()
     _jev = _resolve_dep("jev_service", jev_service)
     _weknora = _resolve_dep("weknora_service", weknora_service)
     _scope = _resolve_dep("scope_service", scope_service)
@@ -527,7 +533,7 @@ async def process_chat_pipeline(
     scope_record = None
     if chat_id:
         try:
-            scope_record = await _scope.get_scope_by_chat_id(chat_id)
+            scope_record = await _scope.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
         except Exception as e:
             logger.warning(f"Lỗi khi tra cứu scope_record cho chat_id={chat_id}: {e}")
 
@@ -663,6 +669,7 @@ async def process_chat_pipeline(
             project_tag=proj_context_name,
             scope_type="chat" if chat_id else "global",
             is_owner=is_owner,
+            tenant_key=eff_tenant,
         )
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
@@ -687,8 +694,9 @@ async def process_chat_pipeline(
         facts_coro = _get_facts(
             chat_id=chat_id,
             project_tag=proj_context_name,
+            tenant_key=eff_tenant,
         )
-        entities_coro = _get_entities(workspace_id=None)
+        entities_coro = _get_entities(workspace_id=None, tenant_key=eff_tenant)
         facts_res, entities_res = await asyncio.gather(facts_coro, entities_coro, return_exceptions=True)
 
         if isinstance(facts_res, list):
@@ -727,7 +735,7 @@ async def process_chat_pipeline(
     chunks = []
     try:
         if not scope_record and chat_id:
-            scope_record = await _scope.get_scope_by_chat_id(chat_id)
+            scope_record = await _scope.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
 
         # 1. Kho dự án chuyên biệt của nhóm chat (chứa tài liệu dự án theo phân quyền)
         project_dataset_id = scope_record.dataset_id if scope_record else (settings.WEKNORA_DATASET_ID or None)

@@ -163,11 +163,24 @@ class LarkBaseService:
     # VALIDATION & AUTHENTICATION HEADERS
     # -------------------------------------------------------------------------
 
-    def get_tenant_access_token(self, force_refresh: bool = False) -> str:
+    def get_tenant_access_token(self, force_refresh: bool = False, tenant_key: Optional[str] = None) -> str:
         """
-        Lấy và tự động cache Bot Tenant Access Token từ Lark Cloud.
-        Token có hiệu lực 2 giờ, tự động làm mới khi gần hết hạn.
+        Lấy và tự động cache Bot Tenant Access Token từ Lark Cloud:
+          - Nếu có tenant_key hoặc IS_ISV_MODE=True: Gọi qua ISVTokenService.
+          - Ngược lại: Gọi endpoint /internal của Custom App (Single-Tenant).
         """
+        if tenant_key or getattr(settings, "IS_ISV_MODE", False):
+            try:
+                from services.auth.isv_token_service import isv_token_service
+                token = isv_token_service.get_tenant_access_token_sync(
+                    tenant_key=tenant_key or "",
+                    force_refresh=force_refresh,
+                )
+                if token:
+                    return token
+            except Exception as e:
+                logger.warning(f"Không thể lấy ISV tenant token, fallback sang internal token: {e}")
+
         now = time.time()
         if not force_refresh and self._tenant_token and (now < self._tenant_token_expires_at - 120):
             return self._tenant_token

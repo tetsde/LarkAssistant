@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
 from database.db import get_chat_scopes_collection
+from database.scoped_query import inject_tenant_filter, get_current_tenant_key
 from models.chat_scope import ChatScopeRecord
 from models.memory import get_vietnam_now_iso
 import sys
@@ -209,13 +210,18 @@ class ScopeService:
             return False
         return open_id.strip() in self.get_admin_open_ids()
 
-    async def get_scope_by_chat_id(self, chat_id: str) -> Optional[ChatScopeRecord]:
-        """Truy vấn bản ghi ChatScopeRecord trong MongoDB theo chat_id."""
+    async def get_scope_by_chat_id(
+        self,
+        chat_id: str,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[ChatScopeRecord]:
+        """Truy vấn bản ghi ChatScopeRecord trong MongoDB theo chat_id có cô lập theo tenant_key."""
         if not chat_id:
             return None
         try:
             coll = _get_active_scopes_col()
-            doc = await coll.find_one({"chat_id": chat_id})
+            query = inject_tenant_filter({"chat_id": chat_id}, tenant_key)
+            doc = await coll.find_one(query)
             if doc:
                 return ChatScopeRecord(**doc)
             return None

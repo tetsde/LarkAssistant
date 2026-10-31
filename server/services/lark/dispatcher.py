@@ -108,6 +108,14 @@ class LarkDispatcherMixin:
         if not msg:
             return None
 
+        # 0. Bóc tách tenant_key từ Header hoặc Sender (EDL-0020 Multi-Tenant)
+        header = getattr(event, "header", None)
+        tenant_key = ""
+        if header:
+            tenant_key = getattr(header, "tenant_key", "") or ""
+        if not tenant_key and sender:
+            tenant_key = getattr(sender, "tenant_key", "") or ""
+
         # 1. Định danh người gửi & Bot detection
         sender_id = ""
         sender_type = sender.sender_type if sender else "user"
@@ -169,6 +177,7 @@ class LarkDispatcherMixin:
             root_id=msg.root_id,
             parent_id=msg.parent_id,
             mentions=mentions_list,
+            tenant_key=tenant_key,
             raw_event=event,
         )
 
@@ -287,17 +296,32 @@ class LarkDispatcherMixin:
         self._dispatch_to_handlers(lark_msg)
 
     def _dispatch_to_handlers(self, lark_msg: LarkMessage) -> None:
-        """Phân phối tin nhắn tới các handlers đã đăng ký."""
+        """Phân phối tin nhắn tới các handlers đã đăng ký (tự động kích hoạt TenantContext nếu có tenant_key)."""
+        tenant_key = getattr(lark_msg, "tenant_key", "")
+
         for handler in self._message_handlers:
             try:
                 if asyncio.iscoroutinefunction(handler):
+                    async def _scoped_runner(h=handler, msg=lark_msg, tk=tenant_key):
+                        if tk:
+                            from database.scoped_query import async_tenant_context
+                            async with async_tenant_context(tk):
+                                await h(msg)
+                        else:
+                            await h(msg)
+
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(handler(lark_msg))
+                        loop.create_task(_scoped_runner())
                     except RuntimeError:
-                        asyncio.run(handler(lark_msg))
+                        asyncio.run(_scoped_runner())
                 else:
-                    handler(lark_msg)
+                    if tenant_key:
+                        from database.scoped_query import tenant_context
+                        with tenant_context(tenant_key):
+                            handler(lark_msg)
+                    else:
+                        handler(lark_msg)
             except Exception as e:
                 logger.error(f"Lỗi khi thực thi message handler {handler.__name__}: {e}", exc_info=True)
 

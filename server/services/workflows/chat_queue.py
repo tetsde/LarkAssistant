@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from core.config import settings
+from database.scoped_query import async_tenant_context
 from models.chat_queue import ChatQueueItem
 from models.lark import LarkMessage
 
@@ -111,6 +112,7 @@ class MessageDebouncer:
             responder_name=responder_name,
             is_owner=last_msg.is_self,
             role=role,
+            tenant_key=getattr(last_msg, "tenant_key", None),
             message_ids=all_ids,
         )
 
@@ -284,18 +286,20 @@ class ChatQueueService:
         print(f"\n⚙️ [QUEUE DISPATCH] Bắt đầu xử lý pipeline cho '{item.user_name}': \"{item.combined_text}\"")
 
         try:
-            result = await process_chat_pipeline(
-                query=item.combined_text,
-                sender=item.sender_id,
-                channel=f"lark_{item.chat_type}",
-                message_id=item.anchor_message_id,
-                chat_id=item.chat_id,
-                reply_to_lark=not item.is_owner,
-                user_name=item.user_name,
-                responder_name=item.responder_name,
-                role=item.role,
-                is_owner=item.is_owner,
-            )
+            async with async_tenant_context(item.tenant_key):
+                result = await process_chat_pipeline(
+                    query=item.combined_text,
+                    sender=item.sender_id,
+                    channel=f"lark_{item.chat_type}",
+                    message_id=item.anchor_message_id,
+                    chat_id=item.chat_id,
+                    reply_to_lark=not item.is_owner,
+                    user_name=item.user_name,
+                    responder_name=item.responder_name,
+                    role=item.role,
+                    is_owner=item.is_owner,
+                    tenant_key=item.tenant_key,
+                )
 
             jev_action = result.get("jev_action", "IGNORE")
             confidence = result.get("jev_confidence", 0.0)

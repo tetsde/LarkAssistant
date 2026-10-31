@@ -32,6 +32,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Union
 
+from database.scoped_query import get_current_tenant_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +89,7 @@ class NormalizedClaim:
     created_at: Optional[str] = None
     chat_id: Optional[str] = None
     project_tag: Optional[str] = None
+    tenant_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -100,6 +103,7 @@ class NormalizedClaim:
             "asserted_by": self.asserted_by,
             "chat_id": self.chat_id,
             "project_tag": self.project_tag,
+            "tenant_key": self.tenant_key,
         }
 
 
@@ -236,6 +240,7 @@ class ContextComposer:
         self,
         claims_data: Any,
         entity_map: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> List[NormalizedClaim]:
         """
         Chuẩn hóa mọi dạng dữ liệu Claims / Facts:
@@ -254,7 +259,7 @@ class ContextComposer:
         if not entities_lookup:
             try:
                 from database.db import get_all_entities_sync
-                raw_entities = get_all_entities_sync(workspace_id=None)
+                raw_entities = get_all_entities_sync(workspace_id=None, tenant_key=tenant_key)
                 if raw_entities:
                     for ent in raw_entities:
                         if isinstance(ent, dict):
@@ -371,6 +376,7 @@ class ContextComposer:
                     created_at=f.get("created_at") or f.get("updated_at"),
                     chat_id=f.get("chat_id"),
                     project_tag=f.get("project_tag"),
+                    tenant_key=f.get("tenant_key") or tenant_key,
                 )
             )
 
@@ -473,6 +479,7 @@ class ContextComposer:
         query: Optional[str] = None,
         entity_map: Optional[Dict[str, Any]] = None,
         scope_context: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> List[NormalizedClaim]:
         """
         Lọc và căn chỉnh Claims phù hợp với câu hỏi và phạm vi nhóm chat:
@@ -482,6 +489,8 @@ class ContextComposer:
         """
         if not claims:
             return []
+
+        eff_tenant = tenant_key or get_current_tenant_key()
 
         query_text = (query or "").lower().strip()
         query_no_acc = _remove_accents(query_text)
@@ -497,7 +506,7 @@ class ContextComposer:
         if not entity_map:
             try:
                 from database.db import get_all_entities_sync
-                raw_entities = get_all_entities_sync(workspace_id=None)
+                raw_entities = get_all_entities_sync(workspace_id=None, tenant_key=eff_tenant)
                 if raw_entities:
                     entity_map = {str(e.get("id")): e for e in raw_entities if isinstance(e, dict) and e.get("id")}
             except Exception:
@@ -582,11 +591,15 @@ class ContextComposer:
             is_matched = False
 
             # Chiều 1: So khớp Thuộc tính nghiệp vụ
-            synonyms = PROPERTY_SYNONYMS.get(c_prop, {c_prop})
+            synonyms = set(PROPERTY_SYNONYMS.get(c_prop, set()))
+            synonyms.add(c_prop)
+            if "_" in c_prop:
+                synonyms.add(c_prop.replace("_", " "))
+                synonyms.update(c_prop.split("_"))
             if any(
                 (query_text and (syn in query_text or _remove_accents(syn) in query_no_acc))
                 or (chunks_text and (syn in chunks_text or _remove_accents(syn) in chunks_no_acc))
-                for syn in synonyms
+                for syn in synonyms if syn and len(syn) >= 2
             ):
                 is_matched = True
 
@@ -639,6 +652,7 @@ class ContextComposer:
         extra_system_instruction: Optional[str] = None,
         auto_align: bool = True,
         scope_context: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Đóng gói toàn diện WeKnora Retriever + Claims Data thành 1 Context hoàn chỉnh.
@@ -650,12 +664,15 @@ class ContextComposer:
           - entity_map: Bảng tra cứu thực thể và aliases
           - auto_align: Tự động so khớp chéo thực thể (Cách 1) loại bỏ claims không liên quan
           - scope_context: Bối cảnh nhóm chat & danh mục file docs từ Lark Base / MongoDB
+          - tenant_key: Mã doanh nghiệp để bảo đảm cách ly 100% dữ liệu đa khách thuê
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         # Tự động nạp entity_map nếu chưa được cung cấp
         if not entity_map:
             try:
                 from database.db import get_all_entities_sync
-                raw_entities = get_all_entities_sync(workspace_id=None)
+                raw_entities = get_all_entities_sync(workspace_id=None, tenant_key=eff_tenant)
                 if raw_entities:
                     entity_map = {str(e.get("id")): e for e in raw_entities if isinstance(e, dict) and e.get("id")}
             except Exception:
@@ -663,7 +680,12 @@ class ContextComposer:
 
         # 1. Chuẩn hóa dữ liệu
         chunks = self.normalize_retriever_data(retriever_data)
-        claims = self.normalize_claims_data(claims_data, entity_map=entity_map)
+        claims = self.normalize_claims_data(claims_data, entity_map=entity_map, tenant_key=eff_tenant)
+
+        # 1.1. Lọc bảo vệ nghiêm ngặt đa doanh nghiệp (Defense-in-depth Cross-Tenant Isolation):
+        # Nếu có tenant_key, loại bỏ mọi claim thuộc về tenant khác
+        if eff_tenant:
+            claims = [c for c in claims if not c.tenant_key or c.tenant_key == eff_tenant]
 
         # 2. Tự động so khớp chéo Thực thể (Entity Alignment) nếu bật auto_align và có (chunks or query)
         if auto_align and claims and (chunks or query):
@@ -673,6 +695,7 @@ class ContextComposer:
                 query=query,
                 entity_map=entity_map,
                 scope_context=scope_context,
+                tenant_key=eff_tenant,
             )
 
 

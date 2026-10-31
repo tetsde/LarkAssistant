@@ -75,6 +75,7 @@ class StagingMessage(BaseModel):
     timestamp: str = Field(default_factory=get_vietnam_now_iso, description="Thời điểm gửi")
     message_link: str = Field(default="", description="Deep link mở tin nhắn trên Lark")
     project_tag: Optional[str] = Field(default=None, description="Tag dự án liên quan (nếu có)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     processed: bool = Field(default=False, description="Đã tổng hợp vào digest chưa")
     is_recalled: bool = Field(default=False, description="Đánh dấu tin nhắn đã bị thu hồi trên Lark")
     recalled_at: Optional[str] = Field(default=None, description="Thời điểm thu hồi")
@@ -138,6 +139,7 @@ class DailyDigestRecord(BaseModel):
     chat_id: str = Field(..., description="ID cuộc trò chuyện Lark (oc_xxx)")
     chat_name: str = Field(default="", description="Tên nhóm chat")
     project_tag: Optional[str] = Field(default=None, description="Mã dự án (nếu có)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     overview_summary: str = Field(default="", description="Tóm tắt 1-2 câu tổng quan ngày")
     previous_overview_summary: Optional[str] = Field(default=None, description="Tóm tắt tổng quan của ngày làm việc liền trước (K-1) để duy trì mạch ngữ cảnh liên tục")
     previous_digest_date: Optional[str] = Field(default=None, description="Ngày ghi nhận của bản digest liền trước (YYYY-MM-DD)")
@@ -301,6 +303,7 @@ class MasterDailyDigestRecord(BaseModel):
     """
     id: str = Field(..., description="Mã master digest: master_digest_YYYYMMDD")
     date: str = Field(..., description="Ngày ghi nhận: YYYY-MM-DD")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     executive_summary: str = Field(default="", description="Bức tranh toàn cảnh cấp điều hành về tất cả các dự án trong ngày")
     previous_executive_summary: Optional[str] = Field(default=None, description="Tóm tắt điều hành cấp cao của ngày hôm trước (K-1)")
     previous_master_date: Optional[str] = Field(default=None, description="Ngày của bản master digest liền trước (YYYY-MM-DD)")

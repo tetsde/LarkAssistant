@@ -19,6 +19,15 @@ from pymongo.database import Database
 from core.config import settings
 from models.memory import FactStatus, get_vietnam_now_iso
 from database.indexes import ensure_database_indexes, get_index_specifications
+from database.scoped_query import (
+    get_scoped_collection,
+    tenant_context,
+    async_tenant_context,
+    inject_tenant_filter,
+    get_current_tenant_key,
+    set_current_tenant_key,
+    TenantScopedCollection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +157,18 @@ def get_system_config_collection() -> AsyncIOMotorCollection:
     return db[getattr(settings, "MONGO_SYSTEM_CONFIG_COLLECTION", "system_config")]
 
 
+def get_isv_auth_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ app_ticket và token xác thực ISV / Lark Store App."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_ISV_AUTH_COLLECTION", "isv_auth")]
+
+
+def get_tenants_collection() -> AsyncIOMotorCollection:
+    """Collection lưu trữ danh sách và cấu hình doanh nghiệp (Multi-Tenant)."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants")]
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client
@@ -218,10 +239,14 @@ def _clean_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
 # THAO TÁC CRUD ENTITIES (MEMORIES)
 # ==========================================
 
-async def get_all_entities(workspace_id: str = "default") -> List[Dict[str, Any]]:
-    """Lấy danh sách tất cả entities trong MongoDB."""
+async def get_all_entities(
+    workspace_id: Optional[str] = "default",
+    tenant_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Lấy danh sách tất cả entities trong MongoDB có cô lập theo tenant_key."""
     col = get_memories_collection()
     query = {"workspace_id": workspace_id} if workspace_id else {}
+    query = inject_tenant_filter(query, tenant_key)
     cursor = col.find(query)
     entities = []
     async for doc in cursor:
@@ -229,24 +254,37 @@ async def get_all_entities(workspace_id: str = "default") -> List[Dict[str, Any]
     return entities
 
 
-async def get_entity_by_id(entity_id: str) -> Optional[Dict[str, Any]]:
-    """Tra cứu thực thể theo entity_id."""
+async def get_entity_by_id(
+    entity_id: str,
+    tenant_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Tra cứu thực thể theo entity_id có cô lập theo tenant_key."""
     col = get_memories_collection()
-    doc = await col.find_one({"id": entity_id})
+    query = inject_tenant_filter({"id": entity_id}, tenant_key)
+    doc = await col.find_one(query)
     return _clean_mongo_doc(doc) if doc else None
 
 
-async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
+async def upsert_entity(
+    entity: Dict[str, Any],
+    tenant_key: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Thêm mới hoặc cập nhật thực thể:
     Nếu thực thể đã có, tự động merge alias và cập nhật thông tin.
+    Tự động gắn nhãn và cô lập theo tenant_key.
     """
     col = get_memories_collection()
     entity_id = entity.get("id")
     if not entity_id:
         raise ValueError("Entity thiếu trường 'id'")
 
-    existing = await col.find_one({"id": entity_id})
+    eff_tenant = tenant_key or entity.get("tenant_key") or get_current_tenant_key()
+    if eff_tenant and not entity.get("tenant_key"):
+        entity["tenant_key"] = eff_tenant
+
+    query = inject_tenant_filter({"id": entity_id}, eff_tenant)
+    existing = await col.find_one(query)
     now_iso = get_vietnam_now_iso()
 
     if existing:
@@ -259,7 +297,7 @@ async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
         
         # Giữ lại các trường cũ nếu entity mới không ghi đè
         await col.update_one(
-            {"id": entity_id},
+            query,
             {"$set": {k: v for k, v in entity.items() if k != "_id"}},
         )
     else:
@@ -268,7 +306,7 @@ async def upsert_entity(entity: Dict[str, Any]) -> Dict[str, Any]:
         insert_data = {k: v for k, v in entity.items() if k != "_id"}
         await col.insert_one(insert_data)
 
-    saved = await col.find_one({"id": entity_id})
+    saved = await col.find_one(query)
     return _clean_mongo_doc(saved)
 
 
@@ -280,11 +318,13 @@ async def get_all_facts(
     entity_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lấy danh sách facts trong MongoDB:
       - Tùy chọn lọc theo entity_id.
       - Tùy chọn lọc theo scope (chat_id, project_tag hoặc scope_type=='global').
+      - Tự động cô lập theo tenant_key (trực tiếp hoặc qua async context).
     """
     col = get_claims_collection()
     query: Dict[str, Any] = {}
@@ -303,6 +343,7 @@ async def get_all_facts(
         else:
             query = {"$or": scope_or}
 
+    query = inject_tenant_filter(query, tenant_key)
     cursor = col.find(query)
     facts = []
     async for doc in cursor:
@@ -712,13 +753,16 @@ async def save_extraction_to_mongo(
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     scope_type: str = "chat",
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Lưu kết quả trích xuất vào MongoDB (Memories & Claims):
-      1. Upsert entities vào collection memories (gán scope nếu chưa có).
+      1. Upsert entities vào collection memories (gán scope và tenant_key nếu chưa có).
       2. Đánh dấu superseded cho facts cũ trong collection claims.
-      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope.
+      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope và tenant_key.
     """
+    eff_tenant = tenant_key or get_current_tenant_key()
+
     new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
     new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
     superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
@@ -732,7 +776,9 @@ async def save_extraction_to_mongo(
                 ent["project_tag"] = project_tag
             if not ent.get("scope_type"):
                 ent["scope_type"] = scope_type
-        await upsert_entity(ent)
+            if eff_tenant and not ent.get("tenant_key"):
+                ent["tenant_key"] = eff_tenant
+        await upsert_entity(ent, tenant_key=eff_tenant)
 
     # 2. Cập nhật superseded facts
     superseded_ids = [
@@ -743,7 +789,7 @@ async def save_extraction_to_mongo(
     if superseded_ids:
         await supersede_facts_by_ids(superseded_ids)
 
-    # 3. Thêm facts mới vào collection claims gắn scope
+    # 3. Thêm facts mới vào collection claims gắn scope và tenant_key
     claims_col = get_claims_collection()
     for fact in new_facts:
         fid = fact.get("id")
@@ -757,16 +803,21 @@ async def save_extraction_to_mongo(
             fact_copy["project_tag"] = project_tag
         if not fact_copy.get("scope_type"):
             fact_copy["scope_type"] = scope_type
+        if eff_tenant and not fact_copy.get("tenant_key"):
+            fact_copy["tenant_key"] = eff_tenant
+        
+        filter_q = inject_tenant_filter({"id": fid}, eff_tenant)
         await claims_col.update_one(
-            {"id": fid},
+            filter_q,
             {"$set": fact_copy},
             upsert=True,
         )
 
-    # Lấy thống kê hiện tại
+    # Lấy thống kê hiện tại (cô lập theo tenant nếu có)
     memories_col = get_memories_collection()
-    total_entities = await memories_col.count_documents({})
-    total_facts = await claims_col.count_documents({})
+    count_filter = inject_tenant_filter({}, eff_tenant)
+    total_entities = await memories_col.count_documents(count_filter)
+    total_facts = await claims_col.count_documents(count_filter)
 
     return {
         "entities": new_entities,
@@ -806,10 +857,14 @@ def get_sync_claims_collection():
     return db[settings.MONGO_CLAIMS_COLLECTION]
 
 
-def get_all_entities_sync(workspace_id: str = "default") -> List[Dict[str, Any]]:
-    """Lấy toàn bộ entities từ MongoDB (sync)."""
+def get_all_entities_sync(
+    workspace_id: Optional[str] = "default",
+    tenant_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Lấy toàn bộ entities từ MongoDB (sync) có cô lập theo tenant_key."""
     col = get_sync_memories_collection()
     query = {"workspace_id": workspace_id} if workspace_id else {}
+    query = inject_tenant_filter(query, tenant_key)
     return [_clean_mongo_doc(doc) for doc in col.find(query)]
 
 
@@ -817,11 +872,13 @@ def get_all_facts_sync(
     entity_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lấy toàn bộ facts từ MongoDB (sync):
       - Tùy chọn lọc theo entity_id.
       - Tùy chọn lọc theo scope (chat_id, project_tag hoặc scope_type=='global').
+      - Tự động cô lập theo tenant_key.
     """
     col = get_sync_claims_collection()
     query: Dict[str, Any] = {}
@@ -840,17 +897,26 @@ def get_all_facts_sync(
         else:
             query = {"$or": scope_or}
 
+    query = inject_tenant_filter(query, tenant_key)
     return [_clean_mongo_doc(doc) for doc in col.find(query)]
 
 
-def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
-    """Upsert entity vào MongoDB (sync)."""
+def upsert_entity_sync(
+    entity: Dict[str, Any],
+    tenant_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upsert entity vào MongoDB (sync) có cô lập theo tenant_key."""
     col = get_sync_memories_collection()
     entity_id = entity.get("id")
     if not entity_id:
         raise ValueError("Entity thiếu trường 'id'")
 
-    existing = col.find_one({"id": entity_id})
+    eff_tenant = tenant_key or entity.get("tenant_key") or get_current_tenant_key()
+    if eff_tenant and not entity.get("tenant_key"):
+        entity["tenant_key"] = eff_tenant
+
+    query = inject_tenant_filter({"id": entity_id}, eff_tenant)
+    existing = col.find_one(query)
     now_iso = get_vietnam_now_iso()
 
     if existing:
@@ -860,7 +926,7 @@ def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
         entity["aliases"] = merged_aliases
         entity["updated_at"] = now_iso
         col.update_one(
-            {"id": entity_id},
+            query,
             {"$set": {k: v for k, v in entity.items() if k != "_id"}},
         )
     else:
@@ -869,7 +935,7 @@ def upsert_entity_sync(entity: Dict[str, Any]) -> Dict[str, Any]:
         insert_data = {k: v for k, v in entity.items() if k != "_id"}
         col.insert_one(insert_data)
 
-    saved = col.find_one({"id": entity_id})
+    saved = col.find_one(query)
     return _clean_mongo_doc(saved)
 
 
@@ -896,13 +962,16 @@ def save_extraction_to_mongo_sync(
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     scope_type: str = "chat",
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Lưu kết quả trích xuất vào MongoDB đồng bộ (sync):
-      1. Upsert entities vào collection memories (gán scope nếu chưa có).
+      1. Upsert entities vào collection memories (gán scope và tenant_key nếu chưa có).
       2. Đánh dấu superseded cho facts cũ trong collection claims.
-      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope.
+      3. Insert/Upsert facts mới vào collection claims gắn thẻ scope và tenant_key.
     """
+    eff_tenant = tenant_key or get_current_tenant_key()
+
     new_entities = extraction_result.get("entities") or extraction_result.get("memory", [])
     new_facts = extraction_result.get("facts") or extraction_result.get("claims", [])
     superseded_facts = extraction_result.get("superseded_facts") or extraction_result.get("superseded_claims", [])
@@ -915,7 +984,9 @@ def save_extraction_to_mongo_sync(
                 ent["project_tag"] = project_tag
             if not ent.get("scope_type"):
                 ent["scope_type"] = scope_type
-        upsert_entity_sync(ent)
+            if eff_tenant and not ent.get("tenant_key"):
+                ent["tenant_key"] = eff_tenant
+        upsert_entity_sync(ent, tenant_key=eff_tenant)
 
     superseded_ids = [
         f.get("id") or f.get("_id")
@@ -938,15 +1009,20 @@ def save_extraction_to_mongo_sync(
             fact_copy["project_tag"] = project_tag
         if not fact_copy.get("scope_type"):
             fact_copy["scope_type"] = scope_type
+        if eff_tenant and not fact_copy.get("tenant_key"):
+            fact_copy["tenant_key"] = eff_tenant
+        
+        filter_q = inject_tenant_filter({"id": fid}, eff_tenant)
         claims_col.update_one(
-            {"id": fid},
+            filter_q,
             {"$set": fact_copy},
             upsert=True,
         )
 
     memories_col = get_sync_memories_collection()
-    total_entities = memories_col.count_documents({})
-    total_facts = claims_col.count_documents({})
+    count_filter = inject_tenant_filter({}, eff_tenant)
+    total_entities = memories_col.count_documents(count_filter)
+    total_facts = claims_col.count_documents(count_filter)
 
     return {
         "entities": new_entities,

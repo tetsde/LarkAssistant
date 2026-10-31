@@ -249,10 +249,20 @@ class LarkClientMixin:
             raise ValueError("Chưa cấu hình `access_token_user` trong .env! Hệ thống chỉ được phép gửi bằng danh tính người dùng.")
         return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
 
-    def _get_request_option(self, as_user: bool = True) -> Optional[lark.RequestOption]:
-        """Tạo RequestOption mang User Token nếu as_user=True và token khả dụng."""
+    def _get_request_option(
+        self,
+        as_user: bool = True,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[lark.RequestOption]:
+        """Tạo RequestOption mang User Token nếu as_user=True và token khả dụng, hoặc mang tenant_key trong ISV mode."""
         if as_user and self.user_access_token:
-            return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
+            builder = lark.RequestOption.builder().user_access_token(self.user_access_token)
+            if tenant_key:
+                builder.tenant_key(tenant_key)
+            return builder.build()
+        if tenant_key:
+            from services.auth.isv_token_service import isv_token_service
+            return isv_token_service.build_request_option(tenant_key=tenant_key)
         return None
 
     # -------------------------------------------------------------------------

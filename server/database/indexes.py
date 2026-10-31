@@ -40,6 +40,8 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("id", ASCENDING)], unique=True, name="idx_claims_id_unique"),
             IndexModel([("entity_id", ASCENDING)], name="idx_claims_entity_id"),
             IndexModel([("chat_id", ASCENDING), ("status", ASCENDING)], name="idx_claims_chat_status"),
+            IndexModel([("tenant_key", ASCENDING), ("chat_id", ASCENDING), ("status", ASCENDING)], name="idx_claims_tenant_chat_status"),
+            IndexModel([("tenant_key", ASCENDING), ("id", ASCENDING)], name="idx_claims_tenant_id"),
             IndexModel([("scope_type", ASCENDING)], name="idx_claims_scope_type"),
             IndexModel([("source_message_id", ASCENDING)], name="idx_claims_source_msg_id"),
             IndexModel([("source_doc", ASCENDING)], name="idx_claims_source_doc"),
@@ -51,6 +53,8 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("id", ASCENDING)], unique=True, name="idx_memories_id_unique"),
             IndexModel([("workspace_id", ASCENDING)], name="idx_memories_workspace_id"),
             IndexModel([("name", ASCENDING)], name="idx_memories_name"),
+            IndexModel([("tenant_key", ASCENDING), ("name", ASCENDING)], name="idx_memories_tenant_name"),
+            IndexModel([("tenant_key", ASCENDING), ("id", ASCENDING)], name="idx_memories_tenant_id"),
             IndexModel([("aliases", ASCENDING)], name="idx_memories_aliases"),
         ],
 
@@ -58,12 +62,14 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         settings.MONGO_STAGING_COLLECTION: [
             IndexModel([("message_id", ASCENDING)], unique=True, sparse=True, name="idx_staging_msg_id_unique"),
             IndexModel([("chat_id", ASCENDING), ("created_at", DESCENDING)], name="idx_staging_chat_created"),
+            IndexModel([("tenant_key", ASCENDING), ("chat_id", ASCENDING), ("created_at", DESCENDING)], name="idx_staging_tenant_chat_created"),
             IndexModel([("status", ASCENDING)], name="idx_staging_status"),
         ],
 
         # 4. CHAT SCOPES (Ánh xạ phân quyền & WeKnora Knowledge Base)
         settings.MONGO_CHAT_SCOPE_COLLECTION: [
             IndexModel([("chat_id", ASCENDING)], unique=True, name="idx_scopes_chat_id_unique"),
+            IndexModel([("tenant_key", ASCENDING), ("chat_id", ASCENDING)], name="idx_scopes_tenant_chat"),
             IndexModel([("knowledge_base_id", ASCENDING)], name="idx_scopes_kb_id"),
             IndexModel([("base_record_id", ASCENDING)], name="idx_scopes_base_record_id"),
         ],
@@ -72,12 +78,14 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         settings.MONGO_DIGEST_COLLECTION: [
             IndexModel([("id", ASCENDING)], unique=True, name="idx_digest_id_unique"),
             IndexModel([("chat_id", ASCENDING), ("date", DESCENDING)], name="idx_digest_chat_date"),
+            IndexModel([("tenant_key", ASCENDING), ("chat_id", ASCENDING), ("date", DESCENDING)], name="idx_digest_tenant_chat_date"),
             IndexModel([("date", DESCENDING)], name="idx_digest_date"),
         ],
 
         # 6. MASTER DAILY DIGESTS (Bản tổng hợp ngày cấp điều hành)
         settings.MONGO_MASTER_DIGEST_COLLECTION: [
             IndexModel([("id", ASCENDING)], unique=True, name="idx_master_digest_id_unique"),
+            IndexModel([("tenant_key", ASCENDING), ("date", DESCENDING)], name="idx_master_digest_tenant_date"),
             IndexModel([("date", DESCENDING)], name="idx_master_digest_date"),
         ],
 
@@ -85,6 +93,7 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         settings.MONGO_DRAFT_LOGS_COLLECTION: [
             IndexModel([("draft_id", ASCENDING)], unique=True, sparse=True, name="idx_drafts_id_unique"),
             IndexModel([("chat_id", ASCENDING), ("status", ASCENDING)], name="idx_drafts_chat_status"),
+            IndexModel([("tenant_key", ASCENDING), ("chat_id", ASCENDING), ("status", ASCENDING)], name="idx_drafts_tenant_chat_status"),
             IndexModel([("created_at", DESCENDING)], name="idx_drafts_created_at"),
         ],
 
@@ -104,6 +113,7 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         # 10. USER SETTINGS & BYOK (Cấu hình người dùng & API Key cá nhân)
         getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings"): [
             IndexModel([("open_id", ASCENDING)], unique=True, name="idx_user_settings_open_id_unique"),
+            IndexModel([("tenant_key", ASCENDING), ("open_id", ASCENDING)], name="idx_user_settings_tenant_open_id"),
             IndexModel([("updated_at", DESCENDING)], name="idx_user_settings_updated_at"),
         ],
 
@@ -111,6 +121,18 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         getattr(settings, "MONGO_SYSTEM_CONFIG_COLLECTION", "system_config"): [
             IndexModel([("config_key", ASCENDING)], unique=True, name="idx_system_config_key_unique"),
             IndexModel([("tenant_key", ASCENDING)], name="idx_system_config_tenant"),
+        ],
+
+        # 12. TENANTS (Danh sách Doanh nghiệp Multi-Tenant ISV - EDL-0020)
+        getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants"): [
+            IndexModel([("tenant_key", ASCENDING)], unique=True, name="idx_tenants_key_unique"),
+            IndexModel([("created_at", DESCENDING)], name="idx_tenants_created_at"),
+        ],
+
+        # 13. ISV AUTH (Vé app_ticket & Tenant Token Cache - EDL-0020)
+        getattr(settings, "MONGO_ISV_AUTH_COLLECTION", "isv_auth"): [
+            IndexModel([("tenant_key", ASCENDING)], sparse=True, name="idx_isv_auth_tenant_key"),
+            IndexModel([("updated_at", DESCENDING)], name="idx_isv_auth_updated_at"),
         ],
     }
 

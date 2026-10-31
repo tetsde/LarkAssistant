@@ -33,6 +33,7 @@ class ChatScopeRecord(BaseModel):
     documents: list[Dict[str, Any]] = Field(default_factory=list, description="Danh sách tài liệu file đính kèm")
     knowledge_ids: list[str] = Field(default_factory=list, description="Danh sách knowledge_id tài liệu trên WeKnora")
     record_id: Optional[str] = Field(default=None, description="Record ID trên Lark Base")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     updated_by: str = Field(default="", description="Lark open_id của người thực hiện cài đặt")
     updated_by_name: str = Field(default="", description="Tên người thực hiện cài đặt")
     created_at: str = Field(default_factory=get_vietnam_now_iso)

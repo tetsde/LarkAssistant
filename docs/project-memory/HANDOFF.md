@@ -10,7 +10,11 @@
   4. **Phase 4: Hybrid BYOK, Auto-Provision Lark Base & Onboarding Screen Guide:** Đã hoàn thành 100% (18/18 test cases passed).
   5. **Nâng cấp Multi-Provider LLM & Apple Minimalist UI:** Hỗ trợ ChatGPT, Anthropic, Google, và Custom (OpenAI-compatible), timeout tùy chỉnh, base URL tùy biến, Initializing Screen mượt mà và loại bỏ 100% emoji khỏi giao diện.
   6. **Hướng dẫn Tạo Bot & Cấu hình Hạ tầng Nâng cao:** Bổ sung hướng dẫn 2 phút tạo Custom App trên Lark Developer, form nhập và thẩm định trực tiếp cặp App ID & App Secret qua Lark Open Platform, cùng tùy chọn nâng cao kết nối MongoDB riêng của doanh nghiệp.
-- **Status:** TẤT CẢ CÁC PHASES VÀ NÂNG CẤP HOÀN TẤT 100%. TOÀN BỘ 59/59 TEST CASES PASSED TRONG 2.33S. TẤT CẢ 3 SƠ ĐỒ KIẾN TRÚC VÀ TÀI LIỆU KỸ THUẬT ĐÃ ĐƯỢC TÁI TẠO ĐỒNG BỘ 100%.
+  7. **Chiến lược Kiến trúc Lark Store App (ISV Multi-Tenant SaaS) & Cụm Server Bảo trợ:** Nhận chỉ đạo và cam kết hạ tầng máy chủ tập trung từ Anh Hiệp ("Cần server anh cấp server"), lập Kế hoạch triển khai toàn diện `IMPLEMENTATION_PLAN_LARK_STORE_ISV_APP.md` cho mô hình SaaS Multi-Tenant (1-Click Install từ Lark App Directory, cô lập dữ liệu `tenant_key`, dynamic ISV token lifecycle).
+  8. **Hoàn thành Workstream 1 - Vòng đời Token ISV & Marketplace Auth Engine:** Xây dựng `ISVTokenService`, nhận `app_ticket` qua webhook, cấp mới và cache `app_access_token` và `tenant_access_token` độc lập theo `tenant_key`, Dual-Mode tương thích ngược Custom App (9 TCs passed).
+  9. **Hoàn thành Workstream 2 - Cô lập Dữ liệu Multi-Tenant trong MongoDB:** Bổ sung `tenant_key` vào 6 Models cốt lõi (`Entity`, `Fact`, `ChatScopeRecord`, `StagingMessage`, `DailyDigestRecord`, `UserSettingsRecord`), nâng cấp Index Model compound với tiền tố `tenant_key`, xây dựng `TenantScopedCollection` & `scoped_query` engine chống rò rỉ dữ liệu chéo giữa các công ty (6 TCs passed).
+  10. **Hoàn thành Workstream 3 - Bộ định tuyến Sự kiện & Client Pool Đa Doanh nghiệp:** Bóc tách `tenant_key` từ Event Header / Sender trong `parse_event`, tự động kích hoạt `TenantContext` trong `_dispatch_to_handlers`, xử lý sự kiện Vòng đời Doanh nghiệp `app_status_change` & `app_uninstalled` qua `tenant_lifecycle_handler`, hỗ trợ `tenant_key` trong các hàm gửi tin `messenger.py` (8 TCs passed).
+- **Status:** WORKSTREAM 3 HOÀN TẤT VÀ KIỂM THỬ 100%. TOÀN BỘ 82/82 TEST CASES PASSED TRONG 3.11S. DỪNG LẠI CHỜ NGƯỜI DÙNG KIỂM TRA TRƯỚC KHI SANG WORKSTREAM 4.
 
 ## What is confirmed
 - **Toàn bộ 52/52 Unit & Integration Tests Đều Đạt 100% (PASSED):**
@@ -154,11 +158,16 @@
 - Memory WeKnora Gating Suite (`tests/01/test_memory_weknora_gating.py`):
   * Ran 5 tests -> **5/5 PASSED**.
 - **Tổng kiểm thử regression sau Phase 3:** **96/96 PASSED 100%** (chạy trong 3.36s).
+- **Triển khai Mô hình Lark Store ISV SaaS Đa Khách Thuê (EDL-0020)**:
+  * **Workstream 1 (Xác thực & Vòng đời Token ISV)**: Hoàn thành `isv_token_service.py`, quản lý dynamic `tenant_access_token` theo `tenant_key`, intercept `app_ticket` webhook event, tương thích ngược 100% (9/9 tests pass).
+  * **Workstream 2 (Cô lập Dữ liệu Multi-Tenant trong MongoDB)**: Gắn `tenant_key` trên cả 6 models nghiệp vụ, thiết lập Compound Indexes với tiền tố `tenant_key`, xây dựng `TenantScopedCollection` và `inject_tenant_filter` (6/6 tests pass).
+  * **Workstream 3 (Bộ định tuyến Sự kiện & Client Pool Đa Doanh nghiệp)**: Trích xuất `tenant_key` từ webhook header/sender, tự động bao bọc luồng async bằng `async_tenant_context(tenant_key)`, cài đặt lifecycle handler (`app_status_change`, `app_uninstalled`) và mở rộng Messenger API (8/8 tests pass).
+  * **Multi-Tenant Claims & Knowledge Isolation Hardening**: Bọc kín toàn diện truy vấn tri thức (`get_all_facts`, `get_all_entities`, `save_extraction_to_mongo`, `get_scope_by_chat_id`), bổ sung lớp Defense-in-depth trong `ContextComposer` (loại bỏ triệt để claims của tenant khác kể cả khi `scope_type="global"`), mở rộng `ChatQueueItem` truyền thông suốt `tenant_key` (6/6 tests pass).
+- **Tổng kiểm thử Final Test Suite (ISV Multi-Tenant):** **88/88 PASSED 100%** (chạy trong 4.07s).
 
 ## Next concrete steps
-1. Báo cáo kết quả Giai đoạn 3 cho User.
-2. Tổng kết toàn diện Quyết định Kỹ thuật `EDL-0009` (đã hoàn thành cả 3 Giai đoạn: Data & Cache Stability, Network & Async I/O, Bot Service & Handlers Decoupling).
-3. Đề xuất chuẩn bị kế hoạch tiếp theo (ví dụ: Chạy kiểm thử E2E tích hợp thực tế với Lark WebSocket bot hoặc đồng bộ Quyết định Kỹ thuật EDL-0009 vào Notion).
+1. Trả lời chi tiết và giải thích cặn kẽ thắc mắc của User về Claims & Context Composer đa doanh nghiệp.
+2. Chờ User phê duyệt để chuyển sang **Workstream 4: Đa Dataset WeKnora & Auto-Provision Bitable theo Doanh nghiệp**.
 
 
 

@@ -21,6 +21,7 @@ from models.memory import get_vietnam_now_iso
 class UserSettingsRecord(BaseModel):
     """Bản ghi cấu hình cá nhân của người dùng trên MongoDB collection 'user_settings'."""
     open_id: str = Field(..., description="Lark Open ID của người dùng (ou_xxx)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     user_name: Optional[str] = Field(default=None, description="Tên người dùng trên Lark")
     is_byok_enabled: bool = Field(default=False, description="Đang kích hoạt BYOK hay dùng System Key")
     llm_provider: str = Field(default="google", description="Nhà cung cấp LLM: google, openai, anthropic, custom")

@@ -54,19 +54,25 @@ class LarkMessengerMixin:
     # GỬI TIN NHẮN DM TỚI CHỦ NHÂN BẰNG BOT (TRƯỜNG HỢP NGOẠI LỆ DUY NHẤT)
     # -------------------------------------------------------------------------
 
-    async def send_bot_dm_to_owner(self, text: str | Dict[str, Any], target_open_id: Optional[str] = None) -> Dict[str, Any]:
+    async def send_bot_dm_to_owner(
+        self,
+        text: str | Dict[str, Any],
+        target_open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Gửi tin nhắn riêng (DM 1-1) từ Bot tới tài khoản của chủ nhân.
         Tự động chuyển tiếp sang send_bot_card_to_owner nếu nội dung truyền vào là cấu trúc Thẻ tương tác.
+        Hỗ trợ tenant_key cho ISV Multi-Tenant.
         """
         if not text:
             return {"success": False, "error": "text không được rỗng"}
 
         # Tự động nhận diện nếu người gọi truyền vào card dictionary hoặc card JSON
         if isinstance(text, dict):
-            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id)
+            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id, tenant_key=tenant_key)
         if isinstance(text, str) and text.strip().startswith("{") and '"elements"' in text:
-            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id)
+            return await self.send_bot_card_to_owner(text, target_open_id=target_open_id, tenant_key=tenant_key)
 
         owner_open_id = target_open_id or self.owner_open_id
         if not owner_open_id:
@@ -88,8 +94,9 @@ class LarkMessengerMixin:
         )
 
         try:
-            # Gửi bằng Bot App Token tới riêng 1-1 chủ nhân
-            response = await self.client.im.v1.message.acreate(request)
+            # Gửi bằng Bot App Token tới riêng 1-1 chủ nhân (kèm RequestOption nếu có tenant_key)
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+            response = await self.client.im.v1.message.acreate(request, option=opt)
             if not response.success():
                 logger.error(f"[LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
                 return {"success": False, "code": response.code, "msg": response.msg}
@@ -110,9 +117,11 @@ class LarkMessengerMixin:
         self,
         card_payload: Dict[str, Any] | str,
         target_open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Gửi Thẻ tin nhắn tương tác (Lark Interactive Card) trực tiếp tới Chủ nhân qua tài khoản Bot.
+        Hỗ trợ tenant_key cho ISV Multi-Tenant.
         """
         if not card_payload:
             return {"success": False, "error": "card_payload không được rỗng"}
@@ -141,7 +150,8 @@ class LarkMessengerMixin:
         )
 
         try:
-            response = await self.client.im.v1.message.acreate(request)
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+            response = await self.client.im.v1.message.acreate(request, option=opt)
             if not response.success():
                 logger.error(
                     f"[LARK BOT DM CARD] Thất bại khi gửi thẻ tới chủ nhân ({owner_open_id}): "
@@ -153,6 +163,8 @@ class LarkMessengerMixin:
             logger.info(f"[LARK BOT DM CARD] Đã gửi thẻ tương tác tới chủ nhân ({owner_open_id}) thành công, message_id={mid}")
             return {"success": True, "data": response.data, "message_id": mid}
         except Exception as e:
+            logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
             logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
@@ -293,11 +305,16 @@ class LarkMessengerMixin:
         message_id: str,
         text: str,
         as_user: bool = True,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Reply tin nhắn async BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG (User Access Token)."""
-        opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
-        if err:
-            return err
+        """Reply tin nhắn async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
+        if as_user:
+            opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+            if err:
+                return err
+        else:
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+            content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
             ReplyMessageRequest.builder()
@@ -317,11 +334,16 @@ class LarkMessengerMixin:
         message_id: str,
         text: str,
         as_user: bool = True,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Reply một tin nhắn văn bản đồng bộ BẰNG DUY NHẤT DANH TÍNH NGƯỜI DÙNG."""
-        opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
-        if err:
-            return err
+        """Reply một tin nhắn văn bản đồng bộ (hỗ trợ as_user=False bằng Bot kèm tenant_key)."""
+        if as_user:
+            opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+            if err:
+                return err
+        else:
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+            content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
             ReplyMessageRequest.builder()
@@ -346,14 +368,15 @@ class LarkMessengerMixin:
         text: str,
         receive_id_type: str = "chat_id",  # "chat_id", "open_id", "user_id"
         as_user: bool = True,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Gửi tin nhắn mới async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot)."""
+        """Gửi tin nhắn mới async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
         if as_user:
             opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
             if err:
                 return err
         else:
-            opt = None
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
@@ -375,14 +398,15 @@ class LarkMessengerMixin:
         text: str,
         receive_id_type: str = "chat_id",
         as_user: bool = True,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Gửi tin nhắn mới đồng bộ (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot)."""
+        """Gửi tin nhắn mới đồng bộ (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
         if as_user:
             opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
             if err:
                 return err
         else:
-            opt = None
+            opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
 
         request = (
@@ -550,6 +574,38 @@ class LarkMessengerMixin:
                 )
         except Exception:
             pass
+
+        # 1.5. Xử lý sự kiện app_ticket (Lark Marketplace ISV Token Lifecycle - EDL-0020)
+        if isinstance(payload, dict):
+            event_type = payload.get("header", {}).get("event_type") or payload.get("type")
+            if event_type == "app_ticket" or "app_ticket" in payload.get("event", {}):
+                try:
+                    from services.auth.isv_token_service import isv_token_service
+                    handled = await isv_token_service.handle_app_ticket_event(payload)
+                    if handled:
+                        return Response(
+                            content=json.dumps({"code": 0, "msg": "success"}),
+                            media_type="application/json",
+                            status_code=200,
+                        )
+                except Exception as ex:
+                    logger.error(f"Lỗi khi xử lý app_ticket event: {ex}")
+
+        # 1.6. Xử lý sự kiện Tenant Lifecycle (app_status_change / app_uninstalled / open_app - EDL-0020)
+        if isinstance(payload, dict):
+            event_type = payload.get("header", {}).get("event_type") or payload.get("type")
+            if event_type in ("app_status_change", "app_uninstalled", "open_app"):
+                try:
+                    from services.lark.handlers.tenant_lifecycle_handler import handle_tenant_lifecycle_event
+                    handled = await handle_tenant_lifecycle_event(payload)
+                    if handled:
+                        return Response(
+                            content=json.dumps({"code": 0, "msg": "success"}),
+                            media_type="application/json",
+                            status_code=200,
+                        )
+                except Exception as ex:
+                    logger.error(f"Lỗi khi xử lý tenant lifecycle event: {ex}")
 
         # 2. Xử lý sự kiện Card Action Callback (khi người dùng bấm nút trên Thẻ tương tác)
         is_card_action = False
