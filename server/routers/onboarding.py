@@ -193,6 +193,8 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
                 app_id=app_id_clean,
                 app_secret=settings.LARK_APP_SECRET,
             )
+            # Tự động kích hoạt / tái kết nối WebSocket ngầm với credentials mới
+            lark_service.start_ws_client(background=True)
         except Exception as e:
             logger.debug(f"Không thể reinit LarkService runtime: {e}")
 
