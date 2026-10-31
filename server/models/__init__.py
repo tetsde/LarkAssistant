@@ -45,6 +45,15 @@ from models.onboarding import (
     ProvisionBaseRequest,
 )
 
+from models.onboarding import (
+    TestKeyRequest,
+    SaveSettingsRequest,
+    ProvisionBaseRequest,
+    TestBotCredentialsRequest,
+    SaveBotConfigRequest,
+    TestMongoRequest,
+)
+
 __all__ = [
     "TestKeyRequest",
     "SaveSettingsRequest",

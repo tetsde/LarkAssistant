@@ -36,9 +36,31 @@ class SaveSettingsRequest(BaseModel):
     llm_timeout: Optional[float] = Field(default=60.0, description="Timeout (giây)")
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
+    app_id: Optional[str] = Field(default=None, description="Lark App ID (cli_xxx)")
+    app_secret: Optional[str] = Field(default=None, description="Lark App Secret")
+    custom_mongo_url: Optional[str] = Field(default=None, description="MongoDB Connection URI tùy chọn")
 
 
 class ProvisionBaseRequest(BaseModel):
     """Payload yêu cầu tự động khởi tạo Lark Base Quản trị Doanh nghiệp."""
     admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
+
+
+class TestBotCredentialsRequest(BaseModel):
+    """Payload kiểm tra tính hợp lệ của cặp App ID và App Secret với Lark Open Platform."""
+    app_id: str = Field(..., description="Mã ứng dụng Lark (bắt đầu bằng cli_)")
+    app_secret: str = Field(..., description="Khóa bí mật của ứng dụng Lark")
+
+
+class SaveBotConfigRequest(BaseModel):
+    """Payload lưu cấu hình Bot và kết nối MongoDB tùy chọn."""
+    app_id: str = Field(..., description="Mã ứng dụng Lark (cli_xxx)")
+    app_secret: Optional[str] = Field(default=None, description="Khóa bí mật của ứng dụng Lark")
+    custom_mongo_url: Optional[str] = Field(default=None, description="URI MongoDB tùy chọn")
+
+
+class TestMongoRequest(BaseModel):
+    """Payload kiểm tra kết nối tới cơ sở dữ liệu MongoDB."""
+    mongo_url: str = Field(..., description="URI kết nối MongoDB (mongodb:// hoặc mongodb+srv://)")
+    mongo_db: Optional[str] = Field(default="LarkAssistant", description="Tên database")
 

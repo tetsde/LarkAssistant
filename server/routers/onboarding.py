@@ -15,27 +15,234 @@ Cung cấp:
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.config import settings
+from database.db import get_system_config_collection
 from models.onboarding import (
     ProvisionBaseRequest,
+    SaveBotConfigRequest,
     SaveSettingsRequest,
+    TestBotCredentialsRequest,
     TestKeyRequest,
+    TestMongoRequest,
 )
 from services.user_settings_service import user_settings_service
 
 # Re-exported for backwards compatibility
-__all__ = ["router", "TestKeyRequest", "SaveSettingsRequest", "ProvisionBaseRequest"]
+__all__ = [
+    "router",
+    "TestKeyRequest",
+    "SaveSettingsRequest",
+    "ProvisionBaseRequest",
+    "TestBotCredentialsRequest",
+    "SaveBotConfigRequest",
+    "TestMongoRequest",
+]
 
 logger = logging.getLogger("hilark.router.onboarding")
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "onboarding_wizard.html"
+
+
+@router.post("/api/test-bot")
+async def test_bot_credentials_endpoint(req: TestBotCredentialsRequest):
+    """Kiểm tra trực tiếp cặp App ID & App Secret với Lark Open Platform."""
+    app_id_clean = req.app_id.strip()
+    app_secret_clean = req.app_secret.strip()
+
+    if not app_id_clean:
+        return {"success": False, "message": "App ID không được để trống."}
+    if not app_id_clean.startswith("cli_"):
+        return {
+            "success": False,
+            "message": "Định dạng App ID không hợp lệ. Mã ứng dụng Lark bắt buộc phải bắt đầu bằng tiền tố 'cli_' (Ví dụ: cli_aa4770ba50789e2c).",
+        }
+    if len(app_id_clean) < 10:
+        return {"success": False, "message": "App ID quá ngắn (tối thiểu 10 ký tự)."}
+    if not app_secret_clean or len(app_secret_clean) < 8:
+        return {"success": False, "message": "App Secret không được để trống và phải có độ dài hợp lệ."}
+
+    start_time = time.time()
+    try:
+        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{domain}/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": app_id_clean, "app_secret": app_secret_clean},
+            )
+            latency = round((time.time() - start_time) * 1000, 1)
+            data = resp.json()
+
+            if data.get("code") == 0:
+                return {
+                    "success": True,
+                    "message": f"Xác thực Lark Bot thành công ({latency}ms). Cặp App ID & App Secret hoàn toàn hợp lệ!",
+                    "latency_ms": latency,
+                    "app_id": app_id_clean,
+                }
+            else:
+                err_code = data.get("code")
+                err_msg = data.get("msg") or data.get("message") or f"Mã lỗi Lark: {err_code}"
+                return {
+                    "success": False,
+                    "message": f"Lark từ chối thông tin xác thực (Mã {err_code}): {err_msg}. Vui lòng kiểm tra lại App ID và App Secret trên Developer Console.",
+                    "latency_ms": latency,
+                }
+    except Exception as e:
+        latency = round((time.time() - start_time) * 1000, 1)
+        logger.error(f"Lỗi kiểm tra Lark credentials: {e}")
+        return {
+            "success": False,
+            "message": f"Không thể kết nối đến máy chủ Lark: {str(e)}",
+            "latency_ms": latency,
+        }
+
+
+@router.post("/api/test-mongo")
+async def test_mongo_connection_endpoint(req: TestMongoRequest):
+    """Kiểm tra độ sống và đo độ trễ của kết nối MongoDB (Custom MongoDB URL)."""
+    mongo_url = req.mongo_url.strip() if req.mongo_url else ""
+    if not mongo_url:
+        return {"success": False, "message": "URI MongoDB không được để trống."}
+
+    if not (mongo_url.startswith("mongodb://") or mongo_url.startswith("mongodb+srv://")):
+        return {
+            "success": False,
+            "message": "URI MongoDB không đúng định dạng. Phải bắt đầu bằng 'mongodb://' hoặc 'mongodb+srv://'.",
+        }
+
+    start_time = time.time()
+    test_client = None
+    try:
+        test_client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=4000)
+        # Ping cơ sở dữ liệu
+        await test_client.admin.command("ping")
+        latency = round((time.time() - start_time) * 1000, 1)
+        return {
+            "success": True,
+            "message": f"Kết nối MongoDB thành công ({latency}ms). Cơ sở dữ liệu hoạt động bình thường!",
+            "latency_ms": latency,
+        }
+    except Exception as e:
+        latency = round((time.time() - start_time) * 1000, 1)
+        logger.warning(f"Lỗi kết nối test MongoDB: {e}")
+        return {
+            "success": False,
+            "message": f"Không thể kết nối tới MongoDB: {str(e)}",
+            "latency_ms": latency,
+        }
+    finally:
+        if test_client:
+            try:
+                test_client.close()
+            except Exception:
+                pass
+
+
+@router.post("/api/save-bot-config")
+async def save_bot_config_endpoint(req: SaveBotConfigRequest):
+    """Lưu cấu hình Bot credentials và tùy chọn MongoDB vào hệ thống."""
+    app_id_clean = req.app_id.strip() if req.app_id else ""
+    if not app_id_clean or not app_id_clean.startswith("cli_"):
+        raise HTTPException(
+            status_code=400,
+            detail="App ID không hợp lệ. Phải bắt đầu bằng tiền tố 'cli_'.",
+        )
+
+    try:
+        coll = get_system_config_collection()
+        doc: Dict[str, Any] = {
+            "config_key": "bot_credentials",
+            "app_id": app_id_clean,
+            "custom_mongo_url": req.custom_mongo_url.strip() if req.custom_mongo_url else None,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+        }
+        if req.app_secret and req.app_secret.strip():
+            doc["encrypted_app_secret"] = user_settings_service.encrypt_key(req.app_secret.strip())
+            doc["masked_app_secret"] = user_settings_service.mask_key(req.app_secret.strip())
+
+        await coll.update_one(
+            {"config_key": "bot_credentials"},
+            {"$set": doc},
+            upsert=True,
+        )
+
+        # Cập nhật runtime settings
+        settings.LARK_APP_ID = app_id_clean
+        if req.app_secret and req.app_secret.strip():
+            settings.LARK_APP_SECRET = req.app_secret.strip()
+        if req.custom_mongo_url and req.custom_mongo_url.strip():
+            settings.MONGO_URL = req.custom_mongo_url.strip()
+
+        # Cập nhật LarkService singleton nếu có
+        try:
+            from services.lark import lark_service
+            lark_service.app_id = app_id_clean
+            if req.app_secret and req.app_secret.strip():
+                lark_service.app_secret = req.app_secret.strip()
+            lark_service._init_client(
+                app_id=app_id_clean,
+                app_secret=settings.LARK_APP_SECRET,
+            )
+        except Exception as e:
+            logger.debug(f"Không thể reinit LarkService runtime: {e}")
+
+        return {
+            "success": True,
+            "message": "Đã lưu cấu hình Lark Bot & Hạ tầng thành công!",
+            "data": {
+                "app_id": app_id_clean,
+                "custom_mongo_url": req.custom_mongo_url,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi lưu bot config: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/bot-config")
+async def get_bot_config_endpoint():
+    """Lấy cấu hình hiện tại của Lark Bot & MongoDB để hiển thị trên Wizard."""
+    current_app_id = getattr(settings, "LARK_APP_ID", "") or ""
+    current_secret = getattr(settings, "LARK_APP_SECRET", "") or ""
+    current_mongo = getattr(settings, "MONGO_URL", "") or "mongodb://localhost:27017"
+    masked_secret = user_settings_service.mask_key(current_secret) if current_secret else ""
+    has_credentials = bool(current_app_id and current_secret)
+    custom_mongo_url = None
+
+    try:
+        coll = get_system_config_collection()
+        doc = await coll.find_one({"config_key": "bot_credentials"})
+        if doc:
+            if doc.get("app_id"):
+                current_app_id = doc["app_id"]
+            if doc.get("masked_app_secret"):
+                masked_secret = doc["masked_app_secret"]
+            if doc.get("custom_mongo_url"):
+                custom_mongo_url = doc["custom_mongo_url"]
+            has_credentials = bool(current_app_id and (masked_secret or current_secret))
+    except Exception as e:
+        logger.debug(f"Chưa lấy được bot config từ MongoDB: {e}")
+
+    return {
+        "success": True,
+        "data": {
+            "app_id": current_app_id,
+            "masked_app_secret": masked_secret,
+            "has_credentials": has_credentials,
+            "custom_mongo_url": custom_mongo_url,
+            "default_mongo_url": current_mongo,
+        },
+    }
 
 
 @router.post("/api/provision-base")
@@ -91,6 +298,26 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
             llm_model=req.llm_model,
             llm_timeout=req.llm_timeout or 60.0,
         )
+
+        if req.app_id and req.app_id.strip():
+            try:
+                coll = get_system_config_collection()
+                bot_doc: Dict[str, Any] = {
+                    "config_key": "bot_credentials",
+                    "app_id": req.app_id.strip(),
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+                }
+                if req.app_secret and req.app_secret.strip():
+                    bot_doc["encrypted_app_secret"] = user_settings_service.encrypt_key(req.app_secret.strip())
+                    bot_doc["masked_app_secret"] = user_settings_service.mask_key(req.app_secret.strip())
+                    settings.LARK_APP_SECRET = req.app_secret.strip()
+                if req.custom_mongo_url and req.custom_mongo_url.strip():
+                    bot_doc["custom_mongo_url"] = req.custom_mongo_url.strip()
+                    settings.MONGO_URL = req.custom_mongo_url.strip()
+                await coll.update_one({"config_key": "bot_credentials"}, {"$set": bot_doc}, upsert=True)
+                settings.LARK_APP_ID = req.app_id.strip()
+            except Exception as bot_err:
+                logger.debug(f"Không thể cập nhật bot_credentials trong save_settings: {bot_err}")
         return {
             "success": True,
             "message": "Đã lưu cấu hình trợ lý thành công!",
