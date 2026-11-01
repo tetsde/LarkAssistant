@@ -59,6 +59,18 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
 
     app_id = event.get("app_id") or header.get("app_id") or getattr(settings, "LARK_APP_ID", "")
 
+    # Trích xuất operator_id (admin thực hiện cài đặt/mở app)
+    operator_id = ""
+    if "operator" in event and isinstance(event["operator"], dict):
+        op = event["operator"]
+        op_id_obj = op.get("operator_id")
+        if isinstance(op_id_obj, dict):
+            operator_id = op_id_obj.get("open_id") or op_id_obj.get("user_id", "")
+        elif isinstance(op_id_obj, str):
+            operator_id = op_id_obj
+    if not operator_id:
+        operator_id = event.get("operator_id") or event.get("user_id") or ""
+
     record = {
         "tenant_key": tenant_key,
         "app_id": app_id,
@@ -67,6 +79,8 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
         "raw_status": raw_status,
         "updated_at": get_vietnam_now_iso(),
     }
+    if operator_id:
+        record["admin_open_id"] = operator_id
 
     try:
         col = get_tenants_collection()
@@ -82,6 +96,50 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
             f"✔ [TENANT LIFECYCLE] Doanh nghiệp '{tenant_key}' đã ghi nhận trạng thái: "
             f"'{normalized_status}' (Sự kiện: {event_type})"
         )
+
+        # Tự động cấp phát không gian WeKnora & Lark Base khi doanh nghiệp kích hoạt app (EDL-0020)
+        if normalized_status == "active" and tenant_key:
+            try:
+                from services.knowledge.weknora_provision_service import weknora_provision_service
+                tenant_cfg = await weknora_provision_service.provision_tenant_weknora(
+                    tenant_key=tenant_key,
+                    enterprise_name=f"Enterprise {tenant_key}",
+                    admin_open_id=operator_id or None,
+                )
+
+                from services.lark.base_provision_service import base_provision_service
+                await base_provision_service.provision_enterprise_base(
+                    admin_open_id=operator_id or None,
+                    tenant_key=tenant_key,
+                )
+
+                # Gửi Thẻ tương tác Chào mừng & Bàn giao tài nguyên cho Admin (EDL-0021)
+                if operator_id and tenant_cfg:
+                    from services.lark import lark_service
+                    from services.lark.card_builder import build_marketplace_welcome_card
+
+                    welcome_card = build_marketplace_welcome_card(tenant_cfg)
+                    try:
+                        res = await lark_service.send_bot_dm_to_owner(
+                            text=welcome_card,
+                            target_open_id=operator_id,
+                            tenant_key=tenant_key,
+                        )
+                        if not res.get("success"):
+                            raise RuntimeError(f"Gửi card thất bại: {res.get('msg')}")
+                        logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi Welcome Card tương tác tới Admin ({operator_id})")
+                    except Exception as card_err:
+                        logger.warning(f"Lỗi khi gửi Welcome Card, fallback sang tin nhắn văn bản: {card_err}")
+                        handover_text = weknora_provision_service.build_handover_message(tenant_cfg)
+                        await lark_service.send_bot_dm_to_owner(
+                            text=handover_text,
+                            target_open_id=operator_id,
+                            tenant_key=tenant_key,
+                        )
+                        logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi thông điệp bàn giao WeKnora (text fallback) tới Admin ({operator_id})")
+            except Exception as prov_err:
+                logger.error(f"Lỗi khi tự động cấp phát tài nguyên cho tenant {tenant_key}: {prov_err}", exc_info=True)
+
         return True
     except Exception as e:
         logger.error(f"Lỗi khi lưu trạng thái tenant lifecycle: {e}", exc_info=True)

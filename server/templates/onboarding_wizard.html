@@ -508,8 +508,77 @@
         </div>
 
         <div class="slider-wrapper">
-            <!-- SLIDE 1: BOT SETUP & INFRASTRUCTURE -->
+            <!-- SLIDE 1: BOT SETUP & INFRASTRUCTURE (Adaptive Dual-Mode) -->
             <div class="slide active" id="slide1">
+                <!-- ISV Mode Container -->
+                <div id="isvWorkspaceContainer" style="display: none;">
+                    <div style="display: inline-flex; align-items: center; gap: 6px; background: var(--accent-light); border: 1px solid var(--accent-border); border-radius: 999px; padding: 4px 12px; margin-bottom: 12px;">
+                        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent);"></span>
+                        <span style="font-size: 11.5px; font-weight: 600; color: var(--accent); letter-spacing: 0.02em;">LARK STORE APP &bull; ISV MULTI-TENANT</span>
+                    </div>
+                    <h2>Không Gian Doanh Nghiệp &amp; Bàn Giao</h2>
+                    <p class="desc">Chào mừng {{effective_user_name}} đến với HiLark. Không gian làm việc của doanh nghiệp đã được kích hoạt tự động với đầy đủ hạ tầng tri thức và điều hành:</p>
+
+                    <!-- ISV Tenant Details Card -->
+                    <div class="admin-card" style="margin-bottom: 12px;">
+                        <div class="admin-card-header">
+                            <div class="admin-card-title">Mã Định Danh Doanh Nghiệp (Tenant)</div>
+                            <span class="status-pill connected">Đã kích hoạt</span>
+                        </div>
+                        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--text-primary); margin-top: 6px;">
+                            <span style="color: var(--text-secondary);">Tenant Key:</span>
+                            <code style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; background: var(--surface-tertiary); padding: 3px 8px; border-radius: 6px; color: var(--text-primary);">{{effective_tenant_key}}</code>
+                        </div>
+                        <div style="font-size: 11.5px; color: var(--text-secondary); margin-top: 6px; line-height: 1.4;">
+                            Mọi dữ liệu tài liệu, nhật ký công việc và cấu hình được mã hóa và cô lập hoàn toàn cho tổ chức của bạn.
+                        </div>
+                    </div>
+
+                    <!-- Lark Base Provisioned Info Card -->
+                    <div class="admin-card" style="margin-bottom: 12px;">
+                        <div class="admin-card-header">
+                            <div class="admin-card-title">Lark Base Quản Trị Doanh Nghiệp</div>
+                            <span id="isvBaseStatusBadge" class="status-pill connected">Đã cấp phát</span>
+                        </div>
+                        <div class="admin-card-desc">
+                            Trung tâm điều hành danh mục 3 dự án (Atlas, Pulse, Sentinel) và chính sách công ty.
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px;">
+                            <a id="isvLinkOpenBase" href="#" target="_blank" class="btn btn-primary-action" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
+                                Mở Lark Base Quản Trị ↗
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- WeKnora Knowledge Base Card -->
+                    <div class="admin-card" id="isvWeknoraCard" style="margin-bottom: 12px;">
+                        <div class="admin-card-header">
+                            <div class="admin-card-title">Kho Tri Thức WeKnora Doanh Nghiệp</div>
+                            <span class="status-pill connected">Đã sẵn sàng</span>
+                        </div>
+                        <div class="admin-card-desc">
+                            Không gian lưu trữ Policy &amp; Wiki Daily Digests riêng biệt cho doanh nghiệp.
+                        </div>
+                        <div style="background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; font-size: 12.5px; line-height: 1.6;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: var(--text-secondary);">Cổng quản trị:</span>
+                                <a id="isvWeknoraLoginLink" href="#" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Mở WeKnora ↗</a>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: var(--text-secondary);">Tài khoản Admin:</span>
+                                <code id="isvWeknoraUsername" style="font-family: ui-monospace, monospace; font-weight: 600; color: var(--text-primary); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;">admin</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                                <span style="color: var(--text-secondary);">Mật khẩu khởi tạo:</span>
+                                <code id="isvWeknoraPassword" style="font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;">(đang tải)</code>
+                            </div>
+                            <div id="isvWeknoraDatasetsInfo" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom App Mode Container (Existing Single-Tenant) -->
+                <div id="customAppWorkspaceContainer">
                 <h2>Kết Nối Lark Bot &amp; Hạ Tầng Điều Hành</h2>
                 <p class="desc">Chào mừng {{effective_user_name}} đến với HiLark. Thiết lập danh tính trợ lý AI trên Lark Developer và cấu hình cổng giao tiếp cho doanh nghiệp.</p>
                 
@@ -627,6 +696,7 @@
                         </div>
                     </div>
                 </div>
+                </div>
             </div>
 
             <!-- SLIDE 2: AI ENGINE & MULTI-PROVIDER BYOK -->
@@ -707,6 +777,7 @@
                         </div>
                     </label>
                 </div>
+                <div id="saveFeedbackSlide3" style="text-align: center; margin-top: 10px;"></div>
             </div>
 
             <!-- SLIDE 4: OAUTH & COMPLETE -->
@@ -756,6 +827,32 @@
                     </div>
                 </div>
 
+                <!-- WeKnora Knowledge Base Card (Solution B) -->
+                <div class="admin-card" id="weknoraCard" style="display: none;">
+                    <div class="admin-card-header">
+                        <div class="admin-card-title">Kho Tri Thức WeKnora Doanh Nghiệp</div>
+                        <span id="weknoraStatusBadge" class="status-pill connected">Đã sẵn sàng</span>
+                    </div>
+                    <div class="admin-card-desc">
+                        Không gian lưu trữ Policy &amp; Wiki Daily Digests riêng biệt cho doanh nghiệp.
+                    </div>
+                    <div style="background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.6;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="color: var(--text-secondary);">Cổng quản trị:</span>
+                            <a id="weknoraLoginLink" href="#" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Mở WeKnora ↗</a>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="color: var(--text-secondary);">Tài khoản Admin:</span>
+                            <code id="weknoraUsername" style="font-family: -apple-system-ui-monospace, monospace; font-weight: 600; color: var(--text-primary); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;"></code>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                            <span style="color: var(--text-secondary);">Mật khẩu khởi tạo:</span>
+                            <code id="weknoraPassword" style="font-family: -apple-system-ui-monospace, monospace; font-weight: 600; color: var(--accent); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;"></code>
+                        </div>
+                        <div id="weknoraDatasetsInfo" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px;"></div>
+                    </div>
+                </div>
+
                 <div id="saveFeedback" style="text-align: center; margin-top: 10px;"></div>
             </div>
         </div>
@@ -769,11 +866,24 @@
     </div>
 
     <script>
-        let currentStep = 1;
-        const totalSteps = 4;
-        let isByok = false;
         const userOpenId = "{{effective_open_id}}";
         const userName = "{{effective_user_name}}";
+        const tenantKey = "{{effective_tenant_key}}";
+        const isIsvMode = Boolean(tenantKey && tenantKey.trim());
+        let totalSteps = isIsvMode ? 3 : 4;
+        let currentStep = 1;
+        let isByok = false;
+
+        const stepTitles = isIsvMode ? [
+            "BƯỚC 1 / 3: KHÔNG GIAN DOANH NGHIỆP & BÀN GIAO",
+            "BƯỚC 2 / 3: CẤU HÌNH AI & BYOK",
+            "BƯỚC 3 / 3: LỊCH BÁO CÁO & DUYỆT AN TOÀN"
+        ] : [
+            "BƯỚC 1 / 4: KẾT NỐI LARK BOT & HẠ TẦNG",
+            "BƯỚC 2 / 4: CẤU HÌNH AI & BYOK",
+            "BƯỚC 3 / 4: DAILY DIGEST & HITL",
+            "BƯỚC 4 / 4: HOÀN TẤT & LƯU"
+        ];
 
         const providerDefaults = {
             google: {
@@ -1010,15 +1120,8 @@
             }
         }
 
-        const stepTitles = [
-            "BƯỚC 1 / 4: KẾT NỐI LARK BOT & HẠ TẦNG",
-            "BƯỚC 2 / 4: CẤU HÌNH AI & BYOK",
-            "BƯỚC 3 / 4: DAILY DIGEST & HITL",
-            "BƯỚC 4 / 4: HOÀN TẤT & LƯU"
-        ];
-
         async function navigateStep(direction) {
-            if (direction === 1 && currentStep === 1) {
+            if (direction === 1 && currentStep === 1 && !isIsvMode) {
                 const appId = document.getElementById("inputAppId") ? document.getElementById("inputAppId").value.trim() : "";
                 if (appId && !appId.startsWith("cli_")) {
                     alert('Lỗi: App ID bắt buộc phải bắt đầu bằng "cli_". Vui lòng kiểm tra lại trước khi tiếp tục.');
@@ -1040,11 +1143,19 @@
         }
 
         function updateUI() {
-            document.getElementById("stepIndicator").innerText = stepTitles[currentStep - 1];
+            document.getElementById("stepIndicator").innerText = stepTitles[currentStep - 1] || "";
 
-            for (let i = 1; i <= totalSteps; i++) {
+            for (let i = 1; i <= 4; i++) {
                 const slide = document.getElementById(`slide${i}`);
                 const dot = document.getElementById(`dot${i}`);
+                if (!slide || !dot) continue;
+
+                if (isIsvMode && i > totalSteps) {
+                    slide.classList.remove("active");
+                    dot.style.display = "none";
+                    continue;
+                }
+
                 if (i === currentStep) {
                     slide.classList.add("active");
                     dot.classList.add("active");
@@ -1066,7 +1177,7 @@
             btnPrev.style.display = currentStep > 1 ? "inline-flex" : "none";
 
             if (currentStep === 1) {
-                btnNext.innerText = "Bắt đầu thiết lập";
+                btnNext.innerText = isIsvMode ? "Tiếp tục" : "Bắt đầu thiết lập";
             } else if (currentStep === totalSteps) {
                 btnNext.innerText = "Hoàn tất & Lưu";
             } else {
@@ -1131,7 +1242,8 @@
 
         async function saveFinalSettings() {
             const btnNext = document.getElementById("btnNext");
-            const feedback = document.getElementById("saveFeedback");
+            const feedback1 = document.getElementById("saveFeedback");
+            const feedback2 = document.getElementById("saveFeedbackSlide3");
             btnNext.innerText = "Đang lưu cấu hình...";
             btnNext.disabled = true;
 
@@ -1143,6 +1255,7 @@
             const payload = {
                 open_id: userOpenId,
                 user_name: userName,
+                tenant_key: tenantKey || null,
                 is_byok_enabled: isByok,
                 raw_gemini_key: isByok ? document.getElementById("geminiKeyInput").value.trim() : null,
                 llm_provider: isByok ? provider : "google",
@@ -1156,6 +1269,11 @@
                 custom_mongo_url: document.getElementById("inputMongoUrl") ? document.getElementById("inputMongoUrl").value.trim() : null
             };
 
+            const setFeedback = (html) => {
+                if (feedback1) feedback1.innerHTML = html;
+                if (feedback2) feedback2.innerHTML = html;
+            };
+
             try {
                 const res = await fetch("/onboarding/api/save", {
                     method: "POST",
@@ -1164,17 +1282,17 @@
                 });
                 const result = await res.json();
                 if (result.success) {
-                    feedback.innerHTML = '<div style="color: var(--success); font-weight: 600; font-size: 14px; margin-top: 12px;">Cài đặt hoàn tất.<br><span style="font-size: 12.5px; font-weight: 400; color: var(--text-secondary);">Cửa sổ sẽ tự đóng sau 2 giây. Bạn có thể bắt đầu nhắn tin với Bot.</span></div>';
+                    setFeedback('<div style="color: var(--success); font-weight: 600; font-size: 14px; margin-top: 12px;">Cài đặt hoàn tất.<br><span style="font-size: 12.5px; font-weight: 400; color: var(--text-secondary);">Kho tri thức WeKnora &amp; Lark Base đã sẵn sàng. Cửa sổ sẽ tự đóng sau 3 giây. Bạn có thể bắt đầu sử dụng.</span></div>');
                     setTimeout(() => {
                         window.close();
-                    }, 2200);
+                    }, 3000);
                 } else {
-                    feedback.innerHTML = `<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">${result.message || 'Lỗi khi lưu cấu hình'}</div>`;
+                    setFeedback(`<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">${result.message || 'Lỗi khi lưu cấu hình'}</div>`);
                     btnNext.innerText = "Thử lại";
                     btnNext.disabled = false;
                 }
             } catch (e) {
-                feedback.innerHTML = `<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">Lỗi hệ thống: ${e.message}</div>`;
+                setFeedback(`<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">Lỗi hệ thống: ${e.message}</div>`);
                 btnNext.innerText = "Thử lại";
                 btnNext.disabled = false;
             }
@@ -1190,7 +1308,10 @@
                 const res = await fetch("/onboarding/api/provision-base", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ admin_open_id: userOpenId })
+                    body: JSON.stringify({
+                        admin_open_id: userOpenId,
+                        tenant_key: tenantKey || null
+                    })
                 });
                 const data = await res.json();
                 if (data.success && data.data) {
@@ -1347,14 +1468,24 @@
         window.addEventListener("DOMContentLoaded", async () => {
             onProviderChange();
 
+            if (isIsvMode) {
+                const isvC = document.getElementById("isvWorkspaceContainer");
+                const custC = document.getElementById("customAppWorkspaceContainer");
+                const dot4 = document.getElementById("dot4");
+                if (isvC) isvC.style.display = "block";
+                if (custC) custC.style.display = "none";
+                if (dot4) dot4.style.display = "none";
+            }
+
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get("step")) {
                 const targetStep = parseInt(urlParams.get("step"));
                 if (!isNaN(targetStep) && targetStep >= 1 && targetStep <= totalSteps) {
                     currentStep = targetStep;
-                    updateUI();
                 }
             }
+            updateUI();
+
             if (urlParams.get("auth") === "success") {
                 const sf = document.getElementById("saveFeedback");
                 if (sf) {
@@ -1367,7 +1498,8 @@
                     checkAuthStatusLive(),
                     loadBotConfig(),
                     (async () => {
-                        const res = await fetch(`/onboarding/api/settings/${userOpenId}`);
+                        const settingsUrl = `/onboarding/api/settings/${userOpenId}${tenantKey ? `?tenant_key=${encodeURIComponent(tenantKey)}` : ''}`;
+                        const res = await fetch(settingsUrl);
                         const json = await res.json();
                         if (json.success && json.data) {
                             const d = json.data;
@@ -1410,9 +1542,44 @@
                                     link.href = d.base_info.app_url;
                                     link.style.display = "inline-flex";
                                 }
+                                const isvLink = document.getElementById("isvLinkOpenBase");
+                                if (isvLink) {
+                                    isvLink.href = d.base_info.app_url;
+                                }
                                 const btn = document.getElementById("btnProvisionBase");
                                 if (btn) {
                                     btn.innerText = "Đã kết nối";
+                                }
+                            }
+
+                            if (d.weknora_info) {
+                                const wCard = document.getElementById("weknoraCard");
+                                if (wCard) wCard.style.display = "block";
+                                const uEl = document.getElementById("weknoraUsername");
+                                if (uEl) uEl.innerText = d.weknora_info.admin_username || "admin";
+                                const pEl = document.getElementById("weknoraPassword");
+                                if (pEl) pEl.innerText = d.weknora_info.admin_password || "(đã lưu)";
+                                const lEl = document.getElementById("weknoraLoginLink");
+                                if (lEl && d.weknora_info.weknora_login_url) {
+                                    lEl.href = d.weknora_info.weknora_login_url;
+                                }
+                                const dsEl = document.getElementById("weknoraDatasetsInfo");
+                                if (dsEl) {
+                                    dsEl.innerText = `Policy KB: ${d.weknora_info.policy_dataset_id || 'kb_default'} | Wiki KB: ${d.weknora_info.wiki_dataset_id || 'kb_wiki'}`;
+                                }
+
+                                // Cập nhật cho ISV Mode cards
+                                const isvU = document.getElementById("isvWeknoraUsername");
+                                if (isvU) isvU.innerText = d.weknora_info.admin_username || "admin";
+                                const isvP = document.getElementById("isvWeknoraPassword");
+                                if (isvP) isvP.innerText = d.weknora_info.admin_password || "(đã lưu)";
+                                const isvL = document.getElementById("isvWeknoraLoginLink");
+                                if (isvL && d.weknora_info.weknora_login_url) {
+                                    isvL.href = d.weknora_info.weknora_login_url;
+                                }
+                                const isvDs = document.getElementById("isvWeknoraDatasetsInfo");
+                                if (isvDs) {
+                                    isvDs.innerText = `Policy KB: ${d.weknora_info.policy_dataset_id || 'kb_default'} | Wiki KB: ${d.weknora_info.wiki_dataset_id || 'kb_wiki'}`;
                                 }
                             }
                         }

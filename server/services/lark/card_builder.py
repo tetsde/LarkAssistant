@@ -885,6 +885,7 @@ def build_onboarding_welcome_card(
     open_id: str,
     user_name: str = "",
     base_url: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Xây dựng Thẻ chào mừng & Điều hướng thiết lập cá nhân hóa (Onboarding Screen Guide).
@@ -896,7 +897,8 @@ def build_onboarding_welcome_card(
 
     resolved_base = (base_url or settings.APP_BASE_URL).rstrip("/")
     display_name = user_name.strip() if user_name else "bạn"
-    wizard_url = f"{resolved_base}/onboarding/wizard?open_id={open_id}&user_name={urllib.parse.quote(display_name)}"
+    tenant_param = f"&tenant_key={urllib.parse.quote(tenant_key)}" if tenant_key else ""
+    wizard_url = f"{resolved_base}/onboarding/wizard?open_id={open_id}&user_name={urllib.parse.quote(display_name)}{tenant_param}"
     
     # Chuỗi mở Modal Webview tiêu chuẩn của Lark Applink
     applink_url = f"https://applink.larksuite.com/client/web_url/open?url={urllib.parse.quote(wizard_url)}&mode=window&height=660&width=560"
@@ -1055,6 +1057,235 @@ def build_base_provisioned_card(
             "title": {
                 "tag": "plain_text",
                 "content": "Khởi Tạo Lark Base Quản Trị Thành Công",
+            },
+        },
+        "elements": elements,
+    }
+
+
+def build_marketplace_welcome_card(
+    tenant_config: Any,
+    wizard_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Xây dựng Thẻ tương tác Chào mừng (Marketplace Welcome Card V2) gửi qua Lark DM cho Admin.
+    Tự động hiển thị đường dẫn Lark Base trên Drive, tài khoản WeKnora Admin và nút mở Screen Guide.
+    """
+    ent_name = getattr(tenant_config, "enterprise_name", None) or getattr(tenant_config, "tenant_name", None) or "Doanh nghiệp"
+    base_url = getattr(tenant_config, "bitable_app_url", "") or "https://open.larksuite.com"
+    creds = getattr(tenant_config, "weknora_admin_user", None)
+    
+    username = getattr(creds, "username", "") if creds else ""
+    password = getattr(creds, "initial_password", "") if creds else ""
+    web_url = getattr(creds, "web_url", "") if creds else "http://localhost:8080/login"
+    tenant_key = getattr(tenant_config, "tenant_key", "")
+
+    effective_wizard_url = wizard_url or f"/onboarding/wizard?tenant_key={tenant_key}"
+
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**Kính chào Quản trị viên {ent_name}!**\n\n"
+                    "Trợ lý HiLark đã được kích hoạt thành công trên không gian làm việc của bạn từ Lark App Directory. "
+                    "Hạ tầng quản trị và kho tri thức riêng biệt đã được thiết lập tự động 100%:"
+                ),
+            },
+        },
+        {
+            "tag": "hr",
+        },
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    "**1. Trung Tâm Quản Trị Dự Án & Nhóm Chat (Lark Base)**\n"
+                    "Đã tạo sẵn trên Lark Drive của bạn với cấu trúc 3 dự án (Atlas, Pulse, Sentinel) và Chính sách công ty. "
+                    "Bạn có toàn quyền Owner/Editor để gán nhóm chat và tài liệu."
+                ),
+            },
+        },
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    "**2. Không Gian Tri Thức & Wiki Báo Cáo (WeKnora Web)**\n"
+                    f"• Cổng đăng nhập: [Mở WeKnora Web Console]({web_url})\n"
+                    f"• Tài khoản: `{username}`\n"
+                    f"• Mật khẩu ban đầu: `{password}`\n\n"
+                    "Dùng để tra cứu và đọc lại toàn văn các bản tổng hợp công việc (Daily Digests) chi tiết của toàn công ty."
+                ),
+            },
+        },
+        {
+            "tag": "hr",
+        },
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Mở Lark Base Quản Trị",
+                    },
+                    "type": "primary",
+                    "url": base_url,
+                    "multi_url": {
+                        "url": base_url,
+                        "pc_url": base_url,
+                        "android_url": base_url,
+                        "ios_url": base_url,
+                    },
+                },
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Đăng Nhập WeKnora",
+                    },
+                    "type": "default",
+                    "url": web_url,
+                    "multi_url": {
+                        "url": web_url,
+                        "pc_url": web_url,
+                        "android_url": web_url,
+                        "ios_url": web_url,
+                    },
+                },
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Tùy Chỉnh Thiết Lập",
+                    },
+                    "type": "default",
+                    "url": effective_wizard_url,
+                    "multi_url": {
+                        "url": effective_wizard_url,
+                        "pc_url": effective_wizard_url,
+                        "android_url": effective_wizard_url,
+                        "ios_url": effective_wizard_url,
+                    },
+                },
+            ],
+        },
+        {
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": "Thêm bot HiLark vào các nhóm chat cần hỗ trợ để bắt đầu nhận diện thảo luận và tổng hợp báo cáo tự động.",
+                }
+            ],
+        },
+    ]
+
+    return {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": f"HiLark — Trợ Lý AI {ent_name} Đã Sẵn Sàng",
+            },
+        },
+        "elements": elements,
+    }
+
+
+def build_admin_status_card(
+    tenant_config: Any,
+    active_chat_count: int = 0,
+    wizard_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Xây dựng Thẻ báo cáo trạng thái vận hành của doanh nghiệp cho Admin (/status).
+    """
+    if isinstance(tenant_config, dict):
+        try:
+            from models.tenant import TenantConfigRecord
+            tenant_config = TenantConfigRecord.from_dict(tenant_config)
+        except Exception:
+            pass
+
+    ent_name = getattr(tenant_config, "enterprise_name", None) or getattr(tenant_config, "tenant_name", None) or "Doanh nghiệp"
+    base_url = getattr(tenant_config, "bitable_app_url", "") or ""
+    tenant_key = getattr(tenant_config, "tenant_key", "")
+    policy_kb = getattr(tenant_config, "weknora_policy_dataset_id", "") or "Đang kết nối"
+    wiki_kb = getattr(tenant_config, "weknora_wiki_dataset_id", "") or "Đang kết nối"
+    creds = getattr(tenant_config, "weknora_admin_user", None)
+    web_url = getattr(creds, "web_url", "") if creds else "http://localhost:8080/login"
+
+    effective_wizard_url = wizard_url or f"/onboarding/wizard?tenant_key={tenant_key}"
+
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**Báo Cáo Hiện Trạng Vận Hành — {ent_name}**\n\n"
+                    f"• **Mã Doanh Nghiệp (Tenant):** `{tenant_key}`\n"
+                    f"• **Nhóm Chat Phân Quyền:** {active_chat_count} nhóm đang hoạt động\n"
+                    f"• **Lark Base Quản Trị:** {'Đã kết nối' if base_url else 'Chưa khởi tạo'}\n"
+                    f"• **Kho Tri Thức Policy:** `{policy_kb}`\n"
+                    f"• **Kho Tri Thức Wiki:** `{wiki_kb}`\n"
+                ),
+            },
+        },
+        {
+            "tag": "hr",
+        },
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Mở Lark Base",
+                    },
+                    "type": "primary",
+                    "url": base_url or "#",
+                },
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "WeKnora Console",
+                    },
+                    "type": "default",
+                    "url": web_url,
+                },
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Cấu Hình (Wizard)",
+                    },
+                    "type": "default",
+                    "url": effective_wizard_url,
+                },
+            ],
+        },
+    ]
+
+    return {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "turquoise",
+            "title": {
+                "tag": "plain_text",
+                "content": f"Bảng Điều Khiển Quản Trị — {ent_name}",
             },
         },
         "elements": elements,

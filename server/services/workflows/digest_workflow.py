@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from core.config import settings
+from database.scoped_query import get_current_tenant_key, inject_tenant_filter
 from services.ai.gemini_client import LLMClient, llm_client
 from database.db import (
     get_staging_collection,
@@ -551,20 +552,24 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         self,
         digest: DailyDigestRecord,
         dataset_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> bool:
         """
         Đẩy bản Markdown của DailyDigestRecord lên WeKnora làm tri thức tìm kiếm RAG.
         Cập nhật trạng thái sync_status = 'synced' và weknora_doc_id.
+        Tự động định tuyến theo tenant_key đa doanh nghiệp.
         """
         from services.knowledge.chat_scopes import scope_service
 
-        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(digest.chat_id)
+        eff_tenant = tenant_key or getattr(digest, "tenant_key", None) or get_current_tenant_key()
+
+        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(digest.chat_id, tenant_key=eff_tenant)
         target_kb = dataset_id or digest.weknora_kb_id or scoped_wiki_kb or settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID
         if target_kb and "," in target_kb:
             target_kb = target_kb.split(",")[0].strip()
 
         if not target_kb:
-            logger.warning("Không tìm thấy wiki_dataset_id để đồng bộ sang WeKnora.")
+            logger.warning(f"Không tìm thấy wiki_dataset_id để đồng bộ sang WeKnora cho tenant '{eff_tenant}'.")
             digest.sync_status = "failed"
             return False
 

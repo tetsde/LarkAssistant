@@ -33,6 +33,7 @@ from models.larkbase import (
 )
 
 from models.chat_queue import ChatQueueItem
+from models.tenant import TenantConfigRecord, WeKnoraAdminCredentials
 from models.docreader import (
     DocReaderResult,
     DocParseResult,
@@ -49,6 +50,7 @@ from models.onboarding import (
     TestKeyRequest,
     SaveSettingsRequest,
     ProvisionBaseRequest,
+    ProvisionWeKnoraRequest,
     TestBotCredentialsRequest,
     SaveBotConfigRequest,
     TestMongoRequest,
@@ -96,5 +98,8 @@ __all__ = [
     "LarkBaseField",
     "LarkBaseRecord",
     "LarkBaseQueryResult",
+    "TenantConfigRecord",
+    "WeKnoraAdminCredentials",
+    "ProvisionWeKnoraRequest",
 ]
 

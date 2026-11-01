@@ -36,6 +36,7 @@ class SaveSettingsRequest(BaseModel):
     llm_timeout: Optional[float] = Field(default=60.0, description="Timeout (giây)")
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
+    tenant_key: Optional[str] = Field(default=None, description="Mã tenant ISV nếu có")
     app_id: Optional[str] = Field(default=None, description="Lark App ID (cli_xxx)")
     app_secret: Optional[str] = Field(default=None, description="Lark App Secret")
     custom_mongo_url: Optional[str] = Field(default=None, description="MongoDB Connection URI tùy chọn")
@@ -44,6 +45,15 @@ class SaveSettingsRequest(BaseModel):
 class ProvisionBaseRequest(BaseModel):
     """Payload yêu cầu tự động khởi tạo Lark Base Quản trị Doanh nghiệp."""
     admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant ISV nếu có")
+
+
+class ProvisionWeKnoraRequest(BaseModel):
+    """Payload yêu cầu khởi tạo không gian tri thức WeKnora đa doanh nghiệp."""
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant")
+    enterprise_name: Optional[str] = Field(default=None, description="Tên doanh nghiệp")
+    admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
+    admin_email: Optional[str] = Field(default=None, description="Email của Admin")
 
 
 class TestBotCredentialsRequest(BaseModel):

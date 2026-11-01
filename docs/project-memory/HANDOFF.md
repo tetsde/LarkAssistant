@@ -14,7 +14,8 @@
   8. **Hoàn thành Workstream 1 - Vòng đời Token ISV & Marketplace Auth Engine:** Xây dựng `ISVTokenService`, nhận `app_ticket` qua webhook, cấp mới và cache `app_access_token` và `tenant_access_token` độc lập theo `tenant_key`, Dual-Mode tương thích ngược Custom App (9 TCs passed).
   9. **Hoàn thành Workstream 2 - Cô lập Dữ liệu Multi-Tenant trong MongoDB:** Bổ sung `tenant_key` vào 6 Models cốt lõi (`Entity`, `Fact`, `ChatScopeRecord`, `StagingMessage`, `DailyDigestRecord`, `UserSettingsRecord`), nâng cấp Index Model compound với tiền tố `tenant_key`, xây dựng `TenantScopedCollection` & `scoped_query` engine chống rò rỉ dữ liệu chéo giữa các công ty (6 TCs passed).
   10. **Hoàn thành Workstream 3 - Bộ định tuyến Sự kiện & Client Pool Đa Doanh nghiệp:** Bóc tách `tenant_key` từ Event Header / Sender trong `parse_event`, tự động kích hoạt `TenantContext` trong `_dispatch_to_handlers`, xử lý sự kiện Vòng đời Doanh nghiệp `app_status_change` & `app_uninstalled` qua `tenant_lifecycle_handler`, hỗ trợ `tenant_key` trong các hàm gửi tin `messenger.py` (8 TCs passed).
-- **Status:** WORKSTREAM 3 HOÀN TẤT VÀ KIỂM THỬ 100%. TOÀN BỘ 82/82 TEST CASES PASSED TRONG 3.11S. DỪNG LẠI CHỜ NGƯỜI DÙNG KIỂM TRA TRƯỚC KHI SANG WORKSTREAM 4.
+  11. **Hoàn thành Workstream 4 - Đa Dataset WeKnora & Auto-Provision Bitable theo Doanh nghiệp:** Tự động cấp phát WeKnora Tenant và bộ 2 KB chuẩn (Policy & Wiki Digest), sinh mật khẩu Admin ngẫu nhiên an toàn, bàn giao qua Lark DM và nhúng thông tin trực tiếp vào Screen Guide Onboarding Wizard (Giải pháp B), tự động tạo Lark Base trên Drive doanh nghiệp theo `tenant_key` (10 TCs passed).
+- **Status:** WORKSTREAM 4 HOÀN TẤT VÀ KIỂM THỬ 100%. TOÀN BỘ 98/98 TEST CASES PASSED TRONG 2.71S. DỪNG LẠI CHỜ NGƯỜI DÙNG KIỂM TRA TRƯỚC KHI SANG WORKSTREAM 5.
 
 ## What is confirmed
 - **Toàn bộ 52/52 Unit & Integration Tests Đều Đạt 100% (PASSED):**
@@ -163,11 +164,12 @@
   * **Workstream 2 (Cô lập Dữ liệu Multi-Tenant trong MongoDB)**: Gắn `tenant_key` trên cả 6 models nghiệp vụ, thiết lập Compound Indexes với tiền tố `tenant_key`, xây dựng `TenantScopedCollection` và `inject_tenant_filter` (6/6 tests pass).
   * **Workstream 3 (Bộ định tuyến Sự kiện & Client Pool Đa Doanh nghiệp)**: Trích xuất `tenant_key` từ webhook header/sender, tự động bao bọc luồng async bằng `async_tenant_context(tenant_key)`, cài đặt lifecycle handler (`app_status_change`, `app_uninstalled`) và mở rộng Messenger API (8/8 tests pass).
   * **Multi-Tenant Claims & Knowledge Isolation Hardening**: Bọc kín toàn diện truy vấn tri thức (`get_all_facts`, `get_all_entities`, `save_extraction_to_mongo`, `get_scope_by_chat_id`), bổ sung lớp Defense-in-depth trong `ContextComposer` (loại bỏ triệt để claims của tenant khác kể cả khi `scope_type="global"`), mở rộng `ChatQueueItem` truyền thông suốt `tenant_key` (6/6 tests pass).
-- **Tổng kiểm thử Final Test Suite (ISV Multi-Tenant):** **88/88 PASSED 100%** (chạy trong 4.07s).
+  * **Workstream 4 (Đa Dataset WeKnora & Auto-Provision Bitable theo Doanh nghiệp)**: Cấp phát không gian tri thức 3 tầng (`policy_dataset_id`, `wiki_dataset_id`, `project_dataset_id`), tự động tạo WeKnora Tenant & Admin Credentials (Giải pháp B), bàn giao tài khoản qua Lark DM và hiển thị trực tiếp trên Screen Guide Onboarding Wizard, tự động tạo Lark Base trên Drive khách theo `tenant_key` (10/10 tests pass).
+- **Tổng kiểm thử Final Test Suite (ISV Multi-Tenant):** **98/98 PASSED 100%** (chạy trong 2.71s).
 
 ## Next concrete steps
-1. Trả lời chi tiết và giải thích cặn kẽ thắc mắc của User về Claims & Context Composer đa doanh nghiệp.
-2. Chờ User phê duyệt để chuyển sang **Workstream 4: Đa Dataset WeKnora & Auto-Provision Bitable theo Doanh nghiệp**.
+1. Báo cáo kết quả hoàn thành Workstream 4 cho Người dùng kiểm tra và nghiệm thu.
+2. Chờ phê duyệt của Người dùng trước khi tiến hành **Workstream 5: Thẻ Quản trị Tương tác & Trực quan hóa Vận hành ISV**.
 
 
 

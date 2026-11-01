@@ -169,6 +169,37 @@ def get_tenants_collection() -> AsyncIOMotorCollection:
     return db[getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants")]
 
 
+async def get_tenant_config(tenant_key: str) -> Optional[Dict[str, Any]]:
+    """Tra cứu cấu hình doanh nghiệp theo tenant_key."""
+    if not tenant_key:
+        return None
+    col = get_tenants_collection()
+    doc = await col.find_one({"tenant_key": tenant_key})
+    return _clean_mongo_doc(doc) if doc else None
+
+
+async def upsert_tenant_config(tenant_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Thêm mới hoặc cập nhật cấu hình doanh nghiệp (Multi-Tenant)."""
+    tenant_key = tenant_data.get("tenant_key")
+    if not tenant_key:
+        raise ValueError("Tenant data thiếu trường 'tenant_key'")
+    col = get_tenants_collection()
+    now_iso = get_vietnam_now_iso()
+    tenant_data["updated_at"] = now_iso
+
+    existing = await col.find_one({"tenant_key": tenant_key})
+    if existing:
+        update_fields = {k: v for k, v in tenant_data.items() if k != "_id"}
+        await col.update_one({"tenant_key": tenant_key}, {"$set": update_fields})
+    else:
+        tenant_data["created_at"] = tenant_data.get("created_at") or now_iso
+        insert_data = {k: v for k, v in tenant_data.items() if k != "_id"}
+        await col.insert_one(insert_data)
+
+    saved = await col.find_one({"tenant_key": tenant_key})
+    return _clean_mongo_doc(saved)
+
+
 def get_sync_client() -> MongoClient:
     """Khởi tạo hoặc trả về Sync PyMongo Client (cho CLI/Scripts)."""
     global _sync_client
@@ -855,6 +886,21 @@ def get_sync_claims_collection():
     """Collection claims dạng sync."""
     db = get_sync_db()
     return db[settings.MONGO_CLAIMS_COLLECTION]
+
+
+def get_sync_tenants_collection():
+    """Collection tenants dạng sync."""
+    db = get_sync_db()
+    return db[getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants")]
+
+
+def get_tenant_config_sync(tenant_key: str) -> Optional[Dict[str, Any]]:
+    """Tra cứu cấu hình doanh nghiệp đồng bộ (sync)."""
+    if not tenant_key:
+        return None
+    col = get_sync_tenants_collection()
+    doc = col.find_one({"tenant_key": tenant_key})
+    return _clean_mongo_doc(doc) if doc else None
 
 
 def get_all_entities_sync(

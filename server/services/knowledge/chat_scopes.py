@@ -229,38 +229,63 @@ class ScopeService:
             logger.error(f"Lỗi khi tìm chat scope cho chat_id={chat_id}: {e}", exc_info=True)
             return None
 
-    async def get_kb_for_chat(self, chat_id: Optional[str]) -> str:
+    async def get_kb_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> str:
         """
         Tra cứu Knowledge Base ID (dataset_id) cho một nhóm chat.
-        Nếu nhóm chưa cấu hình riêng, tự động fallback về WEKNORA_DATASET_ID mặc định trong .env.
+        Nếu nhóm chưa cấu hình riêng, tự động tra cứu KB mặc định của tenant hoặc .env.
         """
-        dataset_id, _ = await self.get_kb_info_for_chat(chat_id)
+        dataset_id, _ = await self.get_kb_info_for_chat(chat_id, tenant_key=tenant_key)
         return dataset_id
 
-    async def get_kb_info_for_chat(self, chat_id: Optional[str]) -> Tuple[str, str]:
+    async def get_kb_info_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> Tuple[str, str]:
         """
         Trả về Tuple (dataset_id, dataset_name) của nhóm chat.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         if chat_id:
-            scope = await self.get_scope_by_chat_id(chat_id)
+            scope = await self.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
             if scope and scope.dataset_id:
                 return scope.dataset_id, (scope.dataset_name or "Knowledge Base Nhóm")
 
-        # Fallback về KB mặc định
+        # Tra cứu KB mặc định của doanh nghiệp (Multi-Tenant)
+        if eff_tenant:
+            try:
+                from database.db import get_tenant_config
+                t_doc = await get_tenant_config(eff_tenant)
+                if t_doc and t_doc.get("weknora_default_dataset_id"):
+                    ent_title = t_doc.get("enterprise_name") or "Doanh Nghiệp"
+                    return t_doc["weknora_default_dataset_id"], f"Knowledge Base {ent_title}"
+            except Exception:
+                pass
+
+        # Fallback về KB mặc định từ .env
         default_id = settings.WEKNORA_DATASET_ID or ""
         if "," in default_id:
             default_id = default_id.split(",")[0].strip()
         return default_id, "Knowledge Base Mặc Định"
 
-    async def get_wiki_kb_for_chat(self, chat_id: Optional[str]) -> str:
+    async def get_wiki_kb_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> str:
         """
         Tra cứu Wiki Knowledge Base ID cho một nhóm chat để lưu trữ digest & diễn biến dự án.
-        Nếu nhóm chưa cấu hình riêng wiki_dataset_id, tự động fallback về WEKNORA_WIKI_DATASET_ID hoặc WEKNORA_DATASET_ID.
+        Ưu tiên: Chat Scope riêng -> Tenant Wiki KB -> Biến môi trường .env.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         if chat_id:
-            scope = await self.get_scope_by_chat_id(chat_id)
+            scope = await self.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
             if scope and scope.wiki_dataset_id:
                 return scope.wiki_dataset_id
+
+        # Tra cứu Wiki KB của doanh nghiệp (Multi-Tenant)
+        if eff_tenant:
+            try:
+                from database.db import get_tenant_config
+                t_doc = await get_tenant_config(eff_tenant)
+                if t_doc and t_doc.get("weknora_wiki_dataset_id"):
+                    return t_doc["weknora_wiki_dataset_id"]
+            except Exception:
+                pass
 
         default_wiki_id = settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID or ""
         if "," in default_wiki_id:

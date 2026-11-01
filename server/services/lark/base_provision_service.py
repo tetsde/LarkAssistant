@@ -26,6 +26,7 @@ import httpx
 
 from core.config import settings
 from database.db import get_system_config_collection
+from database.scoped_query import get_current_tenant_key
 from models.memory import get_vietnam_now_iso
 from models.system_config import SystemBaseConfigRecord
 
@@ -38,15 +39,26 @@ class BaseProvisionService:
     def __init__(self):
         self._cached_config: Optional[SystemBaseConfigRecord] = None
 
-    def _get_tenant_access_token(self) -> str:
+    def _get_tenant_access_token(self, tenant_key: Optional[str] = None) -> str:
         """Lấy Bot Tenant Access Token qua singleton lark_base_service hoặc auth endpoint."""
+        eff_tenant = tenant_key or get_current_tenant_key()
         try:
             from services.lark.bitable import lark_base_service
-            token = lark_base_service.get_tenant_access_token()
+            token = lark_base_service.get_tenant_access_token(tenant_key=eff_tenant)
             if token:
                 return token
         except Exception:
             pass
+
+        # Nếu đang ở ISV Mode và có tenant_key
+        if getattr(settings, "IS_ISV_MODE", False) and eff_tenant:
+            try:
+                from services.auth.isv_token_service import isv_token_service
+                token = isv_token_service.get_cached_tenant_token(eff_tenant)
+                if token:
+                    return token
+            except Exception:
+                pass
 
         # Fallback gọi trực tiếp API Lark Auth
         domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
@@ -68,12 +80,53 @@ class BaseProvisionService:
             logger.error(f"Lỗi khi lấy tenant access token cho base provisioning: {e}")
         return ""
 
-    async def get_active_base_config(self, force_refresh: bool = False) -> SystemBaseConfigRecord:
+    async def _get_tenant_access_token_async(self, tenant_key: Optional[str] = None) -> str:
+        """Lấy Bot Tenant Access Token bất đồng bộ (hỗ trợ ISV Token Service tự làm mới)."""
+        eff_tenant = tenant_key or get_current_tenant_key()
+        if getattr(settings, "IS_ISV_MODE", False) and eff_tenant:
+            try:
+                from services.auth.isv_token_service import isv_token_service
+                token = await isv_token_service.get_tenant_access_token(eff_tenant)
+                if token:
+                    return token
+            except Exception as e:
+                logger.warning(f"Lỗi khi lấy ISV tenant token cho base provisioning: {e}")
+        return self._get_tenant_access_token(tenant_key=eff_tenant)
+
+    async def get_active_base_config(
+        self,
+        force_refresh: bool = False,
+        tenant_key: Optional[str] = None,
+    ) -> SystemBaseConfigRecord:
         """
         Lấy cấu hình Lark Base đang hoạt động:
-          - Kiểm tra trong MongoDB collection 'system_config'.
+          - Nếu có tenant_key: Ưu tiên đọc từ MongoDB collection 'tenants'.
+          - Nếu không có: Kiểm tra trong MongoDB collection 'system_config'.
           - Nếu chưa có -> Tạo đối tượng mặc định từ file .env.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
+
+        # Kiểm tra trong tenants collection nếu có tenant_key
+        if eff_tenant and eff_tenant != "default":
+            try:
+                from database.db import get_tenant_config
+                t_doc = await get_tenant_config(eff_tenant)
+                if t_doc and t_doc.get("bitable_app_token"):
+                    domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
+                    app_tok = t_doc["bitable_app_token"]
+                    return SystemBaseConfigRecord(
+                        config_key=f"tenant_base_{eff_tenant}",
+                        tenant_key=eff_tenant,
+                        app_token=app_tok,
+                        app_url=t_doc.get("bitable_app_url") or f"{domain}/base/{app_tok}",
+                        chat_scope_table_id=t_doc.get("chat_scope_table_id") or "",
+                        policy_table_id=t_doc.get("company_policy_table_id") or "",
+                        is_auto_provisioned=True,
+                        provisioned_by="isv_auto_provision",
+                    )
+            except Exception as e:
+                logger.warning(f"Lỗi khi đọc base config từ tenant '{eff_tenant}': {e}")
+
         if self._cached_config and not force_refresh:
             return self._cached_config
 
@@ -106,40 +159,43 @@ class BaseProvisionService:
         self._cached_config = rec
         return rec
 
-    async def get_chat_scope_target(self) -> Tuple[str, str]:
+    async def get_chat_scope_target(self, tenant_key: Optional[str] = None) -> Tuple[str, str]:
         """Trả về cặp (app_token, chat_scope_table_id) hiệu lực."""
-        cfg = await self.get_active_base_config()
+        cfg = await self.get_active_base_config(tenant_key=tenant_key)
         return cfg.app_token, cfg.chat_scope_table_id
 
-    async def get_policy_target(self) -> Tuple[str, str]:
+    async def get_policy_target(self, tenant_key: Optional[str] = None) -> Tuple[str, str]:
         """Trả về cặp (app_token, policy_table_id) hiệu lực."""
-        cfg = await self.get_active_base_config()
+        cfg = await self.get_active_base_config(tenant_key=tenant_key)
         return cfg.app_token, cfg.policy_table_id
 
     async def provision_enterprise_base(
         self,
         admin_open_id: Optional[str] = None,
         base_name: str = "HiLark - Trung Tâm Quản Trị Dự Án & Chính Sách Doanh Nghiệp",
+        tenant_key: Optional[str] = None,
     ) -> SystemBaseConfigRecord:
         """
         Tự động 100% khởi tạo Lark Base Doanh nghiệp qua OpenAPI:
           1. Kiểm tra Base đã tồn tại chưa (tránh tạo trùng).
-          2. Gọi POST /open-apis/bitable/v1/apps tạo Base mới.
+          2. Gọi POST /open-apis/bitable/v1/apps tạo Base mới với token của tenant.
           3. Cấu hình Bảng 1: 'Danh mục Dự án & Nhóm chat' kèm các cột chuẩn.
           4. Cấu hình Bảng 2: 'Chính sách & Quy định Công ty' kèm các cột chuẩn.
           5. Nạp dữ liệu mẫu 3 dự án và Sổ tay chính sách.
           6. Phân quyền Full Access cho Admin trên Drive.
-          7. Lưu trữ cấu hình vào MongoDB và đồng bộ singleton trong RAM.
+          7. Lưu trữ cấu hình vào MongoDB (tenants collection nếu multi-tenant) và đồng bộ singleton.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         # 1. Nếu đã tự động tạo trước đó -> tái sử dụng
-        existing = await self.get_active_base_config()
+        existing = await self.get_active_base_config(tenant_key=eff_tenant)
         if existing and existing.is_auto_provisioned and existing.app_token:
-            logger.info(f"✔ Đã tồn tại Lark Base quản trị tự động: {existing.app_url}")
+            logger.info(f"✔ Đã tồn tại Lark Base quản trị tự động cho tenant '{eff_tenant}': {existing.app_url}")
             return existing
 
-        token = self._get_tenant_access_token()
+        token = await self._get_tenant_access_token_async(eff_tenant)
         if not token:
-            raise ValueError("Không thể lấy Tenant Access Token để khởi tạo Lark Base.")
+            raise ValueError(f"Không thể lấy Tenant Access Token để khởi tạo Lark Base cho tenant '{eff_tenant}'.")
 
         domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com").rstrip("/")
         headers = {
@@ -303,8 +359,8 @@ class BaseProvisionService:
         # 6. Lưu bản ghi cấu hình vào MongoDB
         now_iso = get_vietnam_now_iso()
         config_record = SystemBaseConfigRecord(
-            config_key="lark_base_config",
-            tenant_key="default",
+            config_key=f"tenant_base_{eff_tenant}" if eff_tenant else "lark_base_config",
+            tenant_key=eff_tenant or "default",
             app_token=new_app_token,
             app_url=new_app_url or f"{domain}/base/{new_app_token}",
             chat_scope_table_id=chat_scope_table_id,
@@ -315,15 +371,28 @@ class BaseProvisionService:
             updated_at=now_iso,
         )
 
-        coll = get_system_config_collection()
-        await coll.update_one(
-            {"config_key": "lark_base_config"},
-            {"$set": config_record.to_dict()},
-            upsert=True,
-        )
-
-        # Cập nhật cache singleton trong RAM
-        self._cached_config = config_record
+        if eff_tenant and eff_tenant != "default":
+            try:
+                from database.db import upsert_tenant_config
+                await upsert_tenant_config({
+                    "tenant_key": eff_tenant,
+                    "bitable_app_token": new_app_token,
+                    "bitable_app_url": config_record.app_url,
+                    "chat_scope_table_id": chat_scope_table_id,
+                    "company_policy_table_id": policy_table_id,
+                })
+                logger.info(f"✔ Đã lưu cấu hình Bitable vào collection 'tenants' cho tenant '{eff_tenant}'")
+            except Exception as e:
+                logger.error(f"Lỗi khi lưu cấu hình Base vào tenant '{eff_tenant}': {e}")
+        else:
+            coll = get_system_config_collection()
+            await coll.update_one(
+                {"config_key": "lark_base_config"},
+                {"$set": config_record.to_dict()},
+                upsert=True,
+            )
+            # Cập nhật cache singleton trong RAM cho single-tenant
+            self._cached_config = config_record
 
         # Đồng bộ ngược vào singleton lark_base_service
         try:

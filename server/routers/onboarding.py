@@ -28,6 +28,7 @@ from core.config import settings
 from database.db import get_system_config_collection
 from models.onboarding import (
     ProvisionBaseRequest,
+    ProvisionWeKnoraRequest,
     SaveBotConfigRequest,
     SaveSettingsRequest,
     TestBotCredentialsRequest,
@@ -42,6 +43,7 @@ __all__ = [
     "TestKeyRequest",
     "SaveSettingsRequest",
     "ProvisionBaseRequest",
+    "ProvisionWeKnoraRequest",
     "TestBotCredentialsRequest",
     "SaveBotConfigRequest",
     "TestMongoRequest",
@@ -252,7 +254,10 @@ async def provision_base_endpoint(req: ProvisionBaseRequest):
     """Tự động khởi tạo 100% Lark Base Quản trị Doanh nghiệp qua Lark OpenAPI."""
     try:
         from services.lark.base_provision_service import base_provision_service
-        record = await base_provision_service.provision_enterprise_base(admin_open_id=req.admin_open_id)
+        record = await base_provision_service.provision_enterprise_base(
+            admin_open_id=req.admin_open_id,
+            tenant_key=req.tenant_key,
+        )
         return {
             "success": True,
             "message": "Đã tự động khởi tạo Lark Base Quản trị thành công!",
@@ -260,6 +265,29 @@ async def provision_base_endpoint(req: ProvisionBaseRequest):
         }
     except Exception as e:
         logger.error(f"Lỗi khi auto-provision Lark Base: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/provision-weknora")
+async def provision_weknora_endpoint(req: ProvisionWeKnoraRequest):
+    """Tự động khởi tạo không gian tri thức WeKnora và tài khoản Admin đa doanh nghiệp."""
+    try:
+        from services.knowledge.weknora_provision_service import weknora_provision_service
+        tenant_key = req.tenant_key or "default"
+        record = await weknora_provision_service.provision_tenant_weknora(
+            tenant_key=tenant_key,
+            enterprise_name=req.enterprise_name or f"Enterprise {tenant_key}",
+            admin_email=req.admin_email,
+            admin_open_id=req.admin_open_id,
+        )
+        screen_data = weknora_provision_service.build_screen_guide_data(record)
+        return {
+            "success": True,
+            "message": "Đã khởi tạo không gian tri thức WeKnora thành công!",
+            "data": screen_data,
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi provision WeKnora: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -331,15 +359,42 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
 
 
 @router.get("/api/settings/{open_id}")
-async def get_settings_endpoint(open_id: str):
+async def get_settings_endpoint(
+    open_id: str,
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant ISV"),
+):
     """Lấy thông tin cấu hình hiện hành để hiển thị trên Wizard."""
+    effective_tenant_key = tenant_key
+    if not effective_tenant_key:
+        try:
+            from database.db import get_tenants_collection
+            t_col = get_tenants_collection()
+            found_tenant = await t_col.find_one({"admin_open_id": open_id})
+            if found_tenant:
+                effective_tenant_key = found_tenant.get("tenant_key")
+        except Exception as e:
+            logger.debug(f"Không tìm thấy tenant cho open_id {open_id}: {e}")
+
     from services.lark.base_provision_service import base_provision_service
-    base_cfg = await base_provision_service.get_active_base_config()
+    base_cfg = await base_provision_service.get_active_base_config(tenant_key=effective_tenant_key)
     base_info = {
         "app_token": base_cfg.app_token,
         "app_url": base_cfg.app_url,
         "is_auto_provisioned": base_cfg.is_auto_provisioned,
     }
+
+    weknora_info = None
+    if effective_tenant_key:
+        try:
+            from database.db import get_tenant_config
+            from services.knowledge.weknora_provision_service import weknora_provision_service
+            from models.tenant import TenantConfigRecord
+            t_cfg = await get_tenant_config(effective_tenant_key)
+            if t_cfg:
+                rec = TenantConfigRecord.from_dict(t_cfg) if isinstance(t_cfg, dict) else t_cfg
+                weknora_info = weknora_provision_service.build_screen_guide_data(rec)
+        except Exception as e:
+            logger.debug(f"Không thể lấy WeKnora info cho tenant {effective_tenant_key}: {e}")
 
     record = await user_settings_service.get_user_settings(open_id)
     if not record:
@@ -356,10 +411,14 @@ async def get_settings_endpoint(open_id: str):
                 "digest_schedule_time": "18:00",
                 "hitl_mode_enabled": True,
                 "base_info": base_info,
+                "weknora_info": weknora_info,
+                "tenant_key": effective_tenant_key,
             },
         }
     data = record.to_dict()
     data["base_info"] = base_info
+    data["weknora_info"] = weknora_info
+    data["tenant_key"] = effective_tenant_key
     return {
         "success": True,
         "data": data,
@@ -390,10 +449,12 @@ async def onboarding_wizard_page(
     request: Request,
     open_id: Optional[str] = Query(None, description="Lark Open ID của người dùng"),
     user_name: Optional[str] = Query(None, description="Tên người dùng"),
+    tenant_key: Optional[str] = Query(None, description="Mã tenant ISV nếu có"),
 ):
     """Render giao diện Screen Guide Wizard 4 bước mở trong Lark Applink Webview Modal."""
     effective_open_id = open_id or settings.LARK_USER_OPEN_ID or "ou_user_default"
     effective_user_name = user_name or settings.LARK_USER_NAME or "Lãnh đạo"
+    effective_tenant_key = tenant_key or ""
 
     if not TEMPLATE_PATH.exists():
         raise HTTPException(
@@ -406,6 +467,7 @@ async def onboarding_wizard_page(
         template_content
         .replace("{{effective_open_id}}", effective_open_id)
         .replace("{{effective_user_name}}", effective_user_name)
+        .replace("{{effective_tenant_key}}", effective_tenant_key)
     )
 
     return HTMLResponse(content=rendered_html)
