@@ -81,7 +81,7 @@ def get_async_client() -> AsyncIOMotorClient:
     if _async_client is None:
         _async_client = AsyncIOMotorClient(
             settings.MONGO_URL,
-            serverSelectionTimeoutMS=3000,
+            serverSelectionTimeoutMS=5000,
         )
     return _async_client
 
@@ -169,6 +169,18 @@ def get_tenants_collection() -> AsyncIOMotorCollection:
     return db[getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants")]
 
 
+def get_setup_sessions_collection() -> AsyncIOMotorCollection:
+    """Collection lưu state/progress bền vững của luồng one-click setup."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_SETUP_SESSIONS_COLLECTION", "setup_sessions")]
+
+
+def get_lark_apps_collection() -> AsyncIOMotorCollection:
+    """Collection credential Lark Custom App theo từng tenant/registration."""
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")]
+
+
 async def get_tenant_config(tenant_key: str) -> Optional[Dict[str, Any]]:
     """Tra cứu cấu hình doanh nghiệp theo tenant_key."""
     if not tenant_key:
@@ -206,7 +218,7 @@ def get_sync_client() -> MongoClient:
     if _sync_client is None:
         _sync_client = MongoClient(
             settings.MONGO_URL,
-            serverSelectionTimeoutMS=3000,
+            serverSelectionTimeoutMS=5000,
         )
     return _sync_client
 
@@ -273,10 +285,13 @@ def _clean_mongo_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
 async def get_all_entities(
     workspace_id: Optional[str] = "default",
     tenant_key: Optional[str] = None,
+    entity_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Lấy danh sách tất cả entities trong MongoDB có cô lập theo tenant_key."""
     col = get_memories_collection()
     query = {"workspace_id": workspace_id} if workspace_id else {}
+    if entity_ids:
+        query["id"] = {"$in": list(dict.fromkeys(entity_ids))}
     query = inject_tenant_filter(query, tenant_key)
     cursor = col.find(query)
     entities = []
@@ -350,6 +365,8 @@ async def get_all_facts(
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     tenant_key: Optional[str] = None,
+    scope_type: Optional[str] = None,
+    strict_chat: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Lấy danh sách facts trong MongoDB:
@@ -362,7 +379,12 @@ async def get_all_facts(
     if entity_id:
         query["entity_id"] = entity_id
 
-    if chat_id or project_tag:
+    if scope_type:
+        query["scope_type"] = scope_type
+
+    if strict_chat and chat_id:
+        query["chat_id"] = chat_id
+    elif chat_id or project_tag:
         scope_or: List[Dict[str, Any]] = [{"scope_type": "global"}]
         if chat_id:
             scope_or.append({"chat_id": chat_id})
@@ -468,19 +490,22 @@ async def promote_claims_by_message_id(
 async def promote_proposed_claims_for_chat(
     chat_id: str,
     approver_info: Optional[Dict[str, Any]] = None,
+    tenant_key: Optional[str] = None,
 ) -> int:
     """
-    Thăng hạng tất cả các claims PROPOSED trong một nhóm chat thành CURRENT.
+    Thăng hạng tất cả các claims PROPOSED trong một nhóm chat thành CURRENT (hỗ trợ tenant_key).
     Dùng khi Sếp duyệt Daily Master Digest (Tầng 3).
     """
     if not chat_id:
         return 0
+    eff_tenant = tenant_key or get_current_tenant_key()
     col = get_claims_collection()
     now_iso = get_vietnam_now_iso()
     query = {
         "chat_id": chat_id,
         "status": FactStatus.PROPOSED.value,
     }
+    query = inject_tenant_filter(query, eff_tenant)
     update_fields: Dict[str, Any] = {
         "status": FactStatus.CURRENT.value,
         "updated_at": now_iso,
@@ -499,10 +524,11 @@ async def promote_proposed_claims_for_chat(
 async def get_pending_proposed_claims(
     date_str: Optional[str] = None,
     chat_id: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lấy danh sách các claims đang ở trạng thái PROPOSED.
-    Có thể lọc theo ngày (ví dụ: '2026-10-27') hoặc theo nhóm chat.
+    Có thể lọc theo ngày (ví dụ: '2026-10-27'), nhóm chat hoặc tenant_key.
     """
     col = get_claims_collection()
     query: Dict[str, Any] = {"status": FactStatus.PROPOSED.value}
@@ -514,6 +540,7 @@ async def get_pending_proposed_claims(
             {"updated_at": {"$regex": f"^{date_str}"}},
             {"date": date_str},
         ]
+    query = inject_tenant_filter(query, tenant_key)
     cursor = col.find(query).sort("created_at", -1)
     claims = await cursor.to_list(length=200)
     if claims:
@@ -522,7 +549,8 @@ async def get_pending_proposed_claims(
         if entity_ids:
             try:
                 memories_col = get_memories_collection()
-                ent_cursor = memories_col.find({"id": {"$in": entity_ids}})
+                ent_query = inject_tenant_filter({"id": {"$in": entity_ids}}, tenant_key)
+                ent_cursor = memories_col.find(ent_query)
                 ent_docs = await ent_cursor.to_list(length=len(entity_ids) + 50)
                 ent_map = {
                     e["id"]: (e.get("name") or e.get("canonical_name"))
@@ -542,9 +570,10 @@ async def promote_all_proposed_claims(
     date_str: Optional[str] = None,
     chat_id: Optional[str] = None,
     approver_info: Optional[Dict[str, Any]] = None,
+    tenant_key: Optional[str] = None,
 ) -> int:
     """
-    Thăng hạng toàn bộ claims PROPOSED thành CURRENT (duyệt hàng loạt cuối ngày).
+    Thăng hạng toàn bộ claims PROPOSED thành CURRENT (duyệt hàng loạt cuối ngày) có cô lập theo tenant_key.
     """
     col = get_claims_collection()
     now_iso = get_vietnam_now_iso()
@@ -557,6 +586,7 @@ async def promote_all_proposed_claims(
             {"updated_at": {"$regex": f"^{date_str}"}},
             {"date": date_str},
         ]
+    query = inject_tenant_filter(query, tenant_key)
     update_fields: Dict[str, Any] = {
         "status": FactStatus.CURRENT.value,
         "updated_at": now_iso,
@@ -740,12 +770,16 @@ async def cancel_pending_drafts_by_message_id(
     return res.modified_count
 
 
-async def get_latest_proposed_claim(chat_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Lấy thông tin đề xuất (Claim) ở trạng thái proposed gần nhất."""
+async def get_latest_proposed_claim(
+    chat_id: Optional[str] = None,
+    tenant_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Lấy thông tin đề xuất (Claim) ở trạng thái proposed gần nhất có cô lập theo tenant_key."""
     col = get_claims_collection()
     query: Dict[str, Any] = {"status": FactStatus.PROPOSED.value}
     if chat_id:
         query["chat_id"] = chat_id
+    query = inject_tenant_filter(query, tenant_key)
     doc = await col.find_one(query, sort=[("created_at", -1)])
     return doc
 
@@ -906,10 +940,13 @@ def get_tenant_config_sync(tenant_key: str) -> Optional[Dict[str, Any]]:
 def get_all_entities_sync(
     workspace_id: Optional[str] = "default",
     tenant_key: Optional[str] = None,
+    entity_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Lấy toàn bộ entities từ MongoDB (sync) có cô lập theo tenant_key."""
     col = get_sync_memories_collection()
     query = {"workspace_id": workspace_id} if workspace_id else {}
+    if entity_ids:
+        query["id"] = {"$in": list(dict.fromkeys(entity_ids))}
     query = inject_tenant_filter(query, tenant_key)
     return [_clean_mongo_doc(doc) for doc in col.find(query)]
 
@@ -919,6 +956,8 @@ def get_all_facts_sync(
     chat_id: Optional[str] = None,
     project_tag: Optional[str] = None,
     tenant_key: Optional[str] = None,
+    scope_type: Optional[str] = None,
+    strict_chat: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Lấy toàn bộ facts từ MongoDB (sync):
@@ -931,7 +970,12 @@ def get_all_facts_sync(
     if entity_id:
         query["entity_id"] = entity_id
 
-    if chat_id or project_tag:
+    if scope_type:
+        query["scope_type"] = scope_type
+
+    if strict_chat and chat_id:
+        query["chat_id"] = chat_id
+    elif chat_id or project_tag:
         scope_or: List[Dict[str, Any]] = [{"scope_type": "global"}]
         if chat_id:
             scope_or.append({"chat_id": chat_id})

@@ -179,12 +179,15 @@ class UserSettingsService:
         """Tương thích ngược kiểm tra Gemini API Key."""
         return await self.test_llm_connection(raw_key=raw_key, provider="google")
 
-    async def get_user_settings(self, open_id: str) -> Optional[UserSettingsRecord]:
-        """Lấy bản ghi cấu hình của người dùng từ MongoDB."""
+    async def get_user_settings(self, open_id: str, tenant_key: Optional[str] = None) -> Optional[UserSettingsRecord]:
+        """Lấy cấu hình theo user; nếu có tenant thì dùng khóa kép user + tenant."""
         if not open_id:
             return None
         coll = get_user_settings_collection()
-        doc = await coll.find_one({"open_id": open_id})
+        query = {"open_id": open_id}
+        if tenant_key:
+            query["tenant_key"] = tenant_key
+        doc = await coll.find_one(query)
         if not doc:
             return None
         return UserSettingsRecord(**doc)
@@ -201,10 +204,20 @@ class UserSettingsService:
         llm_base_url: Optional[str] = None,
         llm_model: Optional[str] = None,
         llm_timeout: float = 60.0,
+        tenant_key: Optional[str] = None,
     ) -> UserSettingsRecord:
         """Lưu hoặc cập nhật cấu hình người dùng vào MongoDB."""
+        normalized_digest_time = (digest_schedule_time or "18:00").strip()
+        try:
+            hour, minute = normalized_digest_time.split(":", 1)
+            if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+                raise ValueError
+            normalized_digest_time = f"{int(hour):02d}:{int(minute):02d}"
+        except (TypeError, ValueError):
+            raise ValueError("digest_schedule_time phải có định dạng HH:MM hợp lệ")
+
         coll = get_user_settings_collection()
-        existing = await self.get_user_settings(open_id)
+        existing = await self.get_user_settings(open_id, tenant_key=tenant_key)
 
         encrypted_key = None
         masked_key = None
@@ -220,6 +233,7 @@ class UserSettingsService:
         now_iso = get_vietnam_now_iso()
         record = UserSettingsRecord(
             open_id=open_id,
+            tenant_key=tenant_key or (existing.tenant_key if existing else None),
             user_name=user_name or (existing.user_name if existing else None),
             is_byok_enabled=is_byok_enabled,
             llm_provider=llm_provider or (existing.llm_provider if existing else "google"),
@@ -228,14 +242,17 @@ class UserSettingsService:
             llm_base_url=llm_base_url or (existing.llm_base_url if existing else None),
             llm_model=llm_model or (existing.llm_model if existing else None),
             llm_timeout=llm_timeout if llm_timeout is not None else (existing.llm_timeout if existing else 60.0),
-            digest_schedule_time=digest_schedule_time or "18:00",
+            digest_schedule_time=normalized_digest_time,
             hitl_mode_enabled=hitl_mode_enabled,
             created_at=existing.created_at if existing else now_iso,
             updated_at=now_iso,
         )
 
+        user_query = {"open_id": open_id}
+        if record.tenant_key:
+            user_query["tenant_key"] = record.tenant_key
         await coll.update_one(
-            {"open_id": open_id},
+            user_query,
             {"$set": record.to_dict()},
             upsert=True,
         )
@@ -284,6 +301,53 @@ class UserSettingsService:
 
         # Tầng 4: Khóa mặc định của hệ thống
         return settings.GEMINI_API_KEY or settings.gemini_api or ""
+
+    async def resolve_effective_llm_client(
+        self,
+        user_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        open_id: Optional[str] = None,
+        request_api_key: Optional[str] = None,
+    ):
+        """
+        Phân giải và khởi tạo LLMClient hoàn chỉnh theo cấu hình cá nhân hóa của User hoặc Hệ thống:
+          - Nếu User bật BYOK: Áp dụng nhà cung cấp (provider), model, base_url, timeout và key giải mã.
+          - Nếu không: Sử dụng LLMClient mặc định của hệ thống.
+        """
+        from services.ai.gemini_client import LLMClient, llm_client
+
+        target_user = user_id or open_id
+        if target_user:
+            settings_rec = await self.get_user_settings(target_user)
+            if settings_rec and settings_rec.is_byok_enabled and settings_rec.encrypted_gemini_api_key:
+                user_api_key = self.decrypt_key(settings_rec.encrypted_gemini_api_key)
+                if user_api_key:
+                    default_models = [settings_rec.llm_model] if settings_rec.llm_model else None
+                    logger.info(
+                        f"🤖 [BYOK CLIENT] Sử dụng cấu hình LLM riêng của User {target_user}: "
+                        f"provider={settings_rec.llm_provider}, model={settings_rec.llm_model or 'default'}"
+                    )
+                    return LLMClient(
+                        api_key=user_api_key,
+                        provider=settings_rec.llm_provider or "google",
+                        base_url=settings_rec.llm_base_url,
+                        timeout=settings_rec.llm_timeout or 60.0,
+                        default_models=default_models,
+                    )
+
+        if chat_id:
+            try:
+                from services.knowledge.chat_scopes import scope_service
+                scope = await scope_service.get_scope_by_chat_id(chat_id)
+                if scope and getattr(scope, "custom_gemini_key", None):
+                    return LLMClient(api_key=getattr(scope, "custom_gemini_key"))
+            except Exception:
+                pass
+
+        if request_api_key:
+            return LLMClient(api_key=request_api_key)
+
+        return llm_client
 
 
 user_settings_service = UserSettingsService()

@@ -1,0 +1,1546 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HiLark — Thiết Lập Trợ Lý AI Doanh Nghiệp</title>
+    <style>
+        :root {
+            --bg-page: #F5F6F8;
+            --surface: #FFFFFF;
+            --surface-secondary: #F9FAFB;
+            --surface-tertiary: #F3F4F6;
+            --text-primary: #111827;
+            --text-secondary: #6B7280;
+            --text-tertiary: #9CA3AF;
+            --border: #E5E7EB;
+            --border-hover: #D1D5DB;
+            --accent: #2563EB;
+            --accent-hover: #1D4ED8;
+            --accent-light: #EFF6FF;
+            --accent-border: #BFDBFE;
+            --success: #16A34A;
+            --success-light: #F0FDF4;
+            --success-border: #BBF7D0;
+            --danger: #DC2626;
+            --danger-light: #FEF2F2;
+            --danger-border: #FECACA;
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+            background-color: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
+        }
+
+        .wizard-container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            width: 100%;
+            max-width: 560px;
+            box-shadow: var(--shadow-card);
+            position: relative;
+            overflow: hidden;
+            padding: 32px 32px 28px;
+        }
+
+        /* Brand Header */
+        .brand-header {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+
+        .logo-mark {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 12px;
+            background: var(--accent);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+        }
+
+        .logo-mark svg {
+            width: 24px;
+            height: 24px;
+            fill: #FFFFFF;
+        }
+
+        h2 {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+            letter-spacing: -0.015em;
+        }
+
+        p.desc {
+            color: var(--text-secondary);
+            font-size: 13.5px;
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }
+
+        /* Feature Cards (Landing View) */
+        .feature-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: border-color 0.15s ease;
+            text-align: left;
+        }
+
+        .feature-box:hover {
+            border-color: var(--border-hover);
+        }
+
+        .credential-panel {
+            margin-top: 18px;
+            padding: 18px;
+            background: oklch(98.5% 0.012 250);
+            border: 1px solid var(--accent-border);
+            border-radius: var(--radius-md);
+        }
+
+        .credential-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 6px;
+        }
+
+        .credential-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .credential-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .credential-help {
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.5;
+            margin-bottom: 14px;
+        }
+
+        .credential-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .credential-error {
+            min-height: 18px;
+            margin-top: 10px;
+            color: var(--danger);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .flow-note {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .flow-note-item {
+            padding: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .flow-note-item strong {
+            display: block;
+            color: var(--text-primary);
+            font-size: 11.5px;
+            margin-bottom: 3px;
+        }
+
+        .btn-primary:disabled {
+            cursor: wait;
+            opacity: .58;
+            box-shadow: none;
+        }
+
+        @media (max-width: 520px) {
+            .credential-grid, .flow-note { grid-template-columns: 1fr; }
+            .credential-heading { display: block; }
+            .credential-kicker { display: block; margin-bottom: 6px; }
+        }
+
+        .feat-title {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .feat-desc {
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .actions {
+            margin-top: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent);
+            color: #FFFFFF;
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.15s, box-shadow 0.15s;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+        }
+
+        .btn-secondary {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            color: var(--text-primary);
+            padding: 11px 18px;
+            border-radius: 10px;
+            font-size: 13.5px;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+
+        .btn-secondary:hover {
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }
+
+        /* Progress View & Steps */
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 14px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .progress-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .status-pill {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .status-pill.processing {
+            background: var(--accent-light);
+            color: var(--accent);
+            border: 1px solid var(--accent-border);
+        }
+
+        .status-pill.ready {
+            background: var(--success-light);
+            color: var(--success);
+            border: 1px solid var(--success-border);
+        }
+
+        .status-pill.failed {
+            background: var(--danger-light);
+            color: var(--danger);
+            border: 1px solid var(--danger-border);
+        }
+
+        .steps-container {
+            position: relative;
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        .step-row {
+            display: flex;
+            align-items: flex-start;
+            position: relative;
+            padding-bottom: 20px;
+        }
+
+        .step-row:last-child {
+            padding-bottom: 0;
+        }
+
+        .step-line {
+            position: absolute;
+            left: 14px;
+            top: 30px;
+            bottom: 0;
+            width: 2px;
+            background: var(--surface-tertiary);
+            z-index: 1;
+            transition: background 0.25s ease;
+        }
+
+        .step-row:last-child .step-line {
+            display: none;
+        }
+
+        .step-row.completed .step-line {
+            background: var(--success);
+        }
+
+        .step-icon-wrap {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 14px;
+            flex-shrink: 0;
+            z-index: 2;
+            transition: all 0.2s ease;
+            color: var(--text-tertiary);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .step-row.completed .step-icon-wrap {
+            background: var(--success);
+            border-color: var(--success);
+            color: #FFFFFF;
+        }
+
+        .step-row.processing .step-icon-wrap {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #FFFFFF;
+        }
+
+        .step-row.failed .step-icon-wrap {
+            background: var(--danger);
+            border-color: var(--danger);
+            color: #FFFFFF;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            border-top-color: #FFFFFF;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .step-content {
+            flex: 1;
+            padding-top: 4px;
+        }
+
+        .step-title {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .step-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .step-detail {
+            font-size: 11.5px;
+            color: var(--accent);
+            margin-top: 4px;
+            font-weight: 500;
+        }
+
+        .step-row.failed .step-detail {
+            color: var(--danger);
+        }
+
+        /* Ready Panel (Admin Card Style) */
+        .ready-panel {
+            display: none;
+            background: var(--success-light);
+            border: 1px solid var(--success-border);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            text-align: left;
+            margin-top: 8px;
+            margin-bottom: 16px;
+        }
+
+        .ready-panel.active {
+            display: block;
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+
+        .ready-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--success);
+            margin-bottom: 4px;
+        }
+
+        .ready-desc {
+            font-size: 12.5px;
+            color: #166534;
+            margin-bottom: 16px;
+            line-height: 1.4;
+        }
+
+        .ready-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .info-cell {
+            background: var(--surface);
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--success-border);
+        }
+
+        .info-cell-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 600;
+        }
+
+        .info-cell-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ready-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .ready-buttons a {
+            flex: 1;
+        }
+
+        /* Progressive Customization Panel */
+        .custom-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-top: 16px;
+            overflow: hidden;
+            transition: border-color 0.15s ease;
+        }
+
+        .custom-panel:hover {
+            border-color: var(--border-hover);
+        }
+
+        .custom-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 18px;
+            cursor: pointer;
+            user-select: none;
+            background: var(--surface);
+            transition: background 0.15s;
+        }
+
+        .custom-header:hover {
+            background: var(--surface-secondary);
+        }
+
+        .custom-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-align: left;
+        }
+
+        .custom-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: var(--radius-sm);
+            background: var(--accent-light);
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .custom-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .custom-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .custom-subtitle {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 1px;
+        }
+
+        .custom-chevron {
+            width: 20px;
+            height: 20px;
+            color: var(--text-secondary);
+            transition: transform 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .custom-chevron.open {
+            transform: rotate(180deg);
+        }
+
+        .custom-body {
+            padding: 20px 20px 24px;
+            border-top: 1px solid var(--border);
+            background: var(--surface-secondary);
+            text-align: left;
+        }
+
+        .form-section {
+            margin-bottom: 22px;
+        }
+
+        .form-section:last-of-type {
+            margin-bottom: 16px;
+        }
+
+        .section-heading {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        /* Option Cards (From Onboarding Slide 2) */
+        .option-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            background: var(--surface);
+        }
+
+        .option-card:hover {
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }
+
+        .option-card.selected {
+            background: var(--accent-light);
+            border-color: var(--accent);
+        }
+
+        .radio-circle {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 1.5px solid var(--border-hover);
+            margin-top: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            background: var(--surface);
+            transition: all 0.15s ease;
+        }
+
+        .option-card.selected .radio-circle {
+            border-color: var(--accent);
+        }
+
+        .option-card.selected .radio-circle::after {
+            content: '';
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        .form-group-box {
+            margin-top: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 16px;
+        }
+
+        .input-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .form-input {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 9px 12px;
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .form-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        select.custom-select {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 9px 12px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            cursor: pointer;
+        }
+
+        select.custom-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .input-wrapper {
+            display: flex;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .input-wrapper:focus-within {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .key-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            padding: 9px 12px;
+            color: var(--text-primary);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            outline: none;
+        }
+
+        .btn-input-action {
+            background: transparent;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 0 12px;
+        }
+
+        .form-grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .test-feedback {
+            display: inline-flex;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            margin-left: 10px;
+        }
+
+        .test-feedback.success {
+            background: var(--success-light);
+            color: var(--success);
+            border: 1px solid var(--success-border);
+        }
+
+        .test-feedback.error {
+            background: var(--danger-light);
+            color: var(--danger);
+            border: 1px solid var(--danger-border);
+        }
+
+        .setting-card {
+            margin-top: 10px;
+            padding: 12px 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            transition: border-color 0.15s ease;
+        }
+
+        .setting-card:hover {
+            border-color: var(--border-hover);
+        }
+
+        .setting-label-flex {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            cursor: pointer;
+        }
+
+        .setting-label-flex input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+            margin-top: 2px;
+            cursor: pointer;
+        }
+
+        /* Handover Box (WeKnora Credentials) */
+        .admin-card {
+            padding: 14px 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-top: 8px;
+        }
+
+        .cred-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 12.5px;
+            border-bottom: 1px solid var(--surface-tertiary);
+        }
+
+        .cred-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .cred-label {
+            color: var(--text-secondary);
+            font-size: 11.5px;
+        }
+
+        .cred-value.link {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .cred-value.code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            color: #0369A1;
+            background: #E0F2FE;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 11.5px;
+        }
+
+        .save-actions {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .save-feedback {
+            font-size: 12.5px;
+            text-align: center;
+            min-height: 18px;
+            font-weight: 600;
+        }
+
+        .save-feedback.success {
+            color: var(--success);
+        }
+
+        .save-feedback.error {
+            color: var(--danger);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+    </style>
+</head>
+<body>
+
+<div class="wizard-container">
+    <!-- BRAND HEADER -->
+    <div class="brand-header">
+        <div class="logo-mark">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+        </div>
+        <h2 id="mainHeading">HiLark Enterprise</h2>
+            <p class="desc" id="mainSubtitle">Cài một lần, cấp quyền đúng lớp, vận hành an toàn theo tenant.</p>
+    </div>
+
+    <!-- 1. LANDING VIEW (Khi chưa có task_id) -->
+    <div id="landingView">
+        <div class="feature-box">
+            <div class="feat-title">Kết nối App của doanh nghiệp</div>
+            <div class="feat-desc">Nhập App ID và App Secret để HiLark xác thực ứng dụng trước khi mở luồng ủy quyền.</div>
+        </div>
+
+        <div class="feature-box">
+            <div class="feat-title">Cấp phát theo tenant</div>
+            <div class="feat-desc">Tenant access token được dùng để tạo Base, cấu hình dữ liệu và khởi tạo không gian WeKnora riêng.</div>
+        </div>
+
+        <div class="feature-box">
+            <div class="feat-title">OAuth user là bắt buộc</div>
+            <div class="feat-desc">Admin tiếp tục cấp quyền user để HiLark nhận access token, refresh token và gửi đúng hành động dưới danh nghĩa người dùng.</div>
+        </div>
+
+        <div class="credential-panel">
+            <div class="credential-heading">
+                <span class="credential-kicker">Bước 0 · App credential</span>
+                <span class="credential-title">Kết nối ứng dụng Lark</span>
+            </div>
+            <p class="credential-help">Thông tin này chỉ dùng để xác thực App và lấy quyền gọi API tenant. HiLark không dùng tenant token để giả danh user; bước OAuth user bên dưới vẫn bắt buộc.</p>
+            <div class="credential-grid">
+                <div>
+                    <label class="input-label" for="setupAppId">App ID</label>
+                    <input id="setupAppId" class="form-input" autocomplete="off" placeholder="cli_xxxxxxxxxxxxxxxx">
+                </div>
+                <div>
+                    <label class="input-label" for="setupAppSecret">App Secret</label>
+                    <input id="setupAppSecret" class="form-input" type="password" autocomplete="off" placeholder="Nhập App Secret">
+                </div>
+                <div>
+                    <label class="input-label" for="setupVerificationToken">Verification Token</label>
+                    <input id="setupVerificationToken" class="form-input" type="password" autocomplete="off" placeholder="Event Subscriptions → Verification Token">
+                </div>
+                <div>
+                    <label class="input-label" for="setupEncryptKey">Encrypt Key</label>
+                    <input id="setupEncryptKey" class="form-input" type="password" autocomplete="off" placeholder="Event Subscriptions → Encrypt Key">
+                </div>
+            </div>
+            <div class="credential-error" id="credentialFeedback" aria-live="polite"></div>
+        </div>
+
+        <div class="flow-note" aria-label="Các lớp quyền của luồng setup">
+            <div class="flow-note-item"><strong>App credential</strong>Xác thực ứng dụng HiLark.</div>
+            <div class="flow-note-item"><strong>Tenant token</strong>Tạo Base và gọi API trong doanh nghiệp.</div>
+            <div class="flow-note-item"><strong>User OAuth</strong>Gửi hành động dưới danh nghĩa Admin.</div>
+        </div>
+
+        <div class="actions">
+            <button type="button" class="btn-primary" id="btnInstall" onclick="beginSetup()">
+                Cài đặt HiLark cho Doanh nghiệp · xác thực App &amp; cấp quyền user
+            </button>
+        </div>
+    </div>
+
+    <!-- 2. PROGRESS VIEW (Khi đang thực hiện 7 bước) -->
+    <div id="progressView" style="display: none;">
+        <div class="progress-header">
+            <span class="progress-title" id="progressStatusText">Đang thiết lập hệ thống...</span>
+            <span class="status-pill processing" id="progressBadge">Đang xử lý</span>
+        </div>
+
+        <div class="steps-container" id="stepsList">
+            <!-- Sẽ được điền động qua JavaScript -->
+        </div>
+
+        <!-- READY PANEL (ADMIN CARD) -->
+        <div class="ready-panel fade-in" id="readyPanel">
+            <div class="ready-title">Hệ Thống Sẵn Sàng Vận Hành</div>
+            <p class="ready-desc">Toàn bộ hạ tầng trợ lý AI đã được thiết lập thành công. Bot đã gửi lời chào tới hộp thư của Quản trị viên.</p>
+
+            <div class="ready-info-grid">
+                <div class="info-cell">
+                    <div class="info-cell-label">Doanh nghiệp</div>
+                    <div class="info-cell-value" id="valTenantKey">—</div>
+                </div>
+                <div class="info-cell">
+                    <div class="info-cell-label">Quản trị viên</div>
+                    <div class="info-cell-value" id="valAdminName">—</div>
+                </div>
+            </div>
+
+            <div class="ready-buttons">
+                <a href="#" id="linkOpenBot" target="_blank" class="btn-primary">
+                    Mở Chat Với HiLark
+                </a>
+                <a href="#" id="linkOpenBase" target="_blank" class="btn-secondary">
+                    Lark Base Quản Trị
+                </a>
+            </div>
+        </div>
+
+        <!-- 3. PROGRESSIVE CUSTOMIZATION PANEL (TÙY CHỌN SAU KHI READY) -->
+        <div class="custom-panel fade-in" id="customPanel" style="display: none;">
+            <div class="custom-header" onclick="toggleCustomSection()">
+                <div class="custom-header-left">
+                    <div class="custom-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="custom-title">Tùy Chỉnh Nâng Cao (Tùy chọn)</div>
+                        <div class="custom-subtitle">Bộ não AI, khóa riêng (BYOK), giờ nhận báo cáo &amp; kiểm duyệt</div>
+                    </div>
+                </div>
+                <div class="custom-chevron" id="customChevron">
+                    <svg viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="custom-body" id="customBody" style="display: none;">
+                <!-- KHỐI 1: BỘ NÃO AI & BYOK (TỪ ONBOARDING SLIDE 2) -->
+                <div class="form-section">
+                    <div class="section-heading">Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</div>
+                    
+                    <div class="option-card selected" id="optSystemKey" onclick="setByokMode(false)">
+                        <div class="radio-circle"></div>
+                        <div>
+                            <div class="feat-title">Hạn mức mặc định của hệ thống</div>
+                            <div class="feat-desc">Sử dụng Google Gemini đã tích hợp sẵn. Doanh nghiệp không cần cấu hình thêm.</div>
+                        </div>
+                    </div>
+
+                    <div class="option-card" id="optByok" onclick="setByokMode(true)">
+                        <div class="radio-circle"></div>
+                        <div>
+                            <div class="feat-title">Tự cấu hình khóa riêng (BYOK)</div>
+                            <div class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</div>
+                        </div>
+                    </div>
+
+                    <!-- BYOK Form Fields -->
+                    <div class="form-group-box" id="byokInputGroup" style="display: none;">
+                        <label class="input-label">Nhà cung cấp (Provider):</label>
+                        <select id="llmProviderSelect" class="custom-select" onchange="onProviderSelect()" style="margin-bottom: 12px;">
+                            <option value="google">Google (Gemini)</option>
+                            <option value="openai">ChatGPT (OpenAI)</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="custom">Tùy chỉnh (Khác / OpenAI-Compatible)</option>
+                        </select>
+
+                        <label class="input-label">Khóa API (API Key):</label>
+                        <div class="input-wrapper" style="margin-bottom: 12px;">
+                            <input type="password" id="geminiKeyInput" class="key-input" placeholder="Nhập API Key">
+                            <button type="button" class="btn-input-action" id="btnToggleKey" onclick="toggleKeyVisibility()">Hiện</button>
+                        </div>
+
+                        <div class="form-grid-2">
+                            <div>
+                                <label class="input-label">Tên mô hình (Model):</label>
+                                <input type="text" id="llmModelInput" class="form-input" placeholder="gemini-2.0-flash">
+                            </div>
+                            <div>
+                                <label class="input-label">Thời gian chờ (Timeout - giây):</label>
+                                <input type="number" id="llmTimeoutInput" class="form-input" min="5" max="300" value="60">
+                            </div>
+                        </div>
+
+                        <label class="input-label">Base URL (Tùy chọn):</label>
+                        <input type="text" id="llmBaseUrlInput" class="form-input" placeholder="https://generativelanguage.googleapis.com" style="margin-bottom: 12px;">
+
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button type="button" id="btnTestKey" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;" onclick="testApiKeyLive()">
+                                Kiểm tra kết nối
+                            </button>
+                            <span id="testFeedback"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- KHỐI 2: DAILY DIGEST & HITL (TỪ ONBOARDING SLIDE 3) -->
+                <div class="form-section">
+                    <div class="section-heading">Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</div>
+
+                    <label class="input-label" for="digestTimeSelect">Khung giờ nhận báo cáo tổng hợp:</label>
+                    <input id="digestTimeSelect" class="custom-select" type="time" value="18:00" step="60" aria-describedby="digestTimeHelp">
+                    <div id="digestTimeHelp" class="input-hint">Bạn có thể chọn bất kỳ giờ nào trong ngày. Mặc định: 18:00.</div>
+
+                    <div class="setting-card">
+                        <label class="setting-label-flex">
+                            <input type="checkbox" id="hitlCheckbox" checked>
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
+                                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- KHỐI 3: THÔNG TIN WEKNORA WEB VAULT -->
+                <div class="form-section" id="weknoraCredentialsSection" style="display: none;">
+                    <div class="section-heading">Không Gian Tri Thức WeKnora (Web Vault)</div>
+                    <div class="admin-card">
+                        <div class="cred-row">
+                            <span class="cred-label">Đường dẫn:</span>
+                            <a href="#" id="weknoraWebLink" target="_blank" class="cred-value link">—</a>
+                        </div>
+                        <div class="cred-row">
+                            <span class="cred-label">Tài khoản Admin:</span>
+                            <span id="weknoraUsername" class="cred-value code">—</span>
+                        </div>
+                        <div class="cred-row">
+                            <span class="cred-label">Mật khẩu ban đầu:</span>
+                            <span id="weknoraPassword" class="cred-value code">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- NÚT LƯU THAY ĐỔI -->
+                <div class="save-actions">
+                    <button type="button" class="btn-primary" id="btnSaveCustom" onclick="saveCustomSettings()">
+                        Lưu Thay Đổi Cấu Hình
+                    </button>
+                    <div id="saveFeedback" class="save-feedback"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const INITIAL_TASK_ID = "{{TASK_ID}}";
+    let currentTaskId = INITIAL_TASK_ID;
+    let pollTimer = null;
+    let isByokEnabled = false;
+    let currentAdminOpenId = "";
+    let currentTenantKey = "";
+
+    async function beginSetup() {
+        const appId = document.getElementById("setupAppId").value.trim();
+        const appSecret = document.getElementById("setupAppSecret").value.trim();
+        const verificationToken = document.getElementById("setupVerificationToken").value.trim();
+        const encryptKey = document.getElementById("setupEncryptKey").value.trim();
+        const button = document.getElementById("btnInstall");
+        const feedback = document.getElementById("credentialFeedback");
+
+        if (!appId || !appId.startsWith("cli_")) {
+            feedback.textContent = "App ID phải bắt đầu bằng cli_.";
+            return;
+        }
+        if (!appSecret) {
+            feedback.textContent = "Vui lòng nhập App Secret.";
+            return;
+        }
+        if (!verificationToken) {
+            feedback.textContent = "Vui lòng nhập Verification Token trong Event Subscriptions của App.";
+            return;
+        }
+        if (!encryptKey) {
+            feedback.textContent = "Vui lòng nhập Encrypt Key trong Event Subscriptions của App.";
+            return;
+        }
+
+        button.disabled = true;
+        button.textContent = "Đang xác thực App...";
+        feedback.textContent = "";
+
+        try {
+            const testResponse = await fetch("/onboarding/api/test-bot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+            });
+            const testData = await testResponse.json();
+            if (!testData.success) {
+                throw new Error(testData.message || "App credential không hợp lệ.");
+            }
+
+            button.textContent = "Đang tạo phiên kết nối tenant...";
+            const registerResponse = await fetch("/setup/api/register-app", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    app_id: appId,
+                    app_secret: appSecret,
+                    verification_token: verificationToken,
+                    encrypt_key: encryptKey
+                })
+            });
+            const registerData = await registerResponse.json();
+            if (!registerResponse.ok || !registerData.success || !registerData.data?.registration_id) {
+                throw new Error(registerData.detail || registerData.message || "Không thể đăng ký Custom App.");
+            }
+
+            button.textContent = "Đang mở OAuth user...";
+            window.location.href = `/setup/install?registration_id=${encodeURIComponent(registerData.data.registration_id)}`;
+        } catch (error) {
+            feedback.textContent = error.message || "Không thể xác thực App.";
+            button.disabled = false;
+            button.textContent = "Cài đặt HiLark cho Doanh nghiệp · xác thực App & cấp quyền user";
+        }
+    }
+
+    const DEFAULT_STEPS = [
+        { step: 1, title: "Admin mở HiLark Setup", description: "Admin nhấn Install HiLark và bắt đầu quy trình cài đặt." },
+        { step: 2, title: "Ủy quyền tenant & user", description: "Admin cài ứng dụng cho doanh nghiệp và cấp OAuth user bắt buộc." },
+        { step: 3, title: "Xác thực App & token", description: "HiLark nhận tenant identity, user access token và refresh token." },
+        { step: 4, title: "Xác nhận quyền Bot", description: "Dùng tenant access token để gọi API trong doanh nghiệp." },
+        { step: 5, title: "Đồng bộ cấu hình & Cấp phát hạ tầng", description: "Tự động thiết lập Lark Base Quản trị và Không gian Tri thức WeKnora." },
+        { step: 6, title: "Gửi tin nhắn kiểm tra", description: "HiLark gửi tin nhắn chào mừng và thông báo kết nối thành công tới Admin qua Lark Chat." },
+        { step: 7, title: "Ready", description: "Toàn bộ hệ thống sẵn sàng. Admin có thể bắt đầu sử dụng HiLark." }
+    ];
+
+    function renderInitialSteps() {
+        const container = document.getElementById("stepsList");
+        container.innerHTML = "";
+        DEFAULT_STEPS.forEach((s) => {
+            const row = document.createElement("div");
+            row.className = "step-row pending";
+            row.id = `step-row-${s.step}`;
+            row.innerHTML = `
+                <div class="step-line"></div>
+                <div class="step-icon-wrap" id="step-icon-${s.step}">
+                    <span class="step-num">${s.step}</span>
+                </div>
+                <div class="step-content">
+                    <div class="step-title">${s.title}</div>
+                    <div class="step-desc">${s.description}</div>
+                    <div class="step-detail" id="step-detail-${s.step}"></div>
+                </div>
+            `;
+            container.appendChild(row);
+        });
+    }
+
+    function updateStepUI(stepNumber, status, detail) {
+        const row = document.getElementById(`step-row-${stepNumber}`);
+        const iconWrap = document.getElementById(`step-icon-${stepNumber}`);
+        const detailEl = document.getElementById(`step-detail-${stepNumber}`);
+
+        if (!row || !iconWrap) return;
+
+        row.className = `step-row ${status}`;
+
+        if (status === "completed") {
+            iconWrap.innerHTML = `
+                <svg style="width: 15px; height: 15px; fill: currentColor;" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                </svg>
+            `;
+        } else if (status === "processing") {
+            iconWrap.innerHTML = `<div class="spinner"></div>`;
+        } else if (status === "failed") {
+            iconWrap.innerHTML = `
+                <svg style="width: 15px; height: 15px; fill: currentColor;" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                </svg>
+            `;
+        } else {
+            iconWrap.innerHTML = `<span class="step-num">${stepNumber}</span>`;
+        }
+
+        if (detailEl && detail) {
+            detailEl.textContent = detail;
+        }
+    }
+
+    // Toggle Custom Section Accordion
+    function toggleCustomSection() {
+        const body = document.getElementById("customBody");
+        const chevron = document.getElementById("customChevron");
+        const isHidden = body.style.display === "none";
+        body.style.display = isHidden ? "block" : "none";
+        if (isHidden) {
+            chevron.classList.add("open");
+        } else {
+            chevron.classList.remove("open");
+        }
+    }
+
+    // BYOK Mode Switcher
+    function setByokMode(enabled) {
+        isByokEnabled = enabled;
+        const optSys = document.getElementById("optSystemKey");
+        const optByok = document.getElementById("optByok");
+        const group = document.getElementById("byokInputGroup");
+
+        if (enabled) {
+            optSys.classList.remove("selected");
+            optByok.classList.add("selected");
+            group.style.display = "block";
+        } else {
+            optByok.classList.remove("selected");
+            optSys.classList.add("selected");
+            group.style.display = "none";
+        }
+    }
+
+    // Provider select changer
+    function onProviderSelect() {
+        const prov = document.getElementById("llmProviderSelect").value;
+        const modelInput = document.getElementById("llmModelInput");
+        const urlInput = document.getElementById("llmBaseUrlInput");
+
+        if (prov === "google") {
+            modelInput.placeholder = "gemini-2.0-flash";
+            urlInput.placeholder = "https://generativelanguage.googleapis.com";
+        } else if (prov === "openai") {
+            modelInput.placeholder = "gpt-4o";
+            urlInput.placeholder = "https://api.openai.com/v1";
+        } else if (prov === "anthropic") {
+            modelInput.placeholder = "claude-3-5-sonnet-20241022";
+            urlInput.placeholder = "https://api.anthropic.com/v1";
+        } else {
+            modelInput.placeholder = "custom-model";
+            urlInput.placeholder = "https://your-custom-llm-proxy.com/v1";
+        }
+    }
+
+    // Show/Hide password
+    function toggleKeyVisibility() {
+        const inp = document.getElementById("geminiKeyInput");
+        const btn = document.getElementById("btnToggleKey");
+        if (inp.type === "password") {
+            inp.type = "text";
+            btn.textContent = "Ẩn";
+        } else {
+            inp.type = "password";
+            btn.textContent = "Hiện";
+        }
+    }
+
+    // Live Test API Key
+    async function testApiKeyLive() {
+        const btn = document.getElementById("btnTestKey");
+        const fb = document.getElementById("testFeedback");
+        const key = document.getElementById("geminiKeyInput").value.trim();
+        const provider = document.getElementById("llmProviderSelect").value;
+        const model = document.getElementById("llmModelInput").value.trim();
+        const baseUrl = document.getElementById("llmBaseUrlInput").value.trim();
+        const timeoutVal = parseFloat(document.getElementById("llmTimeoutInput").value) || 30.0;
+
+        if (!key) {
+            fb.className = "test-feedback error";
+            fb.textContent = "Vui lòng nhập API Key trước.";
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "Đang kiểm tra...";
+        fb.className = "test-feedback";
+        fb.textContent = "";
+
+        try {
+            const resp = await fetch("/onboarding/api/test-key", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    api_key: key,
+                    provider: provider,
+                    model_name: model || undefined,
+                    base_url: baseUrl || undefined,
+                    timeout: timeoutVal
+                })
+            });
+
+            const data = await resp.json();
+            if (data.success) {
+                fb.className = "test-feedback success";
+                fb.textContent = `Thành công (${data.latency_ms} ms)`;
+            } else {
+                fb.className = "test-feedback error";
+                fb.textContent = data.message || "Kết nối thất bại";
+            }
+        } catch (err) {
+            fb.className = "test-feedback error";
+            fb.textContent = "Lỗi kết nối: " + err.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Kiểm tra kết nối";
+        }
+    }
+
+    // Save Custom Settings via AJAX
+    async function saveCustomSettings() {
+        const btn = document.getElementById("btnSaveCustom");
+        const fb = document.getElementById("saveFeedback");
+
+        btn.disabled = true;
+        btn.textContent = "Đang lưu cấu hình...";
+        fb.textContent = "";
+        fb.className = "save-feedback";
+
+        const payload = {
+            open_id: currentAdminOpenId || "ou_default_admin",
+            tenant_key: currentTenantKey || undefined,
+            is_byok_enabled: isByokEnabled,
+            raw_gemini_key: isByokEnabled ? document.getElementById("geminiKeyInput").value.trim() : undefined,
+            digest_schedule_time: document.getElementById("digestTimeSelect").value,
+            hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
+            llm_provider: document.getElementById("llmProviderSelect").value,
+            llm_model: document.getElementById("llmModelInput").value.trim() || undefined,
+            llm_base_url: document.getElementById("llmBaseUrlInput").value.trim() || undefined,
+            llm_timeout: parseFloat(document.getElementById("llmTimeoutInput").value) || 60.0
+        };
+
+        try {
+            const resp = await fetch("/onboarding/api/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const res = await resp.json();
+            if (res.success) {
+                fb.className = "save-feedback success";
+                fb.textContent = "Đã lưu cấu hình thành công!";
+                setTimeout(() => { fb.textContent = ""; }, 4000);
+            } else {
+                fb.className = "save-feedback error";
+                fb.textContent = res.message || "Lỗi khi lưu cấu hình";
+            }
+        } catch (err) {
+            fb.className = "save-feedback error";
+            fb.textContent = "Lỗi gửi yêu cầu: " + err.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Lưu Thay Đổi Cấu Hình";
+        }
+    }
+
+    // Load existing settings if any
+    async function loadExistingSettings(openId, tenantKey) {
+        if (!openId) return;
+        try {
+            const url = `/onboarding/api/settings/${openId}${tenantKey ? '?tenant_key=' + tenantKey : ''}`;
+            const resp = await fetch(url);
+            if (!resp.ok) return;
+            const res = await resp.json();
+            if (res.success && res.data) {
+                const s = res.data;
+                if (s.is_byok_enabled) {
+                    setByokMode(true);
+                }
+                if (s.llm_provider) {
+                    document.getElementById("llmProviderSelect").value = s.llm_provider;
+                    onProviderSelect();
+                }
+                if (s.llm_model) {
+                    document.getElementById("llmModelInput").value = s.llm_model;
+                }
+                if (s.llm_base_url) {
+                    document.getElementById("llmBaseUrlInput").value = s.llm_base_url;
+                }
+                if (s.llm_timeout) {
+                    document.getElementById("llmTimeoutInput").value = s.llm_timeout;
+                }
+                if (s.digest_schedule_time) {
+                    document.getElementById("digestTimeSelect").value = s.digest_schedule_time;
+                }
+                if (typeof s.hitl_mode_enabled === "boolean") {
+                    document.getElementById("hitlCheckbox").checked = s.hitl_mode_enabled;
+                }
+            }
+        } catch (e) {
+            console.debug("Chưa có cấu hình cũ:", e);
+        }
+    }
+
+    async function pollStatus() {
+        if (!currentTaskId) return;
+
+        try {
+            const resp = await fetch(`/setup/api/status/${currentTaskId}`);
+            if (!resp.ok) return;
+
+            const res = await resp.json();
+            if (!res.success || !res.data) return;
+
+            const data = res.data;
+            const steps = data.steps || [];
+
+            steps.forEach((s) => {
+                updateStepUI(s.step, s.status, s.detail);
+            });
+
+            if (data.status === "completed") {
+                clearInterval(pollTimer);
+                document.getElementById("progressStatusText").textContent = "Cài đặt hoàn tất";
+                const badge = document.getElementById("progressBadge");
+                badge.className = "status-pill ready";
+                badge.textContent = "Hoàn tất";
+
+                // Điền thông tin vào Ready panel
+                const tenantInfo = data.tenant_info || {};
+                currentAdminOpenId = tenantInfo.admin_open_id || "";
+                currentTenantKey = tenantInfo.tenant_key || "";
+
+                document.getElementById("valTenantKey").textContent = tenantInfo.tenant_key || "default";
+                document.getElementById("valAdminName").textContent = tenantInfo.admin_name || "Quản trị viên";
+
+                const botLink = document.getElementById("linkOpenBot");
+                if (tenantInfo.bot_applink) {
+                    botLink.href = tenantInfo.bot_applink;
+                } else if (tenantInfo.app_id) {
+                    botLink.href = `https://applink.larksuite.com/client/bot/open?appId=${tenantInfo.app_id}`;
+                } else {
+                    botLink.href = "https://applink.larksuite.com";
+                }
+
+                const baseLink = document.getElementById("linkOpenBase");
+                if (tenantInfo.bitable_app_url) {
+                    baseLink.href = tenantInfo.bitable_app_url;
+                } else {
+                    baseLink.style.display = "none";
+                }
+
+                // Điền thông tin WeKnora credentials nếu có
+                if (tenantInfo.weknora_credentials) {
+                    const wc = tenantInfo.weknora_credentials;
+                    const sec = document.getElementById("weknoraCredentialsSection");
+                    sec.style.display = "block";
+                    const wLink = document.getElementById("weknoraWebLink");
+                    wLink.href = wc.web_url || "#";
+                    wLink.textContent = wc.web_url || "WeKnora Vault";
+                    document.getElementById("weknoraUsername").textContent = wc.username || "—";
+                    document.getElementById("weknoraPassword").textContent = wc.initial_password || "—";
+                }
+
+                // Hiển thị Ready Panel & Progressive Customization Panel
+                document.getElementById("readyPanel").classList.add("active");
+                document.getElementById("customPanel").style.display = "block";
+
+                // Nạp cấu hình hiện tại vào form
+                loadExistingSettings(currentAdminOpenId, currentTenantKey);
+
+            } else if (data.status === "failed") {
+                clearInterval(pollTimer);
+                document.getElementById("progressStatusText").textContent = "Quá trình gặp sự cố";
+                const badge = document.getElementById("progressBadge");
+                badge.className = "status-pill failed";
+                badge.textContent = "Thất bại";
+            }
+        } catch (err) {
+            console.error("Polling error:", err);
+        }
+    }
+
+    // Khởi động trang
+    document.addEventListener("DOMContentLoaded", () => {
+        if (INITIAL_TASK_ID) {
+            document.getElementById("landingView").style.display = "none";
+            document.getElementById("progressView").style.display = "block";
+            document.getElementById("mainHeading").textContent = "Thiết Lập HiLark";
+            document.getElementById("mainSubtitle").textContent = "Đang xác thực App, nhận tenant token và lưu OAuth user token...";
+
+            renderInitialSteps();
+            pollStatus();
+            pollTimer = setInterval(pollStatus, 1000);
+        }
+    });
+</script>
+
+</body>
+</html>

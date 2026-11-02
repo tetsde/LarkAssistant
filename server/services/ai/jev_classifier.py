@@ -54,27 +54,47 @@ class JevService:
         yield get_http_client()
 
     @track_jev_cost(operation="classify_message")
-    async def classify_message(self, message: str, client: Optional[httpx.AsyncClient] = None) -> dict:
+    async def classify_message(
+        self,
+        message: str,
+        client: Optional[httpx.AsyncClient] = None,
+        speaker_role: str = "member",
+    ) -> dict:
         if not self.api_key:
             raise JEVError("Missing JEV API Key (jev_api) in .env")
 
+        normalized_role = "owner" if speaker_role == "owner" else "member"
+        role_guidance = (
+            "Người gửi là LÃNH ĐẠO. Không được mặc định lưu mọi phát ngôn của lãnh đạo. "
+            "Tin hỏi đáp, trao đổi, nhận xét, xã giao hoặc chỉ đạo chưa phải sự kiện chốt thì chọn IGNORE hoặc REPLY_ONLY. "
+            "Chỉ chọn MEMORY_ONLY khi có fact/decision/update cụ thể, ổn định và có giá trị tra cứu về sau."
+            if normalized_role == "owner"
+            else "Người gửi là thành viên. Chỉ lưu khi tin có fact/update/decision cụ thể; không lưu chat xã giao hoặc câu hỏi thông thường."
+        )
         payload = {
-            "state": message,
+            "state": f"Vai trò người gửi: {normalized_role}\n\nTin nhắn:\n{message}",
             "model": "jev-latest",
             "questions": {
                 "message_action": {
                     "type": "choice",
                     "instructions": (
-                        "Bạn là trợ lý AI (Gatekeeper) nghiêm khắc, lọc tin nhắn cho một vị "
-                        "Giám đốc rất bận rộn. Bạn cần phân tích tin nhắn có đáng GHI NHỚ hay không, "
+                        "Bạn là trợ lý AI (Gatekeeper) nghiêm khắc. Bạn cần phân tích tin nhắn có đáng GHI NHỚ hay không, "
                         "và nếu cần phản hồi thì trả lời ngay hay tạo bản nháp chờ duyệt. "
-                        "Hãy chọn 1 trong 5 nhãn phân loại phù hợp nhất bên dưới."
+                        "Hãy chọn 1 trong 5 nhãn phân loại phù hợp nhất bên dưới.\n\n"
+                            f"{role_guidance}\n\n"
+                            "QUY TẮC ƯU TIÊN KHẨN CẤP: Nếu tin nhắn có deadline gần hoặc yêu cầu xử lý trong ngày "
+                            "(ví dụ: 'gấp', 'hôm nay', 'ngay', 'khẩn cấp'), đồng thời đang xin phương án/chỉ đạo/trả lời "
+                            "cho một vấn đề có tác động công việc, khách hàng, thương lượng, rủi ro hoặc escalation, "
+                            "hãy chọn MEMORY_AND_DRAFT: ghi nhớ nội dung và soạn bản nháp để chủ nhân duyệt trước khi gửi. "
+                            "Không chọn MEMORY_ONLY trong trường hợp người gửi đang hỏi cần xử lý thế nào. "
+                            "Nếu chỉ thông báo một sự kiện khẩn cấp nhưng không hỏi, không xin phản hồi và không cần hành động, "
+                            "vẫn chọn MEMORY_ONLY."
                     ),
                     "criteria": {
                         "IGNORE": "Tin nhắn rác, chào hỏi vô thưởng vô phạt, tán gẫu, không chứa thông tin quan trọng. (Không cần ghi nhớ, Không cần trả lời)",
                         "MEMORY_ONLY": "Tin nhắn mang tính chất báo cáo, cập nhật tiến độ hoặc tài liệu tham khảo cần lưu vào bộ nhớ để tra cứu, nhưng không ai hỏi. (Cần ghi nhớ, Không cần trả lời)",
                         "REPLY_ONLY": "Tin nhắn hỏi đáp thông tin thông thường về dự án, tiến độ, thành viên team, phân công công việc, quy trình, kiến trúc kỹ thuật hoặc tài liệu hệ thống đã có sẵn trong Knowledge Base. Cần AI tự động tra cứu tri thức và trả lời ngay vào nhóm.",
-                        "MEMORY_AND_DRAFT": "Tin nhắn quan trọng cần ghi nhớ và có câu hỏi cần phản hồi. Lưu thông tin vào memory, soạn câu trả lời nháp gửi chủ nhân duyệt; tuyệt đối không tự reply vào chat.",
+                        "MEMORY_AND_DRAFT": "Tin nhắn quan trọng cần ghi nhớ và có câu hỏi cần phản hồi. Đặc biệt áp dụng khi có deadline gần/yêu cầu xử lý trong ngày hoặc tình huống khẩn cấp, escalation, thương lượng, rủi ro công việc và người gửi hỏi xin phương án. Lưu thông tin vào memory, soạn câu trả lời nháp gửi chủ nhân duyệt; tuyệt đối không tự reply vào chat.",
                         "DRAFT_PENDING_APPROVAL": "CHỈ áp dụng cho các câu hỏi ĐẶC BIỆT NHẠY CẢM MẬT (như bảng lương cá nhân nhân viên, bí mật tài chính kế toán riêng tư, thỏa thuận hợp đồng bảo mật, tranh chấp pháp lý nghiêm trọng). Còn các câu hỏi tiến độ, thành viên, thông tin dự án chung thì KHÔNG chọn nhãn này."
                     }
                 },

@@ -175,8 +175,10 @@ class DigestService:
         chat_name: str = "",
         timestamp: Optional[str] = None,
         project_tag: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> StagingMessage:
-        """Lưu một tin nhắn hợp lệ vào vùng đệm Staging của MongoDB trong ngày."""
+        """Lưu một tin nhắn hợp lệ vào vùng đệm Staging của MongoDB trong ngày (có cô lập theo tenant_key)."""
+        eff_tenant = tenant_key or get_current_tenant_key()
         staging_item = StagingMessage(
             id=f"stg_{uuid.uuid4().hex[:12]}",
             message_id=message_id,
@@ -188,17 +190,18 @@ class DigestService:
             timestamp=timestamp or get_vietnam_now_iso(),
             message_link=build_lark_message_link(message_id),
             project_tag=project_tag,
+            tenant_key=eff_tenant,
             processed=False,
         )
 
         try:
             coll = _get_staging_coll()
             await coll.update_one(
-                {"message_id": message_id},
+                inject_tenant_filter({"message_id": message_id}, eff_tenant),
                 {"$set": staging_item.to_dict()},
                 upsert=True,
             )
-            logger.info(f"Đã lưu staging tin nhắn: {message_id} ({chat_id})")
+            logger.info("[STORE] msg=%s chat=%s tenant=%s staging=yes", message_id, chat_id, eff_tenant or "<single-tenant>")
         except Exception as e:
             logger.error(f"Lỗi khi lưu staging vào MongoDB: {e}", exc_info=True)
 
@@ -209,9 +212,11 @@ class DigestService:
         chat_id: str,
         date: Optional[str] = None,
         unprocessed_only: bool = False,
+        tenant_key: Optional[str] = None,
     ) -> List[StagingMessage]:
-        """Lấy danh sách tin nhắn staging của một cuộc trò chuyện trong ngày."""
+        """Lấy danh sách tin nhắn staging của một cuộc trò chuyện trong ngày có cô lập theo tenant_key."""
         target_date = date or get_current_digest_date()
+        eff_tenant = tenant_key or get_current_tenant_key()
         query: Dict[str, Any] = {
             "chat_id": chat_id,
             "timestamp": {"$regex": f"^{target_date}"},
@@ -219,6 +224,8 @@ class DigestService:
         }
         if unprocessed_only:
             query["processed"] = False
+
+        query = inject_tenant_filter(query, eff_tenant)
 
         try:
             coll = _get_staging_coll()
@@ -248,6 +255,7 @@ class DigestService:
         chat_id: str,
         date: Optional[str] = None,
         project_tag: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Truy vấn các Claims / Mệnh đề trong MongoDB collection 'claims' liên quan đến nhóm:
@@ -260,7 +268,7 @@ class DigestService:
             scope_or: List[Dict[str, Any]] = [{"chat_id": chat_id}]
             if project_tag:
                 scope_or.append({"project_tag": project_tag})
-            query = {"$or": scope_or}
+            query = inject_tenant_filter({"$or": scope_or}, tenant_key or get_current_tenant_key())
 
             cursor = coll.find(query).sort("updated_at", -1)
             raw_claims = await cursor.to_list(length=200)
@@ -280,6 +288,7 @@ class DigestService:
         self,
         chat_id: str,
         before_date: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Optional[DailyDigestRecord]:
         """
         Truy vấn bản ghi DailyDigestRecord gần nhất trước ngày `before_date` cho một nhóm chat.
@@ -288,11 +297,12 @@ class DigestService:
         target_date = before_date or get_current_digest_date()
         try:
             coll = _get_daily_digests_coll()
-            res = coll.find_one(
-                {
+            query = inject_tenant_filter({
                     "chat_id": chat_id,
                     "date": {"$lt": target_date},
-                },
+                }, tenant_key or get_current_tenant_key())
+            res = coll.find_one(
+                query,
                 sort=[("date", -1)],
             )
             doc = await res if inspect.isawaitable(res) else None
@@ -306,6 +316,7 @@ class DigestService:
     async def get_previous_master_digest(
         self,
         before_date: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Optional[MasterDailyDigestRecord]:
         """
         Truy vấn bản ghi MasterDailyDigestRecord gần nhất trước ngày `before_date`.
@@ -313,8 +324,9 @@ class DigestService:
         target_date = before_date or get_current_digest_date()
         try:
             coll = _get_master_daily_digests_coll()
+            query = inject_tenant_filter({"date": {"$lt": target_date}}, tenant_key or get_current_tenant_key())
             res = coll.find_one(
-                {"date": {"$lt": target_date}},
+                query,
                 sort=[("date", -1)],
             )
             doc = await res if inspect.isawaitable(res) else None
@@ -335,21 +347,31 @@ class DigestService:
         claims: Optional[List[Dict[str, Any]]] = None,
         previous_overview_summary: Optional[str] = None,
         previous_digest_date: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> DailyDigestRecord:
         """Dùng LLM đọc danh sách tin nhắn và Claims để trích xuất thành đối tượng DailyDigestRecord."""
         target_date = date or get_current_digest_date()
-        digest_id = f"digest_{target_date.replace('-', '')}_{chat_id}"
+        eff_tenant = tenant_key or get_current_tenant_key()
+        digest_prefix = f"digest_{eff_tenant}_" if eff_tenant else "digest_"
+        digest_id = f"{digest_prefix}{target_date.replace('-', '')}_{chat_id}"
 
         # Tự động nạp overview_summary của ngày trước (K-1) nếu chưa được chỉ định
         if previous_overview_summary is None:
-            prev_digest = await self.get_previous_digest(chat_id=chat_id, before_date=target_date)
+            prev_digest = await self.get_previous_digest(
+                chat_id=chat_id, before_date=target_date, tenant_key=eff_tenant
+            )
             if prev_digest and prev_digest.overview_summary:
                 previous_overview_summary = prev_digest.overview_summary.strip()
                 previous_digest_date = prev_digest.date
 
         # Nếu claims chưa được truyền vào, tự động lấy từ MongoDB
         if claims is None:
-            claims = await self.get_claims_for_digest(chat_id=chat_id, date=target_date, project_tag=project_tag)
+            claims = await self.get_claims_for_digest(
+                chat_id=chat_id,
+                date=target_date,
+                project_tag=project_tag,
+                tenant_key=eff_tenant,
+            )
 
         if not messages and not claims:
             fallback_summary = (
@@ -529,8 +551,9 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         """Lưu hoặc cập nhật bản DailyDigestRecord vào MongoDB và đánh dấu staging đã xử lý."""
         try:
             coll = _get_daily_digests_coll()
+            eff_tenant = digest.tenant_key or get_current_tenant_key()
             await coll.update_one(
-                {"id": digest.id},
+                inject_tenant_filter({"id": digest.id}, eff_tenant),
                 {"$set": digest.to_dict()},
                 upsert=True,
             )
@@ -538,10 +561,10 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             # Đánh dấu các tin nhắn staging liên quan trong ngày là đã xử lý
             stg_coll = _get_staging_coll()
             await stg_coll.update_many(
-                {
+                inject_tenant_filter({
                     "chat_id": digest.chat_id,
                     "timestamp": {"$regex": f"^{digest.date}"},
-                },
+                }, eff_tenant),
                 {"$set": {"processed": True}},
             )
             logger.info(f"Đã lưu DailyDigest vào MongoDB: {digest.id}")
@@ -560,6 +583,7 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         Tự động định tuyến theo tenant_key đa doanh nghiệp.
         """
         from services.knowledge.chat_scopes import scope_service
+        from database.db import get_tenant_config
 
         eff_tenant = tenant_key or getattr(digest, "tenant_key", None) or get_current_tenant_key()
 
@@ -573,11 +597,25 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             digest.sync_status = "failed"
             return False
 
+        tenant_id = None
+        if eff_tenant:
+            tenant_cfg = await get_tenant_config(eff_tenant)
+            tenant_id = tenant_cfg.get("weknora_tenant_id") if tenant_cfg else None
+        if eff_tenant and not tenant_id:
+            logger.error("Thiếu weknora_tenant_id cho tenant '%s', bỏ qua đồng bộ Digest để tránh gửi nhầm workspace.", eff_tenant)
+            digest.sync_status = "failed"
+            return False
+
         md_content = digest.to_weknora_markdown()
         doc_name = f"Wiki_Digest_{digest.date}_{digest.chat_name or digest.chat_id}"
 
         try:
-            resp = await _get_weknora_service().save_to_kb(text=md_content, dataset_id=target_kb, name=doc_name)
+            resp = await _get_weknora_service().save_to_kb(
+                text=md_content,
+                dataset_id=target_kb,
+                name=doc_name,
+                tenant_id=tenant_id,
+            )
             doc_id = ""
             if isinstance(resp, dict):
                 doc_id = resp.get("data", {}).get("id") or resp.get("id") or ""
@@ -590,7 +628,7 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             # Cập nhật lại trạng thái vào MongoDB
             coll = _get_daily_digests_coll()
             await coll.update_one(
-                {"id": digest.id},
+                inject_tenant_filter({"id": digest.id}, eff_tenant),
                 {
                     "$set": {
                         "sync_status": "synced",
@@ -607,11 +645,12 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             digest.sync_status = "failed"
             return False
 
-    async def get_digest_by_id(self, digest_id: str) -> Optional[DailyDigestRecord]:
+    async def get_digest_by_id(self, digest_id: str, tenant_key: Optional[str] = None) -> Optional[DailyDigestRecord]:
         """Truy vấn 1 bản ghi DailyDigestRecord từ MongoDB theo ID."""
         try:
             coll = _get_daily_digests_coll()
-            doc = await coll.find_one({"id": digest_id})
+            query = inject_tenant_filter({"id": digest_id}, tenant_key or get_current_tenant_key())
+            doc = await coll.find_one(query)
             if doc:
                 return DailyDigestRecord(**doc)
             return None
@@ -712,12 +751,13 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             logger.error(f"❌ [DIGEST APPROVAL] Lỗi ngoại lệ khi gửi tin duyệt: {e}", exc_info=True)
             return False
 
-    async def get_latest_pending_approval_digest(self) -> Optional[DailyDigestRecord]:
+    async def get_latest_pending_approval_digest(self, tenant_key: Optional[str] = None) -> Optional[DailyDigestRecord]:
         """Lấy bản ghi DailyDigest gần nhất đang ở trạng thái chờ duyệt."""
         try:
             coll = _get_daily_digests_coll()
+            query = inject_tenant_filter({"sync_status": "pending_approval"}, tenant_key or get_current_tenant_key())
             doc = await coll.find_one(
-                {"sync_status": "pending_approval"},
+                query,
                 sort=[("created_at", -1)],
             )
             if doc:
@@ -731,14 +771,15 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         self,
         digest_id: Optional[str] = None,
         dataset_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> tuple[bool, str, Optional[DailyDigestRecord]]:
         """
         Người duyệt đồng ý -> Lấy digest từ MongoDB và đẩy chính thức lên WeKnora KB.
         """
         if digest_id:
-            digest = await self.get_digest_by_id(digest_id)
+            digest = await self.get_digest_by_id(digest_id, tenant_key=tenant_key)
         else:
-            digest = await self.get_latest_pending_approval_digest()
+            digest = await self.get_latest_pending_approval_digest(tenant_key=tenant_key)
 
         if not digest:
             return False, "Không tìm thấy bản ghi Daily Digest nào đang chờ duyệt.", None
@@ -765,14 +806,15 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
     async def reject_digest(
         self,
         digest_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> tuple[bool, str, Optional[DailyDigestRecord]]:
         """
         Người duyệt từ chối -> Đánh dấu rejected, không đẩy lên WeKnora.
         """
         if digest_id:
-            digest = await self.get_digest_by_id(digest_id)
+            digest = await self.get_digest_by_id(digest_id, tenant_key=tenant_key)
         else:
-            digest = await self.get_latest_pending_approval_digest()
+            digest = await self.get_latest_pending_approval_digest(tenant_key=tenant_key)
 
         if not digest:
             return False, "Không tìm thấy bản ghi Daily Digest nào đang chờ duyệt.", None
@@ -782,17 +824,24 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
 
         coll = _get_daily_digests_coll()
         await coll.update_one(
-            {"id": digest.id},
+            inject_tenant_filter({"id": digest.id}, tenant_key or digest.tenant_key or get_current_tenant_key()),
             {"$set": {"sync_status": "rejected", "updated_at": digest.updated_at}},
         )
         return True, f"Đã từ chối bản Daily Digest ({digest.id}). Dữ liệu không được nạp vào KB.", digest
 
-    async def get_active_chat_ids_today(self, date: Optional[str] = None) -> List[str]:
-        """Lấy danh sách các nhóm chat có tin nhắn staging trong ngày hôm nay."""
+    async def get_active_chat_ids_today(
+        self,
+        date: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> List[str]:
+        """Lấy danh sách các nhóm chat có tin nhắn staging trong ngày hôm nay có cô lập theo tenant_key."""
         target_date = date or get_current_digest_date()
+        eff_tenant = tenant_key or get_current_tenant_key()
         try:
             coll = _get_staging_coll()
-            cursor = coll.distinct("chat_id", {"timestamp": {"$regex": f"^{target_date}"}})
+            query: Dict[str, Any] = {"timestamp": {"$regex": f"^{target_date}"}}
+            query = inject_tenant_filter(query, eff_tenant)
+            cursor = coll.distinct("chat_id", query)
             chat_ids = await cursor
             return [str(c) for c in chat_ids if c]
         except Exception as e:
@@ -855,7 +904,10 @@ Yêu cầu:
         try:
             coll = _get_master_daily_digests_coll()
             await coll.update_one(
-                {"id": master_digest.id},
+                inject_tenant_filter(
+                    {"id": master_digest.id},
+                    master_digest.tenant_key or get_current_tenant_key(),
+                ),
                 {"$set": master_digest.to_dict()},
                 upsert=True,
             )
@@ -863,11 +915,12 @@ Yêu cầu:
         except Exception as e:
             logger.error(f"Lỗi khi lưu MasterDailyDigest vào MongoDB: {e}", exc_info=True)
 
-    async def get_master_digest_by_id(self, master_digest_id: str) -> Optional[MasterDailyDigestRecord]:
+    async def get_master_digest_by_id(self, master_digest_id: str, tenant_key: Optional[str] = None) -> Optional[MasterDailyDigestRecord]:
         """Truy vấn 1 bản ghi MasterDailyDigestRecord từ MongoDB theo ID."""
         try:
             coll = _get_master_daily_digests_coll()
-            doc = await coll.find_one({"id": master_digest_id})
+            query = inject_tenant_filter({"id": master_digest_id}, tenant_key or get_current_tenant_key())
+            doc = await coll.find_one(query)
             if doc:
                 return MasterDailyDigestRecord(**doc)
             return None
@@ -875,12 +928,17 @@ Yêu cầu:
             logger.error(f"Lỗi khi tìm MasterDailyDigest {master_digest_id}: {e}", exc_info=True)
             return None
 
-    async def get_latest_pending_master_digest(self) -> Optional[MasterDailyDigestRecord]:
-        """Lấy bản ghi MasterDailyDigest gần nhất đang ở trạng thái chờ duyệt."""
+    async def get_latest_pending_master_digest(
+        self,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[MasterDailyDigestRecord]:
+        """Lấy bản ghi MasterDailyDigest gần nhất đang ở trạng thái chờ duyệt có cô lập theo tenant_key."""
+        eff_tenant = tenant_key or get_current_tenant_key()
         try:
             coll = _get_master_daily_digests_coll()
+            query = inject_tenant_filter({"status": "pending_approval"}, eff_tenant)
             doc = await coll.find_one(
-                {"status": "pending_approval"},
+                query,
                 sort=[("created_at", -1)],
             )
             if doc:
@@ -894,22 +952,35 @@ Yêu cầu:
         self,
         master_digest: MasterDailyDigestRecord,
         approver_open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> bool:
-        """Gửi Thẻ tin nhắn tương tác Master Daily Digest tới Chủ nhân để duyệt."""
+        """Gửi Thẻ tin nhắn tương tác Master Daily Digest tới Chủ nhân để duyệt (hỗ trợ tenant_key)."""
         from services.lark import lark_service
+        from services.lark.runtime import get_or_create_lark_service
+        from services.lark_app_service import lark_app_service
         from services.lark.card_builder import build_digest_approval_card
         from services.claim_service import claim_service
 
-        target_approver = (
-            approver_open_id
-            or settings.DIGEST_APPROVER_ID
-            or lark_service.owner_open_id
-        )
+        eff_tenant = tenant_key or getattr(master_digest, "tenant_key", None) or get_current_tenant_key()
+
+        target_approver = approver_open_id
+        if not target_approver and eff_tenant:
+            try:
+                from database.db import get_tenant_config
+                t_cfg = await get_tenant_config(eff_tenant)
+                if t_cfg and t_cfg.get("admin_open_id"):
+                    target_approver = t_cfg["admin_open_id"]
+            except Exception as te:
+                logger.debug(f"Không thể tra cứu admin_open_id cho tenant {eff_tenant}: {te}")
+
+        if not target_approver:
+            target_approver = settings.DIGEST_APPROVER_ID or lark_service.owner_open_id
 
         pending_claims = []
         try:
             pending_claims = await claim_service.get_pending_claims_for_date(
-                date_str=getattr(master_digest, "date", None)
+                date_str=getattr(master_digest, "date", None),
+                tenant_key=eff_tenant,
             )
         except Exception as e:
             logger.warning(f"Không thể lấy danh sách thông tin đề xuất trong ngày cho digest: {e}")
@@ -925,16 +996,31 @@ Yêu cầu:
             master_digest,
             pending_claims=pending_claims,
             cost_summary=cost_summary,
+            tenant_key=eff_tenant,
         )
         try:
             if target_approver:
-                res = await lark_service.send_bot_card_to_owner(card_payload, target_open_id=target_approver)
+                sender_service = lark_service
+                if eff_tenant:
+                    app_record = await lark_app_service.get_by_tenant_key(eff_tenant)
+                    if app_record:
+                        sender_service = await get_or_create_lark_service(app_record)
+                    else:
+                        logger.warning(
+                            "Không tìm thấy Custom App mapping cho tenant %s; fallback Lark client mặc định",
+                            eff_tenant,
+                        )
+                res = await sender_service.send_bot_card_to_owner(
+                    card_payload,
+                    target_open_id=target_approver,
+                    tenant_key=eff_tenant,
+                )
                 if not res.get("success"):
                     logger.error(
                         f"Thất bại khi gửi thẻ duyệt Master Digest: {res.get('msg') or res.get('error')}"
                     )
                     return False
-                logger.info(f"Đã gửi thẻ duyệt Master Digest tới {target_approver}")
+                logger.info(f"Đã gửi thẻ duyệt Master Digest tới {target_approver} (tenant: {eff_tenant})")
                 return True
             logger.warning("Không tìm thấy target_approver!")
             return False
@@ -946,20 +1032,22 @@ Yêu cầu:
         self,
         date: Optional[str] = None,
         require_approval: Optional[bool] = None,
+        tenant_key: Optional[str] = None,
     ) -> MasterDailyDigestRecord:
         """
         Tổng hợp báo cáo ngày cấp điều hành (Master Daily Digest):
-          1. Lấy tất cả active chat_ids trong ngày từ staging.
+          1. Lấy tất cả active chat_ids trong ngày từ staging có cô lập theo tenant_key.
           2. Bóc tách DailyDigestRecord cho từng nhóm chat (Quyết định, Cam kết, Trạng thái/Blocker).
           3. Lưu từng DailyDigestRecord vào MongoDB (đánh dấu staging đã xử lý).
-          4. Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành (Executive Summary) từ tất cả các nhóm.
+          4. Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành (Executive Summary) từ tất cả các nhóm của tenant.
           5. Tạo bản ghi MasterDailyDigestRecord, lưu vào MongoDB collection 'master_daily_digests'.
           6. Nếu require_approval=True: Gửi DUY NHẤT 1 tin nhắn DM tới Chủ nhân kèm hướng dẫn duyệt.
           7. Nếu require_approval=False: Tự động duyệt và phân phối đẩy từng group digest vào đúng KB WeKnora tương ứng.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
         target_date = date or get_current_digest_date()
-        chat_ids = await self.get_active_chat_ids_today(target_date)
-        logger.info(f"🏛️ [MASTER DIGEST] Bắt đầu tổng hợp Master Digest cho ngày {target_date} ({len(chat_ids)} nhóm)")
+        chat_ids = await self.get_active_chat_ids_today(date=target_date, tenant_key=eff_tenant)
+        logger.info(f"🏛️ [MASTER DIGEST] Bắt đầu tổng hợp Master Digest cho ngày {target_date} (tenant: {eff_tenant}, {len(chat_ids)} nhóm)")
 
         from services.knowledge.chat_scopes import scope_service
 
@@ -968,11 +1056,11 @@ Yêu cầu:
 
         for cid in chat_ids:
             try:
-                messages = await self.get_staging_messages(chat_id=cid, date=target_date)
+                messages = await self.get_staging_messages(chat_id=cid, date=target_date, tenant_key=eff_tenant)
                 if not messages:
                     continue
                 total_msgs += len(messages)
-                scope = await scope_service.get_scope_by_chat_id(cid)
+                scope = await scope_service.get_scope_by_chat_id(cid, tenant_key=eff_tenant)
                 cname = scope.chat_name if scope else (messages[0].chat_name if messages else cid)
                 ptag = scope.project_tag if scope else None
 
@@ -982,10 +1070,13 @@ Yêu cầu:
                     chat_name=cname,
                     date=target_date,
                     project_tag=ptag,
+                    tenant_key=eff_tenant,
                 )
-                scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(cid)
+                scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(cid, tenant_key=eff_tenant)
                 digest.weknora_kb_id = scoped_wiki_kb
                 digest.sync_status = "pending_approval"
+                if eff_tenant:
+                    digest.tenant_key = eff_tenant
                 # Lưu từng digest vào MongoDB và đánh dấu staging đã xử lý
                 await self.save_digest_to_mongo(digest)
                 group_digests.append(digest)
@@ -993,7 +1084,10 @@ Yêu cầu:
                 logger.error(f"Lỗi khi tổng hợp digest cho nhóm {cid}: {e}", exc_info=True)
 
         # Lấy thông tin master digest liền trước (nếu có)
-        prev_master = await self.get_previous_master_digest(before_date=target_date)
+        prev_master = await self.get_previous_master_digest(
+            before_date=target_date,
+            tenant_key=eff_tenant,
+        )
         prev_exec_summary = prev_master.executive_summary.strip() if prev_master and prev_master.executive_summary else None
         prev_master_date = prev_master.date if prev_master else None
 
@@ -1003,7 +1097,10 @@ Yêu cầu:
             previous_executive_summary=prev_exec_summary,
             previous_master_date=prev_master_date,
         )
-        master_id = f"master_digest_{target_date.replace('-', '')}"
+        if eff_tenant:
+            master_id = f"master_digest_{eff_tenant}_{target_date.replace('-', '')}"
+        else:
+            master_id = f"master_digest_{target_date.replace('-', '')}"
 
         needs_approval = (
             require_approval
@@ -1020,6 +1117,7 @@ Yêu cầu:
             group_digests=group_digests,
             total_messages=total_msgs,
             total_groups=len(group_digests),
+            tenant_key=eff_tenant,
             status="pending_approval" if needs_approval else "approved",
         )
 
@@ -1027,13 +1125,13 @@ Yêu cầu:
         await self.save_master_digest_to_mongo(master_digest)
 
         if needs_approval:
-            sent_ok = await self.send_master_approval_request(master_digest)
+            sent_ok = await self.send_master_approval_request(master_digest, tenant_key=eff_tenant)
             if sent_ok:
-                print(f"✔ [MASTER DIGEST APPROVAL] Đã gửi báo cáo Master Digest ngày {target_date} tới Chủ nhân thành công!")
+                print(f"✔ [MASTER DIGEST APPROVAL] Đã gửi báo cáo Master Digest ngày {target_date} (tenant: {eff_tenant}) tới Chủ nhân thành công!")
             else:
-                print(f"⚠️ [MASTER DIGEST APPROVAL] Đã lưu Master Digest nhưng không thể gửi DM cho Chủ nhân.")
+                print(f"⚠️ [MASTER DIGEST APPROVAL] Đã lưu Master Digest nhưng không thể gửi DM cho Chủ nhân (tenant: {eff_tenant}).")
         else:
-            await self.approve_and_sync_master_digest(master_digest.id)
+            await self.approve_and_sync_master_digest(master_digest.id, tenant_key=eff_tenant)
 
         return master_digest
 
@@ -1041,20 +1139,23 @@ Yêu cầu:
         self,
         master_digest_id: Optional[str] = None,
         approver_open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> tuple[bool, str, Optional[MasterDailyDigestRecord]]:
         """
         Phê duyệt Master Daily Digest:
-          1. Lấy bản ghi MasterDailyDigestRecord từ MongoDB.
+          1. Lấy bản ghi MasterDailyDigestRecord từ MongoDB (hỗ trợ lọc theo tenant_key).
           2. Lặp qua từng group digest trong group_digests:
              - Đẩy bản markdown của nhóm vào đúng Knowledge Base WeKnora của nhóm đó.
           3. Cập nhật status='synced', approved_by, approved_at trong MongoDB.
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
         coll = _get_master_daily_digests_coll()
         if master_digest_id:
-            doc = await coll.find_one({"id": master_digest_id})
+            doc = await coll.find_one(inject_tenant_filter({"id": master_digest_id}, eff_tenant))
         else:
+            query = inject_tenant_filter({"status": "pending_approval"}, eff_tenant)
             doc = await coll.find_one(
-                {"status": "pending_approval"},
+                query,
                 sort=[("created_at", -1)],
             )
 
@@ -1062,6 +1163,7 @@ Yêu cầu:
             return False, "Không tìm thấy bản ghi Master Daily Digest nào đang chờ duyệt.", None
 
         master_digest = MasterDailyDigestRecord(**doc)
+        eff_tenant = tenant_key or master_digest.tenant_key or eff_tenant
 
         synced_count = 0
         failed_count = 0
@@ -1079,7 +1181,7 @@ Yêu cầu:
         master_digest.updated_at = now_iso
 
         await coll.update_one(
-            {"id": master_digest.id},
+            inject_tenant_filter({"id": master_digest.id}, eff_tenant),
             {"$set": master_digest.to_dict()},
         )
 
@@ -1095,10 +1197,14 @@ Yêu cầu:
             total_promoted = 0
             for gd in master_digest.group_digests:
                 if gd.chat_id:
-                    cnt = await promote_proposed_claims_for_chat(gd.chat_id, approver_info=approver_info)
+                    cnt = await promote_proposed_claims_for_chat(
+                        gd.chat_id,
+                        approver_info=approver_info,
+                        tenant_key=eff_tenant,
+                    )
                     total_promoted += cnt
             if total_promoted > 0:
-                print(f"🎉 [TIER 3 MASTER DIGEST APPROVAL] Đã tự động thăng hạng {total_promoted} claims tồn đọng thành CURRENT.")
+                print(f"🎉 [TIER 3 MASTER DIGEST APPROVAL] Đã tự động thăng hạng {total_promoted} claims tồn đọng thành CURRENT (tenant: {eff_tenant}).")
         except Exception as e:
             logger.warning(f"Lỗi auto-promote claims khi duyệt Master Digest: {e}")
 
@@ -1111,14 +1217,17 @@ Yêu cầu:
     async def reject_master_digest(
         self,
         master_digest_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> tuple[bool, str, Optional[MasterDailyDigestRecord]]:
-        """Từ chối Master Daily Digest."""
+        """Từ chối Master Daily Digest (hỗ trợ tenant_key)."""
+        eff_tenant = tenant_key or get_current_tenant_key()
         coll = _get_master_daily_digests_coll()
         if master_digest_id:
-            doc = await coll.find_one({"id": master_digest_id})
+            doc = await coll.find_one(inject_tenant_filter({"id": master_digest_id}, eff_tenant))
         else:
+            query = inject_tenant_filter({"status": "pending_approval"}, eff_tenant)
             doc = await coll.find_one(
-                {"status": "pending_approval"},
+                query,
                 sort=[("created_at", -1)],
             )
 
@@ -1131,7 +1240,7 @@ Yêu cầu:
         master_digest.updated_at = now_iso
 
         await coll.update_one(
-            {"id": master_digest.id},
+            inject_tenant_filter({"id": master_digest.id}, eff_tenant),
             {"$set": {"status": "rejected", "updated_at": now_iso}},
         )
         return True, f"Đã từ chối Master Daily Digest ({master_digest.id}). Dữ liệu không được nạp vào WeKnora.", master_digest
@@ -1140,14 +1249,15 @@ Yêu cầu:
         self,
         date: Optional[str] = None,
         require_approval: Optional[bool] = None,
+        tenant_key: Optional[str] = None,
     ) -> MasterDailyDigestRecord:
         """
-        Chạy tổng hợp tự động cho tất cả các nhóm chat hoạt động trong ngày:
-        Tạo 1 bản Master Executive Daily Digest duy nhất gom toàn bộ nhóm chat.
+        Chạy tổng hợp tự động cho tất cả các nhóm chat hoạt động trong ngày có cô lập theo tenant_key.
         """
         return await self.generate_master_daily_digest(
             date=date,
             require_approval=require_approval,
+            tenant_key=tenant_key,
         )
 
     async def process_and_sync_daily_digest(
@@ -1158,10 +1268,11 @@ Yêu cầu:
         project_tag: Optional[str] = None,
         weknora_kb_id: Optional[str] = None,
         require_approval: Optional[bool] = None,
+        tenant_key: Optional[str] = None,
     ) -> DailyDigestRecord:
         """
         Flow tự động trọn gói:
-          1. Lấy tin nhắn staging trong ngày từ MongoDB
+          1. Lấy tin nhắn staging trong ngày từ MongoDB (hỗ trợ tenant_key)
           2. Trích xuất LLM (Quyết định, Cam kết, Thay đổi trạng thái + truy vết)
           3. Lưu bản ghi vào MongoDB
           4. Nếu require_approval == True (hoặc cấu hình .env bật require_approval):
@@ -1171,6 +1282,7 @@ Yêu cầu:
           5. Nếu require_approval == False:
              - Tự động đẩy thẳng lên WeKnora ngay
         """
+        eff_tenant = tenant_key or get_current_tenant_key()
         needs_approval = (
             require_approval
             if require_approval is not None
@@ -1178,9 +1290,9 @@ Yêu cầu:
         )
 
         target_date = date or get_current_digest_date()
-        messages = await self.get_staging_messages(chat_id=chat_id, date=target_date)
+        messages = await self.get_staging_messages(chat_id=chat_id, date=target_date, tenant_key=eff_tenant)
 
-        logger.info(f"Bắt đầu tổng hợp DailyDigest cho nhóm {chat_id} ngày {target_date} ({len(messages)} tin nhắn)")
+        logger.info(f"Bắt đầu tổng hợp DailyDigest cho nhóm {chat_id} ngày {target_date} (tenant: {eff_tenant}, {len(messages)} tin nhắn)")
         digest = await self.extract_digest_from_messages(
             messages=messages,
             chat_id=chat_id,
@@ -1191,8 +1303,10 @@ Yêu cầu:
 
         from services.knowledge.chat_scopes import scope_service
 
-        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(chat_id)
+        scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(chat_id, tenant_key=eff_tenant)
         digest.weknora_kb_id = weknora_kb_id or scoped_wiki_kb
+        if eff_tenant:
+            digest.tenant_key = eff_tenant
 
         if needs_approval:
             digest.sync_status = "pending_approval"

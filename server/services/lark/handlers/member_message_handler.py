@@ -34,8 +34,10 @@ logger = logging.getLogger("hilark.bot.member_message_handler")
 
 
 def _resolve_lark_service():
+    from services.lark.runtime import get_current_lark_service
     bs = sys.modules.get("services.bot_service") or sys.modules.get("services.lark.bot_runner")
-    return getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    fallback = getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    return get_current_lark_service(fallback)
 
 
 async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> None:
@@ -43,14 +45,9 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
     Điều phối tin nhắn thông thường của người dùng vào Staging và Chat Pipeline / Queue.
     """
     lark_service = _resolve_lark_service()
-    channel_type = "GROUP (WebSocket Real-time)" if msg.chat_type == "group" else "DM 1-1 (User Polling)"
-    print(f"📡 Kênh tiếp nhận : {channel_type}")
-
     # Dùng danh tính và chức danh từ hồ sơ/cấu hình nếu có.
     user_info = lark_service.get_current_user()
     responder_name = user_info.get("name") or settings.LARK_USER_NAME or None
-    responder_label = responder_name or "User"
-    print(f"👤 Danh tính phản hồi: {responder_label}")
 
     # Nhận diện tên đích danh người hỏi
     target_user_name = None
@@ -84,10 +81,11 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 speaker_name=speaker,
                 speaker_id=msg.sender_id,
                 chat_name=msg.chat_id,
+                tenant_key=msg.tenant_key,
             )
-            print(f"📥 [STAGING] Đã lưu tin nhắn thành viên vào conversation_staging ({msg.message_id})")
+            logger.debug("[STORE] msg=%s staging=yes", msg.message_id)
         except Exception as e:
-            print(f"⚠️ [STAGING] Lỗi lưu staging: {e}")
+            logger.warning("[STORE] msg=%s staging=failed error=%s", msg.message_id, e)
 
     # Chuyển vào Unified Chat Pipeline
     if is_owner:
@@ -120,14 +118,21 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                     logger.debug(f"Không lấy được parent message qua Lark API: {e}")
 
             if parent_text:
-                print(f"🧵 [THREAD REPLY PHÁT HIỆN] Sếp reply tin nhắn '{msg.parent_id}': \"{parent_text[:80]}...\"")
+                logger.info("[THREAD] msg=%s parent=%s action=classify", msg.message_id, msg.parent_id)
                 decision_res = await jev_service.classify_thread_decision(
                     parent_text=parent_text,
                     reply_text=msg.text,
                 )
                 decision = decision_res.get("decision", "CHAT_ONLY")
                 conf = decision_res.get("confidence", 0.0)
-                print(f"🎯 [THREAD JEV DECISION] Quyết định của Sếp: {decision} (Độ tin cậy: {conf:.2f})")
+                logger.info("[THREAD] msg=%s decision=%s confidence=%.2f", msg.message_id, decision, conf)
+
+                # CHAT_ONLY nghĩa là phản hồi trao đổi bình thường trong thread.
+                # Không được rơi tiếp xuống classify_message() chung, nếu không
+                # câu trả lời của sếp sẽ bị hiểu nhầm là MEMORY_ONLY và tạo claims.
+                if decision == "CHAT_ONLY":
+                    logger.info("[THREAD] msg=%s decision=CHAT_ONLY staging=yes memory=no", msg.message_id)
+                    return
 
                 approver_info = {
                     "user_id": msg.sender_id,
@@ -138,23 +143,23 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 if decision == "APPROVE_AS_IS":
                     # FAST-LANE: 0 TOKEN LLM, 0ms latency, 0% regex!
                     promoted = await promote_claims_by_message_id(msg.parent_id, approver_info=approver_info)
-                    print(f"🎉 [THREAD APPROVAL FAST-LANE] Sếp reply '{msg.text}' -> APPROVE_AS_IS! Đã thăng hạng {promoted} fact(s) thành CURRENT (0 LLM tokens).")
+                    logger.info("[THREAD] msg=%s decision=APPROVE_AS_IS promoted=%d", msg.message_id, promoted)
                     return
 
                 elif decision == "REJECT":
                     rejected = await reject_claims_by_message_id(msg.parent_id)
-                    print(f"🛑 [THREAD REJECT] Sếp reply '{msg.text}' -> REJECT! Đã từ chối {rejected} fact(s).")
+                    logger.info("[THREAD] msg=%s decision=REJECT rejected=%d", msg.message_id, rejected)
                     return
 
                 elif decision == "APPROVE_WITH_CHANGES":
                     # LLM MODIFICATION LANE: Nối ngữ cảnh đề xuất + điều chỉnh của sếp
-                    print(f"📝 [THREAD MODIFICATION] Sếp reply '{msg.text}' -> APPROVE_WITH_CHANGES! Kích hoạt LLM cập nhật giá trị mới...")
+                    logger.info("[THREAD] msg=%s decision=APPROVE_WITH_CHANGES", msg.message_id)
                     query_to_run = (
                         f"Đề xuất ban đầu từ nhân sự: \"{parent_text}\"\n"
                         f"Quyết định điều chỉnh và phê duyệt của Lãnh đạo: \"{msg.text}\""
                     )
 
-        print(f"👑 [LARK GROUP CHỦ NHÂN] Tin nhắn của chủ nhân -> Chat Pipeline (chế độ chỉ ghi nhớ/ignore, cấm reply)...")
+        logger.debug("[ROUTE] msg=%s speaker=owner pipeline=chat reply=false", msg.message_id)
         try:
             result = await process_chat_pipeline(
                 query=query_to_run,
@@ -167,9 +172,9 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 responder_name=responder_name,
                 role=settings.LARK_USER_ROLE or None,
                 is_owner=True,
+                tenant_key=msg.tenant_key,
             )
         except Exception as e:
-            print(f"❌ Lỗi khi thực thi pipeline: {e}")
             logger.error(f"Lỗi pipeline: {e}", exc_info=True)
             return
 
@@ -178,28 +183,29 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
         confidence = result.get("jev_confidence", 0.0)
         status = result.get("status", "")
 
-        print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f})")
-        print(f"📊 Trạng thái     : {status}")
+        logger.info("[ROUTE] msg=%s action=%s confidence=%.2f status=%s", msg.message_id, jev_action, confidence, status)
 
         if status == "forbidden_query":
             chk = result.get("forbidden_check") or {}
             matched = chk.get("matched_label") or "Chủ đề bị cấm"
-            print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
+            logger.warning("[DROP] msg=%s reason=forbidden label=%s", msg.message_id, matched)
         elif status == "group_inactive":
-            print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
+            logger.info("[DROP] msg=%s reason=group_inactive", msg.message_id)
         elif jev_action == "IGNORE":
-            print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
+            logger.info("[STORE] msg=%s staging=yes memory=no reason=jev_ignore", msg.message_id)
         elif jev_action == "MEMORY_ONLY":
             ext = result.get("extraction") or {}
             num_ent = len(ext.get("entities", []))
             num_facts = len(ext.get("facts", []))
-            print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB.")
-            print(f"   • Thực thể mới : {num_ent}")
-            print(f"   • Facts mới    : {num_facts}")
-        print("=" * 65 + "\n")
+            logger.info("[STORE] msg=%s staging=yes memory=yes entities=%d facts=%d", msg.message_id, num_ent, num_facts)
     else:
         # Thành viên trong nhóm: đưa vào Smart Debouncer (1.75s) và Throttled Queue
-        print(f"📥 [DEBOUNCE BUFFER] Đưa tin nhắn của '{target_user_name}' vào bộ đệm gom 1.75s...")
+        logger.debug(
+            "[QUEUE] msg=%s speaker=%s debounce=%.2fs",
+            msg.message_id,
+            target_user_name,
+            getattr(getattr(chat_queue_service, "debouncer", None), "debounce_seconds", 1.75),
+        )
         await chat_queue_service.push_incoming_message(
             msg=msg,
             user_name=target_user_name,

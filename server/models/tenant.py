@@ -20,7 +20,7 @@ class WeKnoraAdminCredentials(BaseModel):
     """Thông tin đăng nhập WeKnora Web dành cho Admin doanh nghiệp (Giải pháp B)."""
     username: str = Field(..., description="Tên đăng nhập WeKnora Web của Admin")
     initial_password: str = Field(..., description="Mật khẩu ban đầu")
-    web_url: str = Field(default="http://localhost:8080/login", description="Đường dẫn truy cập WeKnora Web UI")
+    web_url: str = Field(default="http://localhost/login", description="Đường dẫn truy cập WeKnora Web UI")
     email: Optional[str] = Field(default=None, description="Email của Admin")
 
     def to_dict(self) -> Dict[str, Any]:

@@ -18,6 +18,7 @@ Mục đích:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,9 +40,28 @@ class BaseProvisionService:
     def __init__(self):
         self._cached_config: Optional[SystemBaseConfigRecord] = None
 
-    def _get_tenant_access_token(self, tenant_key: Optional[str] = None) -> str:
+    def _get_tenant_access_token(
+        self,
+        tenant_key: Optional[str] = None,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
+    ) -> str:
         """Lấy Bot Tenant Access Token qua singleton lark_base_service hoặc auth endpoint."""
         eff_tenant = tenant_key or get_current_tenant_key()
+        if app_id and app_secret:
+            try:
+                resp = httpx.post(
+                    f"{getattr(settings, 'LARK_DOMAIN', 'https://open.larksuite.com')}/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": app_id, "app_secret": app_secret},
+                    timeout=10.0,
+                )
+                data = resp.json()
+                if data.get("code") == 0:
+                    return data.get("tenant_access_token", "")
+            except Exception as e:
+                logger.error(f"Lỗi lấy tenant token cho Custom App {app_id}: {e}")
+            return ""
+
         try:
             from services.lark.bitable import lark_base_service
             token = lark_base_service.get_tenant_access_token(tenant_key=eff_tenant)
@@ -80,7 +100,12 @@ class BaseProvisionService:
             logger.error(f"Lỗi khi lấy tenant access token cho base provisioning: {e}")
         return ""
 
-    async def _get_tenant_access_token_async(self, tenant_key: Optional[str] = None) -> str:
+    async def _get_tenant_access_token_async(
+        self,
+        tenant_key: Optional[str] = None,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
+    ) -> str:
         """Lấy Bot Tenant Access Token bất đồng bộ (hỗ trợ ISV Token Service tự làm mới)."""
         eff_tenant = tenant_key or get_current_tenant_key()
         if getattr(settings, "IS_ISV_MODE", False) and eff_tenant:
@@ -91,7 +116,7 @@ class BaseProvisionService:
                     return token
             except Exception as e:
                 logger.warning(f"Lỗi khi lấy ISV tenant token cho base provisioning: {e}")
-        return self._get_tenant_access_token(tenant_key=eff_tenant)
+        return await asyncio.to_thread(self._get_tenant_access_token, eff_tenant, app_id, app_secret)
 
     async def get_active_base_config(
         self,
@@ -126,6 +151,16 @@ class BaseProvisionService:
                     )
             except Exception as e:
                 logger.warning(f"Lỗi khi đọc base config từ tenant '{eff_tenant}': {e}")
+            return SystemBaseConfigRecord(
+                config_key=f"tenant_base_{eff_tenant}",
+                tenant_key=eff_tenant,
+                app_token="",
+                app_url="",
+                chat_scope_table_id="",
+                policy_table_id="",
+                is_auto_provisioned=False,
+                provisioned_by="",
+            )
 
         if self._cached_config and not force_refresh:
             return self._cached_config
@@ -174,6 +209,8 @@ class BaseProvisionService:
         admin_open_id: Optional[str] = None,
         base_name: str = "HiLark - Trung Tâm Quản Trị Dự Án & Chính Sách Doanh Nghiệp",
         tenant_key: Optional[str] = None,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
     ) -> SystemBaseConfigRecord:
         """
         Tự động 100% khởi tạo Lark Base Doanh nghiệp qua OpenAPI:
@@ -193,7 +230,7 @@ class BaseProvisionService:
             logger.info(f"✔ Đã tồn tại Lark Base quản trị tự động cho tenant '{eff_tenant}': {existing.app_url}")
             return existing
 
-        token = await self._get_tenant_access_token_async(eff_tenant)
+        token = await self._get_tenant_access_token_async(eff_tenant, app_id=app_id, app_secret=app_secret)
         if not token:
             raise ValueError(f"Không thể lấy Tenant Access Token để khởi tạo Lark Base cho tenant '{eff_tenant}'.")
 
@@ -220,17 +257,39 @@ class BaseProvisionService:
 
             logger.info(f"🎉 Đã khởi tạo Bitable App thành công: app_token={new_app_token}, default_table={default_table_id}")
 
-            # 3. Đổi tên và thêm trường cho Bảng 1: Danh mục Dự án & Nhóm chat
+            # 3. Cấu hình sạch đẹp Bảng 1: Danh mục Dự án & Nhóm chat
             chat_scope_table_id = default_table_id
             if chat_scope_table_id:
                 patch_tbl_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{chat_scope_table_id}"
                 await client.patch(patch_tbl_url, headers=headers, json={"name": "Danh mục Dự án & Nhóm chat"})
 
-                # Tạo các trường dữ liệu chuẩn cho Bảng 1
+                # 3.1 Dọn dẹp trường mặc định của Lark: Tái sử dụng Primary field thành 'Dự án / Nhóm', xóa các cột rác
                 fields_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{chat_scope_table_id}/fields"
+                try:
+                    f_list_res = await client.get(fields_url, headers=headers)
+                    existing_flds = f_list_res.json().get("data", {}).get("items", [])
+                    for ef in existing_flds:
+                        fid = ef.get("field_id")
+                        if ef.get("is_primary"):
+                            # Đổi tên Primary field thành 'Dự án / Nhóm'
+                            try:
+                                await client.put(f"{fields_url}/{fid}", headers=headers, json={"field_name": "Dự án / Nhóm"})
+                            except Exception as pe:
+                                logger.warning(f"Lỗi khi đổi tên Primary field Bảng 1: {pe}")
+                        else:
+                            # Xóa các cột mẫu thừa (Single option, Date, Attachment, Text)
+                            fname = ef.get("field_name", "")
+                            if fname in ("Single option", "Date", "Attachment", "Text"):
+                                try:
+                                    await client.delete(f"{fields_url}/{fid}", headers=headers)
+                                except Exception as de:
+                                    logger.warning(f"Lỗi khi xóa cột mẫu thừa {fname}: {de}")
+                except Exception as clean_err:
+                    logger.warning(f"Chưa thể dọn dẹp các trường mặc định Bảng 1: {clean_err}")
+
+                # 3.2 Tạo các trường dữ liệu chuẩn cho Bảng 1 đồng thời (tránh tạo trùng)
                 scope_fields = [
                     {"field_name": "Chat ID", "type": 1},  # Text
-                    {"field_name": "Tên dự án", "type": 1},  # Text
                     {"field_name": "Người phụ trách", "type": 1},  # Text
                     {
                         "field_name": "Cấp độ bảo mật",
@@ -238,57 +297,39 @@ class BaseProvisionService:
                         "property": {"options": [{"name": "standard"}, {"name": "confidential"}]},
                     },
                     {"field_name": "Danh mục tài liệu", "type": 1},  # Text / Link
+                    {"field_name": "Nhãn cấm xem", "type": 1},  # Text - Forbidden keywords (comma-separated)
                     {
                         "field_name": "Trạng thái hoạt động",
                         "type": 3,  # SingleSelect
-                        "property": {"options": [{"name": "active"}, {"name": "archived"}]},
+                        "property": {
+                            "options": [{"name": "active"}, {"name": "archived"}],
+                            "default_value": "active"  # Default to active for new rows
+                        },
                     },
                 ]
-                for fld in scope_fields:
-                    try:
-                        await client.post(fields_url, headers=headers, json=fld)
-                    except Exception as fe:
-                        logger.warning(f"Không thể tạo trường {fld.get('field_name')}: {fe}")
+                try:
+                    f_refresh_res = await client.get(fields_url, headers=headers)
+                    curr_names = {f.get("field_name") for f in f_refresh_res.json().get("data", {}).get("items", [])}
+                except Exception:
+                    curr_names = set()
 
-                # Nạp 3 dự án mẫu của đề bài
+                needed_scope_fields = [f for f in scope_fields if f["field_name"] not in curr_names]
+                if needed_scope_fields:
+                    await asyncio.gather(
+                        *[client.post(fields_url, headers=headers, json=fld) for fld in needed_scope_fields],
+                        return_exceptions=True,
+                    )
+
+                # 3.3 Xóa các dòng trống mặc định do Lark tạo sẵn
                 rec_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{chat_scope_table_id}/records"
-                baseline_projects = [
-                    {
-                        "fields": {
-                            "Chat ID": "oc_atlas_group",
-                            "Tên dự án": "Project Atlas",
-                            "Người phụ trách": "Trần Tuấn",
-                            "Cấp độ bảo mật": "standard",
-                            "Danh mục tài liệu": "Project_Charter.docx, Code_of_Conduct.docx",
-                            "Trạng thái hoạt động": "active",
-                        }
-                    },
-                    {
-                        "fields": {
-                            "Chat ID": "oc_pulse_group",
-                            "Tên dự án": "Project Pulse",
-                            "Người phụ trách": "Lê Hoàng",
-                            "Cấp độ bảo mật": "standard",
-                            "Danh mục tài liệu": "Project_Charter.docx",
-                            "Trạng thái hoạt động": "active",
-                        }
-                    },
-                    {
-                        "fields": {
-                            "Chat ID": "oc_sentinel_group",
-                            "Tên dự án": "Project Sentinel",
-                            "Người phụ trách": "Phạm Minh",
-                            "Cấp độ bảo mật": "confidential",
-                            "Danh mục tài liệu": "Project_Charter.docx",
-                            "Trạng thái hoạt động": "active",
-                        }
-                    },
-                ]
-                for p in baseline_projects:
-                    try:
-                        await client.post(rec_url, headers=headers, json=p)
-                    except Exception as pe:
-                        logger.warning(f"Lỗi khi nạp bản ghi dự án mẫu: {pe}")
+                try:
+                    r_list_res = await client.get(f"{rec_url}?page_size=50", headers=headers)
+                    init_recs = r_list_res.json().get("data", {}).get("items", [])
+                    init_empty_ids = [r["record_id"] for r in init_recs if not r.get("fields", {}).get("Chat ID")]
+                    if init_empty_ids:
+                        await client.post(f"{rec_url}/batch_delete", headers=headers, json={"records": init_empty_ids})
+                except Exception as del_rec_err:
+                    logger.warning(f"Chưa thể xóa dòng trống Bảng 1: {del_rec_err}")
 
             # 4. Tạo Bảng 2: Chính sách & Quy định Công ty
             create_tbl_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables"
@@ -302,6 +343,27 @@ class BaseProvisionService:
 
             if policy_table_id and policy_table_id != "tbl_policies":
                 policy_fields_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{policy_table_id}/fields"
+
+                # 4.1 Đổi tên Primary field mặc định (thường là tiếng Trung 多行文本) thành 'Tên văn bản / Quy định'
+                try:
+                    p_fld_res = await client.get(policy_fields_url, headers=headers)
+                    p_flds = p_fld_res.json().get("data", {}).get("items", [])
+                    for pf_item in p_flds:
+                        if pf_item.get("is_primary"):
+                            await client.put(f"{policy_fields_url}/{pf_item['field_id']}", headers=headers, json={"field_name": "Tên văn bản / Quy định"})
+                            break
+                except Exception as p_clean_err:
+                    logger.warning(f"Chưa thể đổi tên Primary field Bảng 2: {p_clean_err}")
+
+                # 4.2 Đổi tên View mặc định (thường là 表格视图 1) thành 'Tất cả Chính sách'
+                try:
+                    p_view_res = await client.get(f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{policy_table_id}/views", headers=headers)
+                    p_views = p_view_res.json().get("data", {}).get("items", [])
+                    if p_views:
+                        await client.patch(f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{policy_table_id}/views/{p_views[0]['view_id']}", headers=headers, json={"view_name": "Tất cả Chính sách"})
+                except Exception as v_clean_err:
+                    logger.warning(f"Chưa thể đổi tên View Bảng 2: {v_clean_err}")
+
                 pol_fields = [
                     {
                         "field_name": "Phân loại",
@@ -316,20 +378,30 @@ class BaseProvisionService:
                         "property": {"options": [{"name": "active"}, {"name": "superseded"}]},
                     },
                 ]
-                for pf in pol_fields:
-                    try:
-                        await client.post(policy_fields_url, headers=headers, json=pf)
-                    except Exception as pe:
-                        logger.warning(f"Không thể tạo trường chính sách: {pe}")
+                await asyncio.gather(
+                    *[client.post(policy_fields_url, headers=headers, json=pf) for pf in pol_fields],
+                    return_exceptions=True,
+                )
 
-                # Nạp bản ghi Sổ tay chính sách
+                # 4.3 Xóa các dòng trống mặc định do Lark tạo sẵn ở Bảng 2
                 pol_rec_url = f"{domain}/open-apis/bitable/v1/apps/{new_app_token}/tables/{policy_table_id}/records"
+                try:
+                    p_rec_res = await client.get(f"{pol_rec_url}?page_size=50", headers=headers)
+                    p_init_recs = p_rec_res.json().get("data", {}).get("items", [])
+                    p_empty_ids = [r["record_id"] for r in p_init_recs if not r.get("fields", {}).get("Tên văn bản / Quy định")]
+                    if p_empty_ids:
+                        await client.post(f"{pol_rec_url}/batch_delete", headers=headers, json={"records": p_empty_ids})
+                except Exception as del_p_err:
+                    logger.warning(f"Chưa thể xóa dòng trống Bảng 2: {del_p_err}")
+
+                # 4.4 Nạp bản ghi Sổ tay chính sách mẫu vào dòng 1
                 try:
                     await client.post(
                         pol_rec_url,
                         headers=headers,
                         json={
                             "fields": {
+                                "Tên văn bản / Quy định": "Sổ tay Chính sách & Quy định Công ty",
                                 "Phân loại": "Nhân sự",
                                 "Văn bản đính kèm / Link": "04_So_tay_chinh_sach_cong_ty.pdf",
                                 "Trạng thái áp dụng": "active",
@@ -339,9 +411,18 @@ class BaseProvisionService:
                 except Exception as pe:
                     logger.warning(f"Lỗi khi nạp chính sách mẫu: {pe}")
 
-            # 5. Phân quyền Full Access (Owner) cho Admin nếu có
+            # 5. Phân quyền và mở liên kết cho Base
+            try:
+                # 5.1 Cập nhật liên kết công khai trong tổ chức có quyền chỉnh sửa (tenant_editable)
+                public_perm_url = f"{domain}/open-apis/drive/v1/permissions/{new_app_token}/public?type=bitable"
+                await client.patch(public_perm_url, headers=headers, json={"link_share_entity": "tenant_editable"})
+                logger.info(f"✔ Đã cấu hình link_share_entity='tenant_editable' cho Base {new_app_token}")
+            except Exception as pub_err:
+                logger.warning(f"Chưa thể cập nhật public permission cho Base: {pub_err}")
+
             if admin_open_id:
                 try:
+                    # 5.2 Cấp quyền Full Access cho Admin
                     perm_url = f"{domain}/open-apis/drive/v1/permissions/{new_app_token}/members?type=bitable"
                     await client.post(
                         perm_url,
@@ -353,8 +434,20 @@ class BaseProvisionService:
                         },
                     )
                     logger.info(f"✔ Đã cấp quyền Full Access cho Admin: {admin_open_id} trên Base {new_app_token}")
+
+                    # 5.3 Chuyển giao quyền Sở hữu (Transfer Ownership) cho Admin
+                    transfer_url = f"{domain}/open-apis/drive/v1/permissions/{new_app_token}/members/transfer_owner?type=bitable"
+                    await client.post(
+                        transfer_url,
+                        headers=headers,
+                        json={
+                            "member_type": "openid",
+                            "member_id": admin_open_id,
+                        },
+                    )
+                    logger.info(f"✔ Đã chuyển quyền Sở hữu (Owner) của Base cho Admin: {admin_open_id}")
                 except Exception as perm_err:
-                    logger.warning(f"Chưa thể gán quyền trực tiếp qua Drive Permission API: {perm_err}")
+                    logger.warning(f"Lỗi khi phân quyền Admin trên Base: {perm_err}")
 
         # 6. Lưu bản ghi cấu hình vào MongoDB
         now_iso = get_vietnam_now_iso()
@@ -374,13 +467,16 @@ class BaseProvisionService:
         if eff_tenant and eff_tenant != "default":
             try:
                 from database.db import upsert_tenant_config
-                await upsert_tenant_config({
+                t_update = {
                     "tenant_key": eff_tenant,
                     "bitable_app_token": new_app_token,
                     "bitable_app_url": config_record.app_url,
                     "chat_scope_table_id": chat_scope_table_id,
                     "company_policy_table_id": policy_table_id,
-                })
+                }
+                if admin_open_id:
+                    t_update["admin_open_id"] = admin_open_id
+                await upsert_tenant_config(t_update)
                 logger.info(f"✔ Đã lưu cấu hình Bitable vào collection 'tenants' cho tenant '{eff_tenant}'")
             except Exception as e:
                 logger.error(f"Lỗi khi lưu cấu hình Base vào tenant '{eff_tenant}': {e}")
@@ -394,16 +490,118 @@ class BaseProvisionService:
             # Cập nhật cache singleton trong RAM cho single-tenant
             self._cached_config = config_record
 
-        # Đồng bộ ngược vào singleton lark_base_service
+        # Kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới
         try:
             from services.lark.bitable import lark_base_service
+            from services.lark import lark_service
+            from services.knowledge.chat_scopes import scope_service
+
             lark_base_service.app_token = new_app_token
             lark_base_service.table_id = chat_scope_table_id
             logger.info("✔ Đã đồng bộ app_token & table_id mới vào singleton lark_base_service")
-        except Exception:
-            pass
+
+            # 1. Đăng ký handler bắt sự kiện Base thay đổi
+            lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
+
+            # 2. Đăng ký lắng nghe sự kiện thay đổi trên Lark Cloud (Subscribe Drive API)
+            asyncio.create_task(asyncio.to_thread(lark_base_service.subscribe_events))
+
+            # 3. Quét và đồng bộ danh sách nhóm chat của bot vào Base mới
+            asyncio.create_task(asyncio.to_thread(lark_base_service.sync_bot_chats))
+
+            # 4. Đồng bộ chính sách & tài liệu từ Base vào WeKnora & MongoDB
+            asyncio.create_task(scope_service.sync_all_groups_from_base())
+            logger.info("✔ Đã kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới!")
+        except Exception as conn_err:
+            logger.warning(f"Chưa thể kết nối runtime Base ngay lập tức: {conn_err}")
 
         return config_record
+
+    async def repair_enterprise_base_schema(self, tenant_key: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Dọn dẹp và chuẩn hóa cấu trúc schema của Lark Base đã tạo:
+          1. Xóa các cột mẫu thừa (Text, Single option, Date, Attachment) ở Bảng 1 nếu có cột chuẩn.
+          2. Đổi tên Primary field Bảng 2 nếu đang là tiếng Trung '多行文本' -> 'Tên văn bản / Quy định'.
+          3. Đổi tên View Bảng 2 nếu đang là '表格视图 1' -> 'Tất cả Chính sách'.
+        """
+        eff_tenant = tenant_key or get_current_tenant_key()
+        cfg = await self.get_active_base_config(tenant_key=eff_tenant)
+        if not cfg or not cfg.app_token:
+            return {"success": False, "message": "Không tìm thấy cấu hình Base để sửa."}
+
+        token = await self._get_tenant_access_token_async(eff_tenant)
+        if not token:
+            return {"success": False, "message": "Không thể lấy Tenant Token."}
+
+        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com").rstrip("/")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+
+        repaired_actions = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 1. Dọn dẹp Bảng 1 (Dự án & Nhóm chat)
+            if cfg.chat_scope_table_id:
+                flds_url = f"{domain}/open-apis/bitable/v1/apps/{cfg.app_token}/tables/{cfg.chat_scope_table_id}/fields"
+                try:
+                    res = await client.get(flds_url, headers=headers)
+                    flds = res.json().get("data", {}).get("items", [])
+                    has_proper_primary = any(f.get("is_primary") and f.get("field_name") in ("Dự án / Nhóm", "Tên dự án") for f in flds)
+                    for f in flds:
+                        fid = f.get("field_id")
+                        fname = f.get("field_name", "")
+                        if f.get("is_primary") and fname in ("Text", "多行文本", "Tên"):
+                            try:
+                                await client.put(f"{flds_url}/{fid}", headers=headers, json={"field_name": "Dự án / Nhóm"})
+                                repaired_actions.append(f"Đổi tên primary field Bảng 1: {fname} -> 'Dự án / Nhóm'")
+                            except Exception as pe:
+                                logger.debug(f"repair primary field error: {pe}")
+                        elif not f.get("is_primary") and fname in ("Single option", "Date", "Attachment", "Text"):
+                            try:
+                                await client.delete(f"{flds_url}/{fid}", headers=headers)
+                                repaired_actions.append(f"Xóa cột mẫu thừa Bảng 1: {fname}")
+                            except Exception as de:
+                                logger.debug(f"repair delete field error: {de}")
+                except Exception as e:
+                    logger.warning(f"Lỗi khi dọn dẹp Bảng 1 trong repair: {e}")
+
+            # 2. Dọn dẹp Bảng 2 (Chính sách & Quy định)
+            if cfg.policy_table_id:
+                p_flds_url = f"{domain}/open-apis/bitable/v1/apps/{cfg.app_token}/tables/{cfg.policy_table_id}/fields"
+                try:
+                    res2 = await client.get(p_flds_url, headers=headers)
+                    flds2 = res2.json().get("data", {}).get("items", [])
+                    for f in flds2:
+                        fid = f.get("field_id")
+                        fname = f.get("field_name", "")
+                        if f.get("is_primary") and fname in ("多行文本", "Text"):
+                            try:
+                                await client.put(f"{p_flds_url}/{fid}", headers=headers, json={"field_name": "Tên văn bản / Quy định"})
+                                repaired_actions.append(f"Đổi tên primary field Bảng 2: {fname} -> 'Tên văn bản / Quy định'")
+                            except Exception as pe:
+                                logger.debug(f"repair policy primary field error: {pe}")
+                except Exception as e:
+                    logger.warning(f"Lỗi khi dọn dẹp Bảng 2 trong repair: {e}")
+
+                # View Bảng 2
+                try:
+                    v_res = await client.get(f"{domain}/open-apis/bitable/v1/apps/{cfg.app_token}/tables/{cfg.policy_table_id}/views", headers=headers)
+                    views = v_res.json().get("data", {}).get("items", [])
+                    for v in views:
+                        vid = v.get("view_id")
+                        vname = v.get("view_name", "")
+                        if vname in ("表格视图 1", "Grid"):
+                            try:
+                                await client.patch(f"{domain}/open-apis/bitable/v1/apps/{cfg.app_token}/tables/{cfg.policy_table_id}/views/{vid}", headers=headers, json={"view_name": "Tất cả Chính sách"})
+                                repaired_actions.append(f"Đổi tên view Bảng 2: {vname} -> 'Tất cả Chính sách'")
+                            except Exception as ve:
+                                logger.debug(f"repair view error: {ve}")
+                except Exception as e:
+                    logger.warning(f"Lỗi khi sửa view Bảng 2 trong repair: {e}")
+
+        logger.info(f"✔ [REPAIR BITABLE SCHEMA] Hoàn tất dọn dẹp Base: {repaired_actions}")
+        return {"success": True, "actions": repaired_actions}
 
 
 base_provision_service = BaseProvisionService()

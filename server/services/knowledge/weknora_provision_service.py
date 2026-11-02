@@ -33,6 +33,10 @@ from models.tenant import TenantConfigRecord, WeKnoraAdminCredentials
 logger = logging.getLogger("hilark.weknora_provision")
 
 
+class WeKnoraProvisionError(RuntimeError):
+    """Provisioning không hoàn tất trên WeKnora thật."""
+
+
 def generate_secure_password(length: int = 12) -> str:
     """Sinh chuỗi mật khẩu ngẫu nhiên an toàn đáp ứng tiêu chuẩn RBAC."""
     upper = random.choice(string.ascii_uppercase)
@@ -52,7 +56,8 @@ class WeKnoraProvisionService:
     def __init__(self):
         self.base_url = getattr(settings, "BASE_URL", "http://localhost/api/v1").rstrip("/")
         self.api_key = getattr(settings, "WEKNORA_API_KEY", "")
-        self.web_url = getattr(settings, "WEKNORA_WEB_URL", "https://wiki.hilark.yourdomain.com").rstrip("/")
+        self.web_url = getattr(settings, "WEKNORA_WEB_URL", "http://localhost/login").rstrip("/")
+        self.dry_run = bool(getattr(settings, "WEKNORA_PROVISION_DRY_RUN", False))
 
     def _get_headers(self, tenant_id: Optional[int] = None) -> Dict[str, str]:
         headers = {
@@ -88,11 +93,19 @@ class WeKnoraProvisionService:
         # 1. Kiểm tra cấu hình đã có trước đó
         existing = await get_tenant_config(tenant_key)
         if existing and existing.get("weknora_tenant_id") and existing.get("weknora_wiki_dataset_id"):
+            admin_user_data = existing.get("weknora_admin_user")
+            if not admin_user_data or not isinstance(admin_user_data, dict) or not admin_user_data.get("username") or not admin_user_data.get("initial_password"):
+                raise WeKnoraProvisionError(
+                    f"Tenant '{tenant_key}' đã tồn tại nhưng thiếu credential WeKnora; "
+                    "không thể tự sinh password chỉ trong MongoDB. Cần reset/re-provision user trên WeKnora."
+                )
             logger.info(f"✔ Doanh nghiệp '{tenant_key}' đã có sẵn WeKnora Tenant: {existing.get('weknora_tenant_id')}")
             return TenantConfigRecord(**existing)
 
         # 2. Sinh thông tin tài khoản WeKnora Admin (Giải pháp B)
+        # WeKnora /auth/login nhận email, vì vậy credential bàn giao cũng dùng email làm định danh đăng nhập.
         username = admin_email or f"admin_{tenant_key[:8]}@hilark.internal"
+        account_username = f"admin_{tenant_key[:8]}"
         initial_password = f"HLK@{generate_secure_password(10)}"
         admin_credentials = WeKnoraAdminCredentials(
             username=username,
@@ -105,88 +118,99 @@ class WeKnoraProvisionService:
         wiki_kb_id: Optional[str] = None
         default_kb_id: Optional[str] = None
 
-        # 3. Gọi WeKnora API (Hỗ trợ graceful fallback khi offline / unit test mock)
+        # 3. Gọi WeKnora API. Offline chỉ được phép khi bật dry-run một cách tường minh.
         async def _do_provision(http_client: httpx.AsyncClient):
             nonlocal weknora_tenant_id, policy_kb_id, wiki_kb_id, default_kb_id
-            try:
-                # 3.1 Tạo Tenant WeKnora: POST /api/v1/tenants
-                tenant_resp = await http_client.post(
-                    f"{self.base_url}/tenants",
-                    headers=self._get_headers(),
-                    json={"name": f"HiLark - {ent_name}"},
-                    timeout=10.0,
-                )
-                if tenant_resp.status_code in (200, 201):
-                    t_data = tenant_resp.json()
-                    raw_id = t_data.get("id") or t_data.get("data", {}).get("id")
-                    if raw_id:
-                        weknora_tenant_id = int(raw_id)
+            # 3.1 Tạo user; WeKnora tự tạo personal workspace và trả tenant_id.
+            reg_resp = await http_client.post(
+                f"{self.base_url}/auth/register",
+                json={"username": account_username, "email": username, "password": initial_password},
+                timeout=5.0,
+            )
+            if reg_resp.status_code not in (200, 201, 400):
+                raise WeKnoraProvisionError(f"WeKnora register failed: HTTP {reg_resp.status_code}")
 
-                # 3.2 Tạo User WeKnora Admin (nếu API có hỗ trợ): POST /api/v1/users
-                await http_client.post(
-                    f"{self.base_url}/users",
-                    headers=self._get_headers(tenant_id=weknora_tenant_id),
-                    json={
-                        "username": username,
-                        "password": initial_password,
-                        "role": "admin",
-                        "tenant_id": weknora_tenant_id,
-                    },
-                    timeout=10.0,
-                )
+            # 3.2 Đăng nhập bằng email để xác minh credential và tenant thật.
+            login_resp = await http_client.post(
+                f"{self.base_url}/auth/login",
+                json={"email": username, "password": initial_password},
+                timeout=5.0,
+            )
+            if login_resp.status_code != 200:
+                raise WeKnoraProvisionError(f"WeKnora login verification failed: HTTP {login_resp.status_code}")
 
-                # 3.3 Tạo KB 1 (Chính sách): POST /api/v1/knowledge-bases
-                kb1_resp = await http_client.post(
-                    f"{self.base_url}/knowledge-bases",
-                    headers=self._get_headers(tenant_id=weknora_tenant_id),
-                    json={
-                        "name": f"HiLark - {ent_name} - Chính Sách",
-                        "description": "Kho quy định và chính sách dùng chung toàn công ty",
-                    },
-                    timeout=10.0,
-                )
-                if kb1_resp.status_code in (200, 201):
-                    kb1_data = kb1_resp.json()
-                    policy_kb_id = str(kb1_data.get("id") or kb1_data.get("data", {}).get("id") or "")
+            login_data = login_resp.json() or {}
+            user_obj = login_data.get("user") or (login_data.get("data") or {}).get("user") or {}
+            active_tenant = login_data.get("active_tenant") or login_data.get("tenant") or {}
+            raw_tenant_id = user_obj.get("tenant_id") or active_tenant.get("id")
+            if raw_tenant_id is None:
+                raise WeKnoraProvisionError("WeKnora login response thiếu tenant_id")
+            weknora_tenant_id = int(raw_tenant_id)
 
-                # 3.4 Tạo KB 2 (Wiki & Digests): POST /api/v1/knowledge-bases
-                kb2_resp = await http_client.post(
-                    f"{self.base_url}/knowledge-bases",
-                    headers=self._get_headers(tenant_id=weknora_tenant_id),
-                    json={
-                        "name": f"HiLark - {ent_name} - Wiki & Digests",
-                        "description": "Kho nhật ký công việc và Daily Digests chi tiết",
-                    },
-                    timeout=10.0,
-                )
-                if kb2_resp.status_code in (200, 201):
-                    kb2_data = kb2_resp.json()
-                    wiki_kb_id = str(kb2_data.get("id") or kb2_data.get("data", {}).get("id") or "")
+            # 3.3 Tạo 3 KB trong tenant vừa xác minh.
+            kb1_resp = await http_client.post(
+                f"{self.base_url}/knowledge-bases",
+                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                json={
+                    "name": f"HiLark - {ent_name} - Chính Sách",
+                    "description": "Kho quy định và chính sách dùng chung toàn công ty",
+                },
+                timeout=3.0,
+            )
+            if kb1_resp.status_code not in (200, 201):
+                raise WeKnoraProvisionError(f"WeKnora policy KB creation failed: HTTP {kb1_resp.status_code}")
+            kb1_data = kb1_resp.json() or {}
+            policy_kb_id = str(kb1_data.get("id") or kb1_data.get("data", {}).get("id") or "")
+            if not policy_kb_id:
+                raise WeKnoraProvisionError("WeKnora policy KB response thiếu id")
 
-                # 3.5 Tạo KB 3 (Dự án chung mặc định)
-                kb3_resp = await http_client.post(
-                    f"{self.base_url}/knowledge-bases",
-                    headers=self._get_headers(tenant_id=weknora_tenant_id),
-                    json={
-                        "name": f"HiLark - {ent_name} - Dự Án Mặc Định",
-                        "description": "Kho tài liệu dự án mặc định cho các nhóm chat chưa cấu hình",
-                    },
-                    timeout=10.0,
-                )
-                if kb3_resp.status_code in (200, 201):
-                    kb3_data = kb3_resp.json()
-                    default_kb_id = str(kb3_data.get("id") or kb3_data.get("data", {}).get("id") or "")
+            # 3.4 Tạo KB 2 (Wiki & Digests): POST /api/v1/knowledge-bases
+            kb2_resp = await http_client.post(
+                f"{self.base_url}/knowledge-bases",
+                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                json={
+                    "name": f"HiLark - {ent_name} - Wiki & Digests",
+                    "description": "Kho nhật ký công việc và Daily Digests chi tiết",
+                },
+                timeout=3.0,
+            )
+            if kb2_resp.status_code not in (200, 201):
+                raise WeKnoraProvisionError(f"WeKnora wiki KB creation failed: HTTP {kb2_resp.status_code}")
+            kb2_data = kb2_resp.json() or {}
+            wiki_kb_id = str(kb2_data.get("id") or kb2_data.get("data", {}).get("id") or "")
+            if not wiki_kb_id:
+                raise WeKnoraProvisionError("WeKnora wiki KB response thiếu id")
 
-            except Exception as e:
-                logger.warning(f"WeKnora API không phản hồi hoặc đang chạy chế độ Mock/Offline: {e}")
+            # 3.5 Tạo KB 3 (Dự án chung mặc định)
+            kb3_resp = await http_client.post(
+                f"{self.base_url}/knowledge-bases",
+                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                json={
+                    "name": f"HiLark - {ent_name} - Dự Án Mặc Định",
+                    "description": "Kho tài liệu dự án mặc định cho các nhóm chat chưa cấu hình",
+                },
+                timeout=3.0,
+            )
+            if kb3_resp.status_code not in (200, 201):
+                raise WeKnoraProvisionError(f"WeKnora default KB creation failed: HTTP {kb3_resp.status_code}")
+            kb3_data = kb3_resp.json() or {}
+            default_kb_id = str(kb3_data.get("id") or kb3_data.get("data", {}).get("id") or "")
+            if not default_kb_id:
+                raise WeKnoraProvisionError("WeKnora default KB response thiếu id")
 
-        if client is not None:
-            await _do_provision(client)
-        else:
-            async with httpx.AsyncClient(timeout=15.0) as http_client:
-                await _do_provision(http_client)
+        try:
+            if client is not None:
+                await _do_provision(client)
+            else:
+                async with httpx.AsyncClient(timeout=15.0) as http_client:
+                    await _do_provision(http_client)
+        except Exception as provision_err:
+            if not self.dry_run:
+                logger.error(f"WeKnora provisioning failed for tenant '{tenant_key}': {provision_err}")
+                raise
+            logger.warning(f"WEKNORA_PROVISION_DRY_RUN=true, dùng dữ liệu giả cho tenant '{tenant_key}': {provision_err}")
 
-        # 4. Fallback sinh ID an toàn nếu đang chạy Unit Test hoặc WeKnora Offline
+        # 4. Fallback chỉ dùng khi WEKNORA_PROVISION_DRY_RUN=true.
         if not weknora_tenant_id:
             weknora_tenant_id = int(abs(hash(tenant_key)) % 90000 + 10000)
         if not policy_kb_id:
@@ -248,7 +272,7 @@ class WeKnoraProvisionService:
         if isinstance(tenant_config, dict):
             tenant_config = TenantConfigRecord.from_dict(tenant_config)
         creds = tenant_config.weknora_admin_user
-        web_url = (creds.web_url if creds and creds.web_url else self.web_url) or "http://localhost:8080/login"
+        web_url = (creds.web_url if creds and creds.web_url else self.web_url) or "http://localhost/login"
         username = creds.username if creds else ""
         password = creds.initial_password if creds else ""
 

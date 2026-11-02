@@ -31,8 +31,10 @@ logger = logging.getLogger("hilark.bot.recall_handler")
 
 def _resolve_lark_service():
     """Lấy lark_service instance phù hợp từ context runtime."""
+    from services.lark.runtime import get_current_lark_service
     bs = sys.modules.get("services.bot_service") or sys.modules.get("services.lark.bot_runner")
-    return getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    fallback = getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    return get_current_lark_service(fallback)
 
 
 async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any]:

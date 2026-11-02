@@ -31,7 +31,9 @@ def _resolve_dependencies():
     bs = sys.modules.get("services.bot_service") or sys.modules.get("services.lark.bot_runner")
     doc_parser = getattr(bs, "doc_parser_service", default_doc_parser) if bs else default_doc_parser
     process_claims = getattr(bs, "process_document_to_claims", default_process_claims) if bs else default_process_claims
-    lark = getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    from services.lark.runtime import get_current_lark_service
+    fallback_lark = getattr(bs, "lark_service", default_lark_service) if bs else default_lark_service
+    lark = get_current_lark_service(fallback_lark)
     return doc_parser, process_claims, lark
 
 
@@ -87,6 +89,7 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             sender_id=msg.sender_id,
             message_id=msg.message_id,
             is_owner=is_owner,
+            tenant_key=msg.tenant_key,
         )
 
         new_count = claims_res.get("new_claims_count", 0)
@@ -96,6 +99,36 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
         )
         print(f"✔ Đã âm thầm lưu {new_count} facts mới từ '{file_name}' vào MongoDB (không phát ngôn vào nhóm).")
+
+        # Tự động nạp tài liệu vào WeKnora Knowledge Base
+        try:
+            from services.knowledge.chat_scopes import scope_service, _get_active_weknora, _sanitize_filename
+            effective_dataset_id, _ = await scope_service.get_kb_info_for_chat(msg.chat_id, tenant_key=msg.tenant_key)
+            if effective_dataset_id:
+                weknora_tenant_id = None
+                if msg.tenant_key:
+                    from database.db import get_tenant_config
+                    t_cfg = await get_tenant_config(msg.tenant_key)
+                    if t_cfg:
+                        weknora_tenant_id = t_cfg.get("weknora_tenant_id")
+
+                upload_name = file_name
+                upload_bytes = getattr(doc_res, "raw_bytes", None) or (doc_res.markdown_content.encode("utf-8") if doc_res.markdown_content else None)
+                mime = "text/markdown" if not getattr(doc_res, "raw_bytes", None) else ("application/pdf" if file_name.endswith(".pdf") else "application/octet-stream")
+                if upload_bytes:
+                    if not getattr(doc_res, "raw_bytes", None) and not upload_name.lower().endswith(".md"):
+                        upload_name = f"{upload_name}.md"
+                    await _get_active_weknora().upload_file(
+                        file_name=_sanitize_filename(upload_name),
+                        file_bytes=upload_bytes,
+                        dataset_id=effective_dataset_id,
+                        mime_type=mime,
+                        tenant_id=weknora_tenant_id,
+                    )
+                    logger.info(f"✔ [DOC HANDLER] Đã tải nạp '{upload_name}' sang WeKnora KB {effective_dataset_id}")
+        except Exception as weknora_up_err:
+            logger.warning(f"Lỗi khi nạp file sang WeKnora trong document_handler: {weknora_up_err}")
+
         return True
 
     # 2. Xử lý liên kết Lark Cloud DocX / Wiki (Lark Doc Links - EDL-0010)
@@ -126,6 +159,7 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                             sender_id=msg.sender_id,
                             message_id=msg.message_id,
                             is_owner=is_owner,
+                            tenant_key=msg.tenant_key,
                         )
                         new_count = claims_res.get("new_claims_count", 0)
                         superseded_count = claims_res.get("superseded_claims_count", 0)
@@ -134,6 +168,33 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                             f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
                         )
                         print(f"✔ Đã âm thầm lưu {new_count} facts từ Lark Doc '{doc_res.doc_name}' vào MongoDB (không phát ngôn vào nhóm).")
+
+                        # Nạp tài liệu lên WeKnora Knowledge Base
+                        try:
+                            from services.knowledge.chat_scopes import scope_service, _get_active_weknora, _sanitize_filename
+                            effective_dataset_id, _ = await scope_service.get_kb_info_for_chat(msg.chat_id, tenant_key=msg.tenant_key)
+                            if effective_dataset_id and doc_res.markdown_content:
+                                weknora_tenant_id = None
+                                if msg.tenant_key:
+                                    from database.db import get_tenant_config
+                                    t_cfg = await get_tenant_config(msg.tenant_key)
+                                    if t_cfg:
+                                        weknora_tenant_id = t_cfg.get("weknora_tenant_id")
+
+                                safe_name = _sanitize_filename(doc_res.doc_name or "lark_doc")
+                                if not safe_name.lower().endswith(".md"):
+                                    safe_name = f"{safe_name}.md"
+                                await _get_active_weknora().upload_file(
+                                    file_name=safe_name,
+                                    file_bytes=doc_res.markdown_content.encode("utf-8"),
+                                    dataset_id=effective_dataset_id,
+                                    mime_type="text/markdown",
+                                    tenant_id=weknora_tenant_id,
+                                )
+                                logger.info(f"✔ [DOC HANDLER] Đã tải nạp Lark Doc '{safe_name}' sang WeKnora KB {effective_dataset_id}")
+                        except Exception as w_err:
+                            logger.warning(f"Lỗi khi tải nạp Lark Doc sang WeKnora: {w_err}")
+
                         handled_any = True
 
             if handled_any:

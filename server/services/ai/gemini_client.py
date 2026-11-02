@@ -33,8 +33,7 @@ class LLMClient:
 
     DEFAULT_MODELS: List[str] = [
         "gemini-2.5-flash",
-        "gemini-flash-latest",
-        "gemini-2.0-flash",
+        "gemini-flash-latest"
     ]
 
     def __init__(
@@ -218,7 +217,8 @@ class LLMClient:
                             return ""
                     else:  # Google Gemini
                         url = self._get_url(model)
-                        resp = await client.post(url, json=payload)
+                        clean_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+                        resp = await client.post(url, json=clean_payload)
                         text = self._extract_text_from_response(resp, model)
                         if text is not None:
                             return text
@@ -295,7 +295,8 @@ class LLMClient:
                             return ""
                     else:  # Google Gemini
                         url = self._get_url(model)
-                        resp = client.post(url, json=payload)
+                        clean_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+                        resp = client.post(url, json=clean_payload)
                         text = self._extract_text_from_response(resp, model)
                         if text is not None:
                             return text

@@ -1,15 +1,21 @@
 import os
 import sys
+import logging
 
 SERVER_ROOT = os.path.dirname(os.path.abspath(__file__))
 if SERVER_ROOT not in sys.path:
     sys.path.insert(0, SERVER_ROOT)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from core.http_client import init_http_client, close_http_client
 from database.db import ensure_database_indexes, close_mongo_connections
-from routers import health, chat, lark, digest, scope, policy, auth, onboarding
+from routers import health, chat, lark, digest, scope, policy, auth, onboarding, setup
 from services.bot_service import start_bot_service, stop_bot_service
 from services.auth_service import token_service
 
@@ -47,6 +53,7 @@ app.include_router(scope.router)
 app.include_router(policy.router)
 app.include_router(auth.router)
 app.include_router(onboarding.router)
+app.include_router(setup.router)
 
 
 

@@ -8,6 +8,11 @@ env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__
 load_dotenv(dotenv_path=env_path, override=True)
 
 class Settings:
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
+    SETUP_REQUIRE_DURABLE_STATE: bool = (
+        os.getenv("SETUP_REQUIRE_DURABLE_STATE", "")
+        or ("true" if ENVIRONMENT.lower() == "production" else "false")
+    ).lower() in ("true", "1", "yes")
     WEKNORA_API_KEY: str = os.getenv("WEKNORA_API_KEY") or os.getenv("api_weknora", "")
     BASE_URL: str = os.getenv("BASE_URL") or os.getenv("base_url", "http://localhost/api/v1")
     JEV_API_KEY: str = os.getenv("JEV_API_KEY") or os.getenv("jev_api", "")
@@ -15,6 +20,8 @@ class Settings:
     WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
     WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "d715d7ee-1853-4bd9-b22d-779b1ec1e28f")
     WEKNORA_POLICY_DATASOURCE_ID: str = os.getenv("policy_datasource_id") or os.getenv("WEKNORA_POLICY_DATASOURCE_ID", "c853ff6e-68c7-4767-998f-df8eb7820b1d")
+    WEKNORA_WEB_URL: str = os.getenv("WEKNORA_WEB_URL") or "http://localhost/login"
+    WEKNORA_PROVISION_DRY_RUN: bool = (os.getenv("WEKNORA_PROVISION_DRY_RUN", "false").lower() in ("true", "1", "yes"))
     POLICY_SYNC_ENABLED: bool = (os.getenv("policy_sync_enabled") or os.getenv("POLICY_SYNC_ENABLED", "true")).lower() in ("true", "1", "yes")
     POLICY_SYNC_INTERVAL_SECONDS: int = int(os.getenv("policy_sync_interval_seconds") or os.getenv("POLICY_SYNC_INTERVAL_SECONDS", "3600"))
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api", "")
@@ -25,7 +32,7 @@ class Settings:
         return self.GEMINI_API_KEY
 
     # MongoDB Settings
-    MONGO_URL: str = os.getenv("MONGO_URL") or os.getenv("mongo_url", "mongodb://localhost:27017")
+    MONGO_URL: str = os.getenv("MONGO_URL") or os.getenv("mongo_url") or os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     MONGO_DB: str = os.getenv("MONGO_DB") or os.getenv("mongo_db", "LarkAssistant")
     MONGO_MEMORY_COLLECTION: str = os.getenv("mongo_memory_collection", "memories")
     MONGO_CLAIMS_COLLECTION: str = os.getenv("mongo_claims_collection", "claims")
@@ -38,6 +45,8 @@ class Settings:
     MONGO_TELEMETRY_COLLECTION: str = os.getenv("mongo_telemetry_collection", "cost_telemetry")
     MONGO_USER_SETTINGS_COLLECTION: str = os.getenv("mongo_user_settings_collection", "user_settings")
     MONGO_SYSTEM_CONFIG_COLLECTION: str = os.getenv("mongo_system_config_collection", "system_config")
+    MONGO_SETUP_SESSIONS_COLLECTION: str = os.getenv("mongo_setup_sessions_collection", "setup_sessions")
+    MONGO_LARK_APPS_COLLECTION: str = os.getenv("mongo_lark_apps_collection", "lark_app_credentials")
     APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
     LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "http://localhost:8000/auth/lark/callback")
     ENCRYPTION_SECRET_KEY: str = os.getenv("ENCRYPTION_SECRET_KEY", "hilark-secret-key-32bytes-aes256!!")

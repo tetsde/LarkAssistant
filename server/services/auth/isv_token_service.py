@@ -39,7 +39,8 @@ class ISVTokenService:
     """Service điều phối vòng đời Token ISV / Marketplace Multi-Tenant của Lark."""
 
     def __init__(self):
-        self._lock = asyncio.Lock()
+        self._app_lock = asyncio.Lock()
+        self._tenant_lock = asyncio.Lock()
         self._app_ticket: Optional[str] = (
             getattr(settings, "LARK_APP_TICKET", "") or os.getenv("LARK_APP_TICKET", "") or None
         )
@@ -211,7 +212,7 @@ class ISVTokenService:
         if not force_refresh and self._app_access_token and (now < self._app_access_token_expires_at - 600):
             return self._app_access_token
 
-        async with self._lock:
+        async with self._app_lock:
             # Double check sau khi acquire lock
             if not force_refresh and self._app_access_token and (now < self._app_access_token_expires_at - 600):
                 return self._app_access_token
@@ -266,8 +267,10 @@ class ISVTokenService:
             2. Nếu hết hạn: Đổi app_access_token + tenant_key lấy tenant_access_token mới.
             3. Lưu cache RAM và MongoDB.
         """
-        # Fallback Single-Tenant / Custom App nếu không có tenant_key
-        if not tenant_key and not self.is_isv_mode:
+        # Custom App dùng endpoint /internal; tenant_key không biến nó thành ISV App.
+        # Chỉ Store/ISV App mới dùng app_access_token + tenant_key.
+        isv_active = self.is_isv_mode or bool(self._app_ticket or self._app_access_token)
+        if not isv_active:
             return await self._get_custom_app_tenant_token(force_refresh=force_refresh)
 
         if not tenant_key:
@@ -279,14 +282,15 @@ class ISVTokenService:
         if not force_refresh and cached and (now < cached.get("expires_at", 0) - 600):
             return cached.get("token", "")
 
-        async with self._lock:
+        # 1. Đảm bảo app_access_token khả dụng trước khi vào lock của tenant
+        app_token = await self.get_app_access_token()
+
+        async with self._tenant_lock:
             # Double check sau khi acquire lock
             cached = self._tenant_tokens.get(tenant_key)
             if not force_refresh and cached and (now < cached.get("expires_at", 0) - 600):
                 return cached.get("token", "")
 
-            # 1. Đảm bảo app_access_token khả dụng
-            app_token = await self.get_app_access_token()
             domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
             url = f"{domain}/open-apis/auth/v3/tenant_access_token"
 
@@ -342,7 +346,8 @@ class ISVTokenService:
         force_refresh: bool = False,
     ) -> str:
         """Wrapper đồng bộ cho các lệnh gọi đồng bộ (LarkBaseService, CLI scripts)."""
-        if not tenant_key and not self.is_isv_mode:
+        isv_active = self.is_isv_mode or bool(self._app_ticket or self._app_access_token)
+        if not isv_active:
             return self._get_custom_app_tenant_token_sync(force_refresh=force_refresh)
 
         # Kiểm tra RAM cache trước

@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 import lark_oapi as lark
 from fastapi import Request, Response
+from core.config import settings
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
@@ -41,6 +42,22 @@ from lark_oapi.core.const import UTF_8
 from lark_oapi.core.model import RawRequest
 
 logger = logging.getLogger("hilark.lark")
+
+
+def _lark_raw_headers(request: Request) -> Dict[str, str]:
+    """Normalize FastAPI's lowercase headers for the case-sensitive Lark SDK."""
+    headers = dict(request.headers)
+    canonical_names = (
+        "X-Lark-Request-Timestamp",
+        "X-Lark-Request-Nonce",
+        "X-Lark-Signature",
+        "X-Request-ID",
+    )
+    for name in canonical_names:
+        value = headers.get(name) or headers.get(name.lower())
+        if value is not None:
+            headers[name] = value
+    return headers
 
 
 class LarkMessengerMixin:
@@ -157,14 +174,17 @@ class LarkMessengerMixin:
                     f"[LARK BOT DM CARD] Thất bại khi gửi thẻ tới chủ nhân ({owner_open_id}): "
                     f"code={response.code}, msg={response.msg}"
                 )
+                if response.code == 230013:
+                    logger.warning(
+                        f"[LARK BOT DM CARD] Tài khoản {owner_open_id} chưa nằm trong phạm vi khả dụng (Availability) của Lark Bot. "
+                        "Vui lòng vào Lark Developer Console -> Version Management & Release -> Availability -> Thêm thành viên này hoặc chọn 'All employees'."
+                    )
                 return {"success": False, "code": response.code, "msg": response.msg}
 
             mid = getattr(response.data, "message_id", None) if response.data else None
             logger.info(f"[LARK BOT DM CARD] Đã gửi thẻ tương tác tới chủ nhân ({owner_open_id}) thành công, message_id={mid}")
             return {"success": True, "data": response.data, "message_id": mid}
         except Exception as e:
-            logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
             logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
@@ -177,11 +197,12 @@ class LarkMessengerMixin:
         message_id: str,
         card_payload: Dict[str, Any] | str,
         as_user: bool = False,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Cập nhật nội dung một thẻ tin nhắn đã gửi (In-place update).
         Dùng để cập nhật trạng thái sau khi Lãnh đạo bấm nút (ví dụ: đã duyệt, đã hủy),
-        vô hiệu hóa các nút bấm nhằm chống bấm lặp lại.
+        vô hiệu hóa các nút bấm nhằm chống bấm lặp lại. Hỗ trợ tenant_key cho ISV Multi-Tenant.
         """
         if not message_id or not card_payload:
             return {"success": False, "error": "message_id và card_payload không được rỗng"}
@@ -202,13 +223,7 @@ class LarkMessengerMixin:
             .build()
         )
 
-        opt = None
-        if as_user:
-            try:
-                opt = self._get_user_request_option()
-            except Exception as e:
-                logger.error(f"[LARK CARD UPDATE] Không lấy được quyền User: {e}")
-                return {"success": False, "error": str(e)}
+        opt = self._get_request_option(as_user=as_user, tenant_key=tenant_key)
 
         try:
             response = await self.client.im.v1.message.apatch(request, option=opt)
@@ -256,6 +271,50 @@ class LarkMessengerMixin:
         except ValueError as e:
             logger.error(f"Từ chối thao tác gửi tin nhắn: {e}")
             return None, None, {"success": False, "error": str(e), "msg": "Không có User Access Token hợp lệ"}
+
+        content_json = json.dumps({"text": text}, ensure_ascii=False)
+        return opt, content_json, None
+
+    async def _prepare_user_msg_payload_async(
+        self,
+        target_id: str,
+        text: str,
+        id_name: str = "id",
+        tenant_key: Optional[str] = None,
+    ) -> tuple[Optional[lark.RequestOption], Optional[str], Optional[Dict[str, Any]]]:
+        """Validate input và chuẩn bị request option với AUTO-REFRESH token."""
+        if not target_id or not text:
+            return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
+
+        # ✅ TỰ ĐỘNG REFRESH TOKEN NẾU HẾT HẠN
+        try:
+            from services.auth.token_service import token_service
+            eff_tenant = tenant_key or getattr(self, "tenant_key", None)
+            instance_app_id = getattr(self, "app_id", None)
+            target_app_id = None if (eff_tenant and instance_app_id == getattr(settings, "LARK_APP_ID", "")) else instance_app_id
+            valid_token = await token_service.get_valid_user_token(
+                tenant_key=eff_tenant,
+                app_id=target_app_id,
+            )
+            if not valid_token:
+                logger.warning("⚠️ [TOKEN AUTO-REFRESH FAILED] User token không hợp lệ")
+                return None, None, {
+                    "success": False,
+                    "error": "token_expired",
+                    "msg": "User Access Token không hợp lệ hoặc đã hết hạn",
+                }
+            logger.info("✅ [TOKEN AUTO-REFRESH] Token đã được làm mới hoặc vẫn còn hạn")
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy/refresh user token: {e}")
+            return None, None, {"success": False, "error": str(e)}
+
+        # Cập nhật RAM instance và trực tiếp tạo RequestOption từ valid_token
+        self.user_access_token = valid_token
+        opt_builder = lark.RequestOption.builder().user_access_token(valid_token)
+        eff_tenant = tenant_key or getattr(self, "tenant_key", None)
+        if eff_tenant:
+            opt_builder.tenant_key(eff_tenant)
+        opt = opt_builder.build()
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         return opt, content_json, None
@@ -309,9 +368,14 @@ class LarkMessengerMixin:
     ) -> Dict[str, Any]:
         """Reply tin nhắn async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
         if as_user:
-            opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+            # ✅ GỌI ASYNC VERSION VỚI AUTO-REFRESH
+            opt, content_json, err = await self._prepare_user_msg_payload_async(
+                message_id, text, "message_id", tenant_key=tenant_key
+            )
             if err:
-                return err
+                logger.info(f"Fallback sang Bot do: {err.get('msg')}")
+                opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                content_json = json.dumps({"text": text}, ensure_ascii=False)
         else:
             opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -324,6 +388,11 @@ class LarkMessengerMixin:
         )
         try:
             response = await self.client.im.v1.message.areply(request, option=opt)
+            # ✅ HANDLE BOT NOT IN CHAT ERROR
+            if not response.success():
+                if response.code == 230002:  # Bot/User can NOT be out of the chat
+                    logger.warning(f"Bot không ở trong chat, không thể reply message {message_id}")
+                    return {"success": False, "code": 230002, "skipped": True, "msg": "Bot not in chat"}
             return self._handle_im_response(response, f"reply tin nhắn {message_id}")
         except Exception as e:
             logger.error(f"Exception khi reply tin nhắn {message_id}: {e}", exc_info=True)
@@ -340,7 +409,9 @@ class LarkMessengerMixin:
         if as_user:
             opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
             if err:
-                return err
+                logger.info(f"Fallback sang danh tính Bot để reply tin nhắn {message_id} do: {err.get('msg')}")
+                opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                content_json = json.dumps({"text": text}, ensure_ascii=False)
         else:
             opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -372,7 +443,10 @@ class LarkMessengerMixin:
     ) -> Dict[str, Any]:
         """Gửi tin nhắn mới async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
         if as_user:
-            opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+            # ✅ GỌI ASYNC VERSION VỚI AUTO-REFRESH
+            opt, content_json, err = await self._prepare_user_msg_payload_async(
+                receive_id, text, "receive_id", tenant_key=tenant_key
+            )
             if err:
                 return err
         else:
@@ -575,6 +649,113 @@ class LarkMessengerMixin:
         except Exception:
             pass
 
+        # Multi-Custom-App ingress: resolve and validate the App-specific
+        # verification token before handing the payload to the common parser.
+        # The legacy singleton dispatcher remains the fallback for the
+        # single-tenant .env deployment.
+        app_specific_validated = False
+        app_record = None
+        app_header = payload.get("header", {}) if isinstance(payload, dict) else {}
+        inbound_app_id = app_header.get("app_id", "") if isinstance(app_header, dict) else ""
+
+        # Encrypted Lark events do not expose header.app_id until after
+        # decryption. With multiple Custom Apps, resolve the sender by trying
+        # each registered App's own encrypt/verification key. Never fall back
+        # to the legacy singleton for an encrypted payload.
+        if isinstance(payload, dict) and payload.get("encrypt") and not inbound_app_id:
+            try:
+                from services.lark_app_service import lark_app_service
+                from services.lark.runtime import get_or_create_lark_service
+
+                encrypted_raw_req = RawRequest()
+                encrypted_raw_req.uri = request.url.path
+                encrypted_raw_req.body = body_bytes
+                encrypted_raw_req.headers = _lark_raw_headers(request)
+                registrations = await lark_app_service.list_registrations()
+                for candidate in registrations:
+                    if not candidate.get("encrypt_key"):
+                        continue
+                    candidate_service = await get_or_create_lark_service(candidate)
+                    from services.lark.runtime import reset_current_lark_service, set_current_lark_service
+                    candidate_context_token = set_current_lark_service(candidate_service)
+                    try:
+                        candidate_response = candidate_service.event_dispatcher.do(encrypted_raw_req)
+                        return Response(
+                            content=candidate_response.content,
+                            status_code=candidate_response.status_code,
+                            media_type=getattr(candidate_response, "content_type", None) or "application/json",
+                        )
+                    except Exception as candidate_error:
+                        logger.debug(
+                            "Encrypted event không khớp Custom App %s: %s",
+                            candidate.get("app_id"),
+                            candidate_error,
+                        )
+                    finally:
+                        reset_current_lark_service(candidate_context_token)
+
+                logger.error("Không giải mã được encrypted Lark event bằng bất kỳ Custom App nào đã đăng ký")
+                return Response(
+                    content=json.dumps({"code": 403, "msg": "no matching Custom App encrypt_key"}),
+                    media_type="application/json",
+                    status_code=403,
+                )
+            except Exception as encrypted_err:
+                logger.error("Lỗi resolve encrypted Custom App event: %s", encrypted_err, exc_info=True)
+                return Response(
+                    content=json.dumps({"code": 500, "msg": "custom app encrypted event dispatch failed"}),
+                    media_type="application/json",
+                    status_code=500,
+                )
+
+        if inbound_app_id:
+            try:
+                from services.lark_app_service import lark_app_service
+                app_record = await lark_app_service.get_by_app_id(inbound_app_id)
+                if not app_record and inbound_app_id == getattr(settings, "LARK_APP_ID", ""):
+                    # Backward-compatible path for the legacy .env App while it
+                    # has not yet been migrated into the registry.
+                    app_record = None
+                    app_specific_validated = False
+                if app_record:
+                    if not app_record.get("verification_token"):
+                        return Response(
+                            content=json.dumps({"code": 403, "msg": "Custom App thiếu verification_token"}),
+                            media_type="application/json",
+                            status_code=403,
+                        )
+                    inbound_token = (
+                        app_header.get("token")
+                        or payload.get("token")
+                        or payload.get("event", {}).get("token", "")
+                    )
+                    if not inbound_token or inbound_token != app_record["verification_token"]:
+                        logger.error("Lark event bị từ chối: verification_token không khớp App %s", inbound_app_id)
+                        return Response(
+                            content=json.dumps({"code": 403, "msg": "invalid verification_token"}),
+                            media_type="application/json",
+                            status_code=403,
+                        )
+                    # The SDK dispatcher is initialized with the legacy global
+                    # token. Mark this payload as validated so the common
+                    # dispatch path can skip that global validation later.
+                    app_specific_validated = True
+            except Exception as app_event_err:
+                logger.error("Lỗi định tuyến event theo Custom App %s: %s", inbound_app_id, app_event_err, exc_info=True)
+                return Response(
+                    content=json.dumps({"code": 500, "msg": "custom app event dispatch failed"}),
+                    media_type="application/json",
+                    status_code=500,
+                )
+
+        if inbound_app_id and not app_record and inbound_app_id != getattr(settings, "LARK_APP_ID", ""):
+            logger.error("Từ chối event từ Custom App chưa đăng ký: %s", inbound_app_id)
+            return Response(
+                content=json.dumps({"code": 403, "msg": "unknown Custom App"}),
+                media_type="application/json",
+                status_code=403,
+            )
+
         # 1.5. Xử lý sự kiện app_ticket (Lark Marketplace ISV Token Lifecycle - EDL-0020)
         if isinstance(payload, dict):
             event_type = payload.get("header", {}).get("event_type") or payload.get("type")
@@ -618,8 +799,33 @@ class LarkMessengerMixin:
         if is_card_action:
             from services.lark.handlers.card_action_handler import handle_card_action, parse_card_action_payload
             open_id, message_id, action_val = parse_card_action_payload(payload)
+            # Card callback chuẩn đôi khi không có header.app_id. Card payload
+            # vẫn mang tenant_key, dùng nó để resolve đúng Custom App runtime.
+            if not app_record and action_val.get("tenant_key"):
+                try:
+                    from services.lark_app_service import lark_app_service
+                    app_record = await lark_app_service.get_by_tenant_key(action_val["tenant_key"])
+                except Exception as resolve_err:
+                    logger.warning(
+                        "Không resolve được Custom App cho card tenant=%s: %s",
+                        action_val.get("tenant_key"),
+                        resolve_err,
+                    )
+            runtime_context_token = None
+            try:
+                if app_record:
+                    from services.lark.runtime import get_or_create_lark_service, set_current_lark_service
+                    runtime_service = await get_or_create_lark_service(app_record)
+                    runtime_context_token = set_current_lark_service(runtime_service)
+                if action_val:
+                    ok, toast_msg, updated_card = await handle_card_action(open_id, message_id, action_val)
+                else:
+                    ok, toast_msg, updated_card = False, "Không xác định được hành động", None
+            finally:
+                if runtime_context_token is not None:
+                    from services.lark.runtime import reset_current_lark_service
+                    reset_current_lark_service(runtime_context_token)
             if action_val:
-                ok, toast_msg, updated_card = await handle_card_action(open_id, message_id, action_val)
                 resp_data: Dict[str, Any] = {}
                 if toast_msg:
                     resp_data["toast"] = {
@@ -638,20 +844,40 @@ class LarkMessengerMixin:
         raw_req = RawRequest()
         raw_req.uri = request.url.path
         raw_req.body = body_bytes
-        raw_req.headers = dict(request.headers)
+        raw_req.headers = _lark_raw_headers(request)
 
         # 4. Chuyển cho SDK Dispatcher xử lý
+        runtime_service = self
+        runtime_context_token = None
+        if inbound_app_id and app_record:
+            try:
+                from services.lark.runtime import get_or_create_lark_service, set_current_lark_service
+                runtime_service = await get_or_create_lark_service(app_record)
+                runtime_context_token = set_current_lark_service(runtime_service)
+                app_specific_validated = True
+            except Exception as runtime_err:
+                logger.error("Không tạo được runtime client cho Custom App %s: %s", inbound_app_id, runtime_err, exc_info=True)
+                return Response(
+                    content=json.dumps({"code": 500, "msg": "custom app runtime unavailable"}),
+                    media_type="application/json",
+                    status_code=500,
+                )
+
         try:
-            raw_resp = self.event_dispatcher.do(raw_req)
+            raw_resp = (
+                runtime_service.event_dispatcher._do_without_validation(body_bytes)
+                if app_specific_validated
+                else self.event_dispatcher.do(raw_req)
+            )
             return Response(
                 content=raw_resp.content,
                 status_code=raw_resp.status_code,
-                media_type=raw_resp.content_type or "application/json",
+                media_type=getattr(raw_resp, "content_type", None) or "application/json",
             )
         except Exception as e:
             logger.warning(f"Fallback do_without_validation do: {e}")
             try:
-                self.event_dispatcher._do_without_validation(body_bytes)
+                runtime_service.event_dispatcher._do_without_validation(body_bytes)
                 return Response(
                     content=json.dumps({"msg": "success"}),
                     media_type="application/json",
@@ -664,6 +890,10 @@ class LarkMessengerMixin:
                     status_code=500,
                     media_type="application/json",
                 )
+        finally:
+            if runtime_context_token is not None:
+                from services.lark.runtime import reset_current_lark_service
+                reset_current_lark_service(runtime_context_token)
 
     async def handle_card_action_request(self, request: Request) -> Response:
         """Endpoint chuyên xử lý Card Action Callback từ Lark."""

@@ -40,15 +40,15 @@ logger = logging.getLogger("hilark.docparser")
 
 # Regex nhận diện các liên kết Lark DocX, Wiki và Drive Folder
 DOCX_URL_PATTERN = re.compile(
-    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/docx/([a-zA-Z0-9]+)",
+    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/(?:docx|docs)/([a-zA-Z0-9_\-]+)",
     re.IGNORECASE,
 )
 WIKI_URL_PATTERN = re.compile(
-    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/wiki/([a-zA-Z0-9]+)",
+    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/wiki/([a-zA-Z0-9_\-]+)",
     re.IGNORECASE,
 )
 FOLDER_URL_PATTERN = re.compile(
-    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/(?:drive/)?folder/([a-zA-Z0-9]+)",
+    r"https?://[a-zA-Z0-9_\-\.]+(?:feishu\.cn|larksuite\.com)/(?:drive/)?folder/([a-zA-Z0-9_\-]+)",
     re.IGNORECASE,
 )
 
@@ -90,7 +90,8 @@ class DocParserService:
         if self._lark_override is not None:
             return self._lark_override
         from services.lark import lark_service
-        return lark_service
+        from services.lark.runtime import get_current_lark_service
+        return get_current_lark_service(lark_service)
 
     @property
     def _llm(self):

@@ -112,7 +112,9 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
 
         # 10. USER SETTINGS & BYOK (Cấu hình người dùng & API Key cá nhân)
         getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings"): [
-            IndexModel([("open_id", ASCENDING)], unique=True, name="idx_user_settings_open_id_unique"),
+            # Một user có thể thuộc nhiều tenant; uniqueness phải nằm trên cặp
+            # (tenant_key, open_id), không phải open_id toàn hệ thống.
+            IndexModel([("open_id", ASCENDING)], name="idx_user_settings_open_id"),
             IndexModel([("tenant_key", ASCENDING), ("open_id", ASCENDING)], name="idx_user_settings_tenant_open_id"),
             IndexModel([("updated_at", DESCENDING)], name="idx_user_settings_updated_at"),
         ],
@@ -133,6 +135,20 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         getattr(settings, "MONGO_ISV_AUTH_COLLECTION", "isv_auth"): [
             IndexModel([("tenant_key", ASCENDING)], sparse=True, name="idx_isv_auth_tenant_key"),
             IndexModel([("updated_at", DESCENDING)], name="idx_isv_auth_updated_at"),
+        ],
+
+        # One-click setup sessions phải tra cứu được sau restart/scale-out.
+        getattr(settings, "MONGO_SETUP_SESSIONS_COLLECTION", "setup_sessions"): [
+            IndexModel([("task_id", ASCENDING)], unique=True, name="uq_setup_sessions_task_id"),
+            IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0, name="ttl_setup_sessions_expires_at"),
+        ],
+
+        # Credential Custom App theo từng tenant/setup registration.
+        getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials"): [
+            IndexModel([("registration_id", ASCENDING)], unique=True, name="uq_lark_apps_registration_id"),
+            IndexModel([("app_id", ASCENDING)], unique=True, name="uq_lark_apps_app_id"),
+            IndexModel([("tenant_key", ASCENDING)], sparse=True, name="idx_lark_apps_tenant_key"),
+            IndexModel([("status", ASCENDING)], name="idx_lark_apps_status"),
         ],
     }
 
@@ -160,6 +176,12 @@ async def ensure_database_indexes(db_instance: Any = None) -> Dict[str, List[str
         col = db_instance[col_name]
         results[col_name] = []
         try:
+            if col_name == getattr(settings, "MONGO_USER_SETTINGS_COLLECTION", "user_settings"):
+                # Migration an toàn cho index cũ từng ép open_id global-unique.
+                try:
+                    await col.drop_index("idx_user_settings_open_id_unique")
+                except Exception:
+                    pass
             created_names = await col.create_indexes(index_models)
             results[col_name] = created_names
             total_created += len(created_names)

@@ -57,8 +57,9 @@ services:
     env_file:
       - .env
     environment:
-      - MONGO_URL=mongodb://mongodb:27017
-      - MONGO_DB=LarkAssistant
+      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017}
+      - MONGO_DB=${MONGO_DB:-LarkAssistant}
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
       - BASE_URL=${DOCKER_WEKNORA_BASE_URL:-http://host.docker.internal/api/v1}
       - DOCREADER_GRPC_HOST=${DOCREADER_GRPC_HOST:-host.docker.internal}

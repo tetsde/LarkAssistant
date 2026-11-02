@@ -46,6 +46,15 @@ class LarkRunnerMixin:
         Khởi động kết nối WebSocket (Persistent Connection) trực tiếp với Lark.
         Tạo event loop riêng biệt để tránh xung đột với FastAPI / Uvicorn.
         """
+        if not self.app_id or not self.app_id.startswith("cli_") or len(self.app_id) < 10:
+            logger.warning(f"Bỏ qua khởi động WebSocket Client: App ID '{self.app_id}' không hợp lệ hoặc chưa được cấu hình.")
+            return None
+
+        # Tránh khởi động trùng lặp nhiều client song song làm xung đột WebSocket Event Loop
+        if hasattr(self, "_ws_thread") and self._ws_thread and self._ws_thread.is_alive():
+            logger.info("Lark WebSocket Client đã đang chạy ở background thread, bỏ qua khởi động trùng lặp.")
+            return self._ws_thread
+
         # Chủ động nạp thông tin User Profile khi khởi động
         try:
             user_prof = self.get_current_user()
@@ -69,18 +78,21 @@ class LarkRunnerMixin:
                 domain=self.domain,
                 log_level=lark.LogLevel.INFO,
             )
+            self._ws_client_instance = ws_client
             try:
                 ws_client.start()
             except Exception as e:
-                logger.error(f"Lark WebSocket gặp lỗi khi chạy: {e}", exc_info=True)
+                logger.warning(f"Lark WebSocket gặp lỗi khi kết nối hoặc chạy: {e}")
             finally:
-                try:
-                    new_loop.close()
-                except Exception:
-                    pass
+                if getattr(ws_module, "loop", None) is new_loop:
+                    try:
+                        new_loop.close()
+                    except Exception:
+                        pass
 
         if background:
             thread = threading.Thread(target=_run_client, daemon=True, name="LarkWebSocketThread")
+            self._ws_thread = thread
             thread.start()
             logger.info("🚀 Lark WebSocket Client đã khởi động ở chế độ Background Thread!")
             return thread

@@ -11,7 +11,7 @@
 ## 2. Tech stack
 - **Language/runtime:** Python >= 3.13
 - **Frameworks:** FastAPI >= 0.143.0, Uvicorn >= 0.54.0, Pydantic >= 2.14.0
-- **Database/storage:** MongoDB (Motor >= 3.7.1 cho async, PyMongo >= 4.18.3 cho sync)
+- **Database/storage:** MongoDB Atlas Cloud Cluster & Motor >= 3.7.1 cho async, PyMongo >= 4.18.3 cho sync (13 collections, compound index tenant_key)
 - **External services/APIs:**
   - Lark Open Platform (`lark-oapi` >= 1.7.3)
   - WeKnora Hybrid RAG API
@@ -34,6 +34,7 @@ Kiến trúc vận hành 4 lớp tuần tự:
    - Trả lời trực tiếp nếu thông tin đầy đủ và an toàn.
    - Cơ chế duyệt nháp (HITL): Gửi bản nháp dạng interactive card vào DM của người duyệt khi thiếu dữ liệu hoặc cần xác nhận.
    - Thẻ Tương Tác Master Daily Digest & Điều Hành (EDL-0013): Tổng hợp toàn bộ hoạt động các nhóm và bảng sự thật đề xuất trong ngày; cung cấp nút bấm 1 chạm `[Duyệt toàn bộ thông tin hôm nay]` (`approve_all_digest_claims`), nút xem chi tiết từng nhóm (`view_digest_detail`), nút nhờ AI tóm tắt ngắn (`summarize_digest`) và hủy báo cáo. Tự động thăng hạng toàn bộ claims sang `current` và đồng bộ WeKnora ngay trên thẻ.
+   - Trung Tâm Điều Phối 100% Nút Bấm Thẻ Tương Tác (Executive Control Hub Card V2 - EDL-0023): Thay thế toàn bộ dòng lệnh văn bản bằng Thẻ điều hành tương tác trong DM 1-1, tích hợp 2 hàng nút bấm 1-Click mở Lark Base Quản trị, WeKnora Console, Screen Guide, Báo Cáo Ngày, Trạng Thái Vận Hành và Tài Khoản WeKnora.
 
 ## 4. Important code paths
 | Area | Path | Responsibility | Evidence / notes |
@@ -109,3 +110,6 @@ Liên kết tới `docs/project-memory/DECISIONS.md` và Notion Database `Engine
   4. Đã bổ sung bộ kiểm thử `server/tests/test_cost_telemetry.py` (9/9 passed).
   5. Toàn bộ 244 bài test (207 tests trong `server/tests/01` và 37 tests trong `server/tests/`) PASSED 100%.
 - **By / source:** Antigravity Agent.
+
+### Multi-Custom-App deployment note (2026-11-01)
+HiLark is being migrated from the legacy single `.env` Lark App to a shared-server model where each customer registers its own Custom App. The current implementation has a tenant-aware credential registry and per-App runtime client foundation; the legacy singleton remains only as a backward-compatible fallback. See `docs/IMPLEMENTATION_PLAN_MULTI_CUSTOM_APP.md` and decision `EDL-0041` for the rollout boundary and remaining hardening work.

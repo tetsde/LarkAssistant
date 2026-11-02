@@ -67,7 +67,13 @@ class LarkClientMixin:
                     if doc.get("access_token") and doc.get("expires_at", 0) > time.time():
                         stored_user_token = doc["access_token"]
                     else:
-                        logger.info("ℹ️ User Token trong MongoDB đã hết hạn, bỏ qua lúc init client.")
+                            app_collection = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
+                            scoped_app = db[app_collection].find_one({
+                                "tenant_key": {"$exists": True, "$nin": [None, ""]},
+                                "status": {"$ne": "revoked"},
+                            }, {"_id": 1})
+                            if not scoped_app:
+                                logger.info("ℹ️ User Token legacy trong MongoDB đã hết hạn, bỏ qua lúc init client.")
             except Exception:
                 pass
 
@@ -170,15 +176,42 @@ class LarkClientMixin:
     @property
     def owner_open_id(self) -> str:
         """
-        Tự động trích xuất và trả về Open ID của chủ nhân từ User Access Token.
+        Tự động trích xuất và trả về Open ID của chủ nhân từ User Access Token hoặc cấu hình Onboarding.
         Không cần phải cấu hình thủ công user_open_id hay digest_approver_id trong .env.
         """
         if self.known_user_open_id:
             return self.known_user_open_id
+        if getattr(settings, "LARK_USER_OPEN_ID", None) and settings.LARK_USER_OPEN_ID.strip():
+            self.known_user_open_id = settings.LARK_USER_OPEN_ID.strip()
+            return self.known_user_open_id
         if self._current_user_profile and self._current_user_profile.get("open_id"):
-            return self._current_user_profile["open_id"]
+            self.known_user_open_id = self._current_user_profile["open_id"]
+            return self.known_user_open_id
+
+        # Thử lấy từ MongoDB đồng bộ nếu đã được lưu từ Onboarding Screen Guide
+        try:
+            from database.db import get_sync_db
+            sdb = get_sync_db()
+            us_doc = sdb["user_settings"].find_one({"open_id": {"$exists": True, "$ne": ""}}, sort=[("updated_at", -1)])
+            if us_doc and us_doc.get("open_id") and str(us_doc["open_id"]).strip():
+                self.known_user_open_id = str(us_doc["open_id"]).strip()
+                return self.known_user_open_id
+            adm_doc = sdb["system_config"].find_one({"config_key": "lark_admin_config"})
+            if adm_doc and adm_doc.get("admin_open_id") and str(adm_doc["admin_open_id"]).strip():
+                self.known_user_open_id = str(adm_doc["admin_open_id"]).strip()
+                return self.known_user_open_id
+            t_doc = sdb["tenants"].find_one({"admin_open_id": {"$exists": True, "$ne": ""}})
+            if t_doc and t_doc.get("admin_open_id") and str(t_doc["admin_open_id"]).strip():
+                self.known_user_open_id = str(t_doc["admin_open_id"]).strip()
+                return self.known_user_open_id
+        except Exception:
+            pass
+
         prof = self.get_current_user()
-        return prof.get("open_id") or getattr(settings, "LARK_USER_OPEN_ID", "") or ""
+        found_id = prof.get("open_id") or getattr(settings, "LARK_USER_OPEN_ID", "") or ""
+        if found_id:
+            self.known_user_open_id = found_id
+        return found_id
 
     def check_user_access_token(self, force_ping: bool = False) -> Any:
         """

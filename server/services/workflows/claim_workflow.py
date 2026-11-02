@@ -44,28 +44,40 @@ class ClaimService:
     def _resolve_lark(self):
         return self._lark or _get_lark_service()
 
-    async def get_latest_proposed(self, chat_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Lấy thông tin đề xuất ở trạng thái proposed gần nhất."""
-        return await get_latest_proposed_claim(chat_id=chat_id)
+    async def get_latest_proposed(
+        self,
+        chat_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Lấy thông tin đề xuất ở trạng thái proposed gần nhất có cô lập theo tenant_key."""
+        return await get_latest_proposed_claim(chat_id=chat_id, tenant_key=tenant_key)
 
-    async def get_claim_by_id(self, claim_id: str) -> Optional[Dict[str, Any]]:
-        """Tìm claim theo ID trong MongoDB."""
+    async def get_claim_by_id(
+        self,
+        claim_id: str,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Tìm claim theo ID trong MongoDB có cô lập theo tenant_key."""
+        from database.scoped_query import inject_tenant_filter, get_current_tenant_key
         col = get_claims_collection()
-        return await col.find_one({"id": claim_id})
+        eff_tenant = tenant_key or get_current_tenant_key()
+        query = inject_tenant_filter({"id": claim_id}, eff_tenant)
+        return await col.find_one(query)
 
     async def approve_claim(
         self,
         claim_id: Optional[str] = None,
         approver_info: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Duyệt một claim proposed chuyển thành current.
         Nếu không truyền claim_id, tự động lấy claim proposed gần nhất.
         """
         if claim_id:
-            target_claim = await self.get_claim_by_id(claim_id)
+            target_claim = await self.get_claim_by_id(claim_id, tenant_key=tenant_key)
         else:
-            target_claim = await self.get_latest_proposed()
+            target_claim = await self.get_latest_proposed(tenant_key=tenant_key)
 
         if not target_claim:
             return False, "Không tìm thấy thông tin đề xuất nào đang chờ duyệt.", None
@@ -80,15 +92,16 @@ class ClaimService:
     async def reject_claim(
         self,
         claim_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Từ chối một claim proposed, chuyển trạng thái sang superseded.
         Nếu không truyền claim_id, tự động lấy claim proposed gần nhất.
         """
         if claim_id:
-            target_claim = await self.get_claim_by_id(claim_id)
+            target_claim = await self.get_claim_by_id(claim_id, tenant_key=tenant_key)
         else:
-            target_claim = await self.get_latest_proposed()
+            target_claim = await self.get_latest_proposed(tenant_key=tenant_key)
 
         if not target_claim:
             return False, "Không tìm thấy thông tin đề xuất nào đang chờ duyệt.", None
@@ -105,15 +118,16 @@ class ClaimService:
         new_value: str,
         claim_id: Optional[str] = None,
         approver_info: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Cập nhật giá trị mới cho claim và đồng thời phê duyệt thành current.
         Nếu không truyền claim_id, tự động lấy claim proposed gần nhất.
         """
         if claim_id:
-            target_claim = await self.get_claim_by_id(claim_id)
+            target_claim = await self.get_claim_by_id(claim_id, tenant_key=tenant_key)
         else:
-            target_claim = await self.get_latest_proposed()
+            target_claim = await self.get_latest_proposed(tenant_key=tenant_key)
 
         if not target_claim:
             return False, "Không tìm thấy thông tin đề xuất nào đang chờ duyệt để sửa.", None
@@ -130,23 +144,26 @@ class ClaimService:
         self,
         date_str: Optional[str] = None,
         chat_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Lấy danh sách các claims đề xuất đang chờ duyệt trong ngày."""
-        return await get_pending_proposed_claims(date_str=date_str, chat_id=chat_id)
+        """Lấy danh sách các claims đề xuất đang chờ duyệt trong ngày có cô lập theo tenant_key."""
+        return await get_pending_proposed_claims(date_str=date_str, chat_id=chat_id, tenant_key=tenant_key)
 
     async def approve_all_pending_claims_for_date(
         self,
         date_str: Optional[str] = None,
         chat_id: Optional[str] = None,
         approver_info: Optional[Dict[str, Any]] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
-        Duyệt toàn bộ các claims đề xuất trong ngày thành current (duyệt hàng loạt).
+        Duyệt toàn bộ các claims đề xuất trong ngày thành current (duyệt hàng loạt) có cô lập theo tenant_key.
         """
         count = await promote_all_proposed_claims(
             date_str=date_str,
             chat_id=chat_id,
             approver_info=approver_info,
+            tenant_key=tenant_key,
         )
         if count > 0:
             return count, f"Đã phê duyệt thành công toàn bộ {count} thông tin đề xuất."
@@ -160,14 +177,16 @@ class ClaimService:
         entities: Optional[List[Dict[str, Any]]] = None,
         message_id: Optional[str] = None,
         source_text: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> int:
         """
-        Gửi Thẻ tin nhắn tương tác tới Lãnh đạo cho từng fact có status == 'proposed'.
+        Gửi Thẻ tin nhắn tương tác tới Lãnh đạo cho từng fact có status == 'proposed' (có cô lập theo tenant_key).
         Trả về số lượng thẻ đã gửi thành công.
         """
         if not facts:
             return 0
 
+        from database.scoped_query import get_current_tenant_key
         lark = self._resolve_lark()
         sent_count = 0
 
@@ -186,6 +205,8 @@ class ClaimService:
             cid = str(f_dict.get("id") or f_dict.get("_id") or "")
             if not cid:
                 continue
+
+            eff_tenant = f_dict.get("tenant_key") or tenant_key or get_current_tenant_key()
 
             prop = str(f_dict.get("property") or f_dict.get("predicate") or "")
             val = str(f_dict.get("value") or "")
@@ -211,12 +232,28 @@ class ClaimService:
                 value=val,
                 source_text=src,
                 message_id=message_id,
+                tenant_key=eff_tenant,
             )
 
+            # Phân giải Admin Open ID của tenant
+            target_owner_id = None
+            if eff_tenant:
+                try:
+                    from database.db import get_tenant_config
+                    t_cfg = await get_tenant_config(eff_tenant)
+                    if t_cfg and t_cfg.get("admin_open_id"):
+                        target_owner_id = t_cfg["admin_open_id"]
+                except Exception as te:
+                    logger.debug(f"Không thể tra cứu admin_open_id cho tenant {eff_tenant}: {te}")
+
             try:
-                await lark.send_bot_card_to_owner(card_payload)
+                await lark.send_bot_card_to_owner(
+                    card_payload,
+                    target_open_id=target_owner_id,
+                    tenant_key=eff_tenant,
+                )
                 sent_count += 1
-                logger.info(f"Đã gửi Thẻ phê duyệt Claim đề xuất (ID: {cid}) tới lãnh đạo.")
+                logger.info(f"Đã gửi Thẻ phê duyệt Claim đề xuất (ID: {cid}) tới lãnh đạo (tenant: {eff_tenant}).")
             except Exception as e:
                 logger.error(f"Lỗi khi gửi Thẻ Claim tới lãnh đạo: {e}")
 

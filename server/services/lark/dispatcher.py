@@ -70,8 +70,20 @@ class LarkDispatcherMixin:
         self._processed_msg_ids: OrderedDict[str, float] = OrderedDict()
         self._dedup_lock = asyncio.Lock() if hasattr(asyncio, "Lock") else None
 
+        # Cache ánh xạ admin_open_id theo tenant_key (ISV Multi-Tenant)
+        self._tenant_admin_cache: Dict[str, str] = {}
+
         # Khởi tạo EventDispatcherHandler của Lark
         self.event_dispatcher = self._build_event_dispatcher()
+
+    def register_tenant_admin(self, tenant_key: str, admin_open_id: str) -> None:
+        """Đăng ký / cập nhật admin open_id cho tenant trong bộ nhớ đệm."""
+        if tenant_key and admin_open_id:
+            self._tenant_admin_cache[tenant_key] = admin_open_id
+
+    def get_tenant_admin(self, tenant_key: str) -> Optional[str]:
+        """Lấy admin open_id của tenant nếu đã được cache."""
+        return self._tenant_admin_cache.get(tenant_key)
 
     def _build_event_dispatcher(self) -> lark.EventDispatcherHandler:
         """Xây dựng bộ lắng nghe sự kiện Lark (Event Dispatcher)."""
@@ -87,6 +99,10 @@ class LarkDispatcherMixin:
         builder.register_p2_drive_file_bitable_record_changed_v1(self._internal_on_bitable_record_changed_event)
         builder.register_p2_drive_file_bitable_field_changed_v1(self._internal_on_bitable_field_changed_event)
         builder.register_p2_drive_file_edit_v1(self._internal_on_drive_file_edit_event)
+        # Lark có thể phát event này khi user mở/đọc file Drive. HiLark không
+        # cần xử lý nội dung đọc file ở event layer, nhưng vẫn phải đăng ký
+        # để SDK acknowledge event thay vì báo "processor not found".
+        builder.register_p2_customized_event("drive.file.read_v1", self._internal_on_drive_file_read_event)
         builder.register_p2_card_action_trigger(self._internal_on_card_action_trigger)
         return builder.build()
 
@@ -129,9 +145,11 @@ class LarkDispatcherMixin:
 
         is_bot = sender_type == "app" or sender_type == "bot"
 
-        # Kiểm tra xem có phải chính User của token gửi không
+        # Kiểm tra xem có phải chính User của token gửi không (hỗ trợ phân biệt theo tenant_key)
         my_open_id = self.known_user_open_id
-        if self._current_user_profile and self._current_user_profile.get("open_id"):
+        if tenant_key and tenant_key in self._tenant_admin_cache:
+            my_open_id = self._tenant_admin_cache[tenant_key]
+        elif self._current_user_profile and self._current_user_profile.get("open_id"):
             my_open_id = self._current_user_profile.get("open_id")
         is_self = bool(my_open_id and sender_id == my_open_id)
 
@@ -264,16 +282,16 @@ class LarkDispatcherMixin:
             print("⚠️ [LARK DISPATCHER] Nhận được event nhưng không parse được cấu trúc message.")
             return
 
-        print(f"⚡ [LARK DISPATCHER] Bắt được tin nhắn từ Lark: '{lark_msg.text}' (người gửi: {lark_msg.sender_id}, is_self={lark_msg.is_self}, is_bot={lark_msg.is_bot})")
+        logger.debug("[DISPATCH] parsed msg=%s sender=%s bot=%s", lark_msg.message_id, lark_msg.sender_id, lark_msg.is_bot)
 
         # 1. Bỏ qua tin nhắn từ Bot / App
         if lark_msg.is_bot:
-            print(f"ℹ️ [LARK DISPATCHER] Bỏ qua vì tin nhắn phát từ Bot/App: {lark_msg.message_id}")
+            logger.debug("[DROP] msg=%s reason=bot_message", lark_msg.message_id)
             return
 
         # 2. Bỏ qua tin nhắn do chính hệ thống vừa phát ngôn gửi đi (tránh bắt lại tin nhắn reply của chính bot)
         if lark_msg.message_id in self._sent_message_ids:
-            print(f"ℹ️ [LARK DISPATCHER] Bỏ qua tin nhắn do hệ thống vừa gửi đi: {lark_msg.message_id}")
+            logger.debug("[DROP] msg=%s reason=self_sent", lark_msg.message_id)
             return
 
         # 3. Bỏ qua tin nhắn trùng lặp (Idempotency)
@@ -282,15 +300,9 @@ class LarkDispatcherMixin:
             return
 
         # 4. Nhận diện tin nhắn từ tài khoản của bạn (Chủ nhân)
-        if lark_msg.is_self:
-            if lark_msg.chat_type == "group":
-                print(f"👑 [LARK DISPATCHER] Bắt được tin nhắn từ chủ nhân trong Group: '{lark_msg.text}' -> Chuyển tiếp tới handler (chế độ chỉ ghi nhớ/ignore)!")
-            else:
-                print(f"📩 [LARK DISPATCHER] Nhận tin nhắn trực tiếp từ chủ nhân trong DM 1-1: '{lark_msg.text}'")
-
         logger.info(
-            f"📨 Nhận tin nhắn Lark [{lark_msg.chat_type}] từ {lark_msg.sender_id}: "
-            f"'{lark_msg.text}' (msg_id: {lark_msg.message_id})"
+            "[DISPATCH] msg=%s chat_type=%s sender=%s self=%s",
+            lark_msg.message_id, lark_msg.chat_type, lark_msg.sender_id, lark_msg.is_self,
         )
 
         self._dispatch_to_handlers(lark_msg)
@@ -450,34 +462,83 @@ class LarkDispatcherMixin:
                 logger.warning("Không tìm thấy chat_id trong sự kiện bot_added. Bỏ qua ghi nhận Base.")
                 return
 
-            # Tự động đồng bộ vào Lark Base (Bitable)
-            from services.lark.bitable import lark_base_service
+            header = getattr(data, "header", None)
+            tenant_key = getattr(header, "tenant_key", "") if header else ""
 
-            base_record = None
-            try:
-                base_record = lark_base_service.find_record_by_chat_id(chat_id)
-                if not base_record:
-                    base_record = lark_base_service.create_record({
-                        "Dự án / Nhóm": chat_name,
-                        "ID Group": chat_id,
-                    })
-                    logger.info(f"✅ Đã tự động tạo dòng mới trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
-                else:
-                    logger.info(f"ℹ️ Nhóm '{chat_name}' ({chat_id}) đã tồn tại trong Lark Base (Record: {base_record.record_id})")
+            async def _async_bot_added_handler():
+                from contextlib import nullcontext
+                from database.scoped_query import tenant_context
+                from services.lark.bitable import lark_base_service
+                from services.lark.base_provision_service import base_provision_service
+                from services.knowledge.chat_scopes import scope_service
 
-                # Đồng bộ tức thì nhóm chat mới vào MongoDB (chat_scopes)
-                if base_record:
-                    from services.knowledge.chat_scopes import scope_service
+                ctx = tenant_context(tenant_key) if tenant_key else nullcontext()
+                with ctx:
+                    # 1. Định tuyến đúng Lark Base cho tenant nếu có
+                    active_app_token, active_table_id = await base_provision_service.get_chat_scope_target(tenant_key=tenant_key)
+                    if active_app_token:
+                        lark_base_service.app_token = active_app_token
+                    if active_table_id:
+                        lark_base_service.table_id = active_table_id
+
+                    base_record = None
                     try:
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(scope_service.sync_group_from_base_record(base_record))
-                    except RuntimeError:
-                        try:
-                            asyncio.run(scope_service.sync_group_from_base_record(base_record))
-                        except Exception as sync_err:
-                            logger.warning(f"Không thể sync ngay sang MongoDB: {sync_err}")
-            except Exception as e:
-                logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {e}", exc_info=True)
+                        base_record = await asyncio.to_thread(lark_base_service.find_record_by_chat_id, chat_id)
+                        if not base_record:
+                            record_fields = {
+                                "Chat ID": chat_id,
+                                "ID Group": chat_id,
+                                "Tên dự án": chat_name,
+                                "Dự án / Nhóm": chat_name,
+                                "Text": chat_name,
+                                "Trạng thái hoạt động": "active",
+                            }
+                            # Lark thường tạo sẵn một dòng rỗng khi tạo Base.
+                            # Lấp dòng đó trước để không sinh thêm row rác.
+                            all_records = await asyncio.to_thread(lark_base_service.get_all_records)
+                            empty_record = next(
+                                (
+                                    record for record in all_records
+                                    if not (
+                                        record.clean_fields.get("Chat ID")
+                                        or record.clean_fields.get("ID Group")
+                                        or record.clean_fields.get("Text")
+                                        or record.clean_fields.get("Tên dự án")
+                                        or record.clean_fields.get("Dự án / Nhóm")
+                                    )
+                                ),
+                                None,
+                            )
+                            if empty_record:
+                                base_record = await asyncio.to_thread(
+                                    lark_base_service.update_record,
+                                    empty_record.record_id,
+                                    record_fields,
+                                )
+                                logger.info(f"✅ Đã điền dòng rỗng trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
+                            else:
+                                base_record = await asyncio.to_thread(
+                                    lark_base_service.create_record,
+                                    record_fields,
+                                )
+                                logger.info(f"✅ Đã tự động tạo dòng mới trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
+                        else:
+                            logger.info(f"ℹ️ Nhóm '{chat_name}' ({chat_id}) đã tồn tại trong Lark Base (Record: {base_record.record_id})")
+
+                        # Đồng bộ tức thì nhóm chat mới vào MongoDB (chat_scopes)
+                        if base_record:
+                            await scope_service.sync_group_from_base_record(base_record)
+                    except Exception as b_err:
+                        logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {b_err}", exc_info=True)
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_async_bot_added_handler())
+            except RuntimeError:
+                try:
+                    asyncio.run(_async_bot_added_handler())
+                except Exception as e:
+                    logger.error(f"Lỗi chạy async bot_added task: {e}")
 
         except Exception as e:
             logger.error(f"Lỗi xử lý sự kiện bot_added: {e}", exc_info=True)
@@ -548,16 +609,32 @@ class LarkDispatcherMixin:
             print("=" * 65 + "\n")
             logger.info(f"📊 Lark Base change event received for table {table_id} by {operator_name}")
 
+            header = getattr(data, "header", None)
+            tenant_key = getattr(header, "tenant_key", "") if header else ""
+
             for handler in self._bitable_record_handlers:
                 try:
                     if asyncio.iscoroutinefunction(handler):
+                        async def _scoped_bitable_runner(h=handler, d=data, tk=tenant_key):
+                            if tk:
+                                from database.scoped_query import async_tenant_context
+                                async with async_tenant_context(tk):
+                                    await h(d)
+                            else:
+                                await h(d)
+
                         try:
                             loop = asyncio.get_running_loop()
-                            loop.create_task(handler(data))
+                            loop.create_task(_scoped_bitable_runner())
                         except RuntimeError:
-                            asyncio.run(handler(data))
+                            asyncio.run(_scoped_bitable_runner())
                     else:
-                        handler(data)
+                        if tenant_key:
+                            from database.scoped_query import tenant_context
+                            with tenant_context(tenant_key):
+                                handler(data)
+                        else:
+                            handler(data)
                 except Exception as e:
                     logger.error(f"Lỗi khi thực thi bitable_record_handler: {e}", exc_info=True)
         except Exception as e:
@@ -590,6 +667,10 @@ class LarkDispatcherMixin:
     def _internal_on_drive_file_edit_event(self, data: P2DriveFileEditV1) -> None:
         """Xử lý sự kiện chỉnh sửa file trên Drive (drive.file.edit_v1)."""
         logger.debug("Drive file edit event received (drive.file.edit_v1)")
+
+    def _internal_on_drive_file_read_event(self, data: Any) -> None:
+        """Acknowledge event đọc Drive; việc ingest tài liệu đi qua pipeline riêng."""
+        logger.debug("Drive file read event ignored (drive.file.read_v1)")
 
     def _internal_on_card_action_trigger(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         """

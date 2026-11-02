@@ -188,6 +188,9 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
         # Cập nhật LarkService singleton nếu có
         try:
             from services.lark import lark_service
+            old_app_id = getattr(lark_service, "app_id", "")
+            old_secret = getattr(lark_service, "app_secret", "")
+
             lark_service.app_id = app_id_clean
             if req.app_secret and req.app_secret.strip():
                 lark_service.app_secret = req.app_secret.strip()
@@ -195,8 +198,13 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
                 app_id=app_id_clean,
                 app_secret=settings.LARK_APP_SECRET,
             )
-            # Tự động kích hoạt / tái kết nối WebSocket ngầm với credentials mới
-            lark_service.start_ws_client(background=True)
+            # Chỉ tái kết nối WebSocket ngầm nếu App ID hoặc Secret thật sự thay đổi và có đủ cặp credentials
+            current_secret = getattr(settings, "LARK_APP_SECRET", "")
+            if (old_app_id != app_id_clean or old_secret != current_secret) and app_id_clean and current_secret:
+                # Dọn thread cũ nếu cần trước khi kết nối mới
+                if hasattr(lark_service, "_ws_thread"):
+                    lark_service._ws_thread = None
+                lark_service.start_ws_client(background=True)
         except Exception as e:
             logger.debug(f"Không thể reinit LarkService runtime: {e}")
 
@@ -254,6 +262,16 @@ async def provision_base_endpoint(req: ProvisionBaseRequest):
     """Tự động khởi tạo 100% Lark Base Quản trị Doanh nghiệp qua Lark OpenAPI."""
     try:
         from services.lark.base_provision_service import base_provision_service
+        if req.admin_open_id and req.admin_open_id.strip():
+            clean_admin = req.admin_open_id.strip()
+            settings.LARK_USER_OPEN_ID = clean_admin
+            try:
+                from services.lark import lark_service
+                lark_service.known_user_open_id = clean_admin
+                if getattr(lark_service, "config", None):
+                    lark_service.config.user_open_id = clean_admin
+            except Exception:
+                pass
         record = await base_provision_service.provision_enterprise_base(
             admin_open_id=req.admin_open_id,
             tenant_key=req.tenant_key,
@@ -327,27 +345,61 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
             llm_base_url=req.llm_base_url,
             llm_model=req.llm_model,
             llm_timeout=req.llm_timeout or 60.0,
+            tenant_key=req.tenant_key,
         )
 
-        if req.app_id and req.app_id.strip():
+        clean_open_id = req.open_id.strip() if req.open_id else ""
+        if clean_open_id:
+            # 1. Cập nhật settings runtime & lark_service singleton
+            settings.LARK_USER_OPEN_ID = clean_open_id
+            try:
+                from services.lark import lark_service
+                lark_service.known_user_open_id = clean_open_id
+                if getattr(lark_service, "config", None):
+                    lark_service.config.user_open_id = clean_open_id
+            except Exception as le:
+                logger.debug(f"Không thể cập nhật LarkService known_user_open_id: {le}")
+
+            # 2. Cập nhật admin_open_id vào tenants collection nếu có tenant_key
+            eff_tenant = req.tenant_key or getattr(record, "tenant_key", None)
+            if eff_tenant:
+                try:
+                    from database.db import upsert_tenant_config
+                    await upsert_tenant_config({
+                        "tenant_key": eff_tenant,
+                        "admin_open_id": clean_open_id,
+                    })
+                except Exception as te:
+                    logger.debug(f"Không thể cập nhật admin_open_id vào tenant '{eff_tenant}': {te}")
+
+            # 3. Lưu cấu hình admin vào system_config để duy trì sau khởi động lại
+            try:
+                coll = get_system_config_collection()
+                await coll.update_one(
+                    {"config_key": "lark_admin_config"},
+                    {"$set": {
+                        "config_key": "lark_admin_config",
+                        "admin_open_id": clean_open_id,
+                        "user_name": req.user_name or getattr(record, "user_name", "") or "Lãnh đạo",
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+                    }},
+                    upsert=True,
+                )
+            except Exception as se:
+                logger.debug(f"Không thể lưu lark_admin_config vào system_config: {se}")
+
+        if req.custom_mongo_url and req.custom_mongo_url.strip():
             try:
                 coll = get_system_config_collection()
                 bot_doc: Dict[str, Any] = {
                     "config_key": "bot_credentials",
-                    "app_id": req.app_id.strip(),
+                    "custom_mongo_url": req.custom_mongo_url.strip(),
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
                 }
-                if req.app_secret and req.app_secret.strip():
-                    bot_doc["encrypted_app_secret"] = user_settings_service.encrypt_key(req.app_secret.strip())
-                    bot_doc["masked_app_secret"] = user_settings_service.mask_key(req.app_secret.strip())
-                    settings.LARK_APP_SECRET = req.app_secret.strip()
-                if req.custom_mongo_url and req.custom_mongo_url.strip():
-                    bot_doc["custom_mongo_url"] = req.custom_mongo_url.strip()
-                    settings.MONGO_URL = req.custom_mongo_url.strip()
                 await coll.update_one({"config_key": "bot_credentials"}, {"$set": bot_doc}, upsert=True)
-                settings.LARK_APP_ID = req.app_id.strip()
+                settings.MONGO_URL = req.custom_mongo_url.strip()
             except Exception as bot_err:
-                logger.debug(f"Không thể cập nhật bot_credentials trong save_settings: {bot_err}")
+                logger.debug(f"Không thể cập nhật custom_mongo_url trong save_settings: {bot_err}")
         return {
             "success": True,
             "message": "Đã lưu cấu hình trợ lý thành công!",
@@ -396,7 +448,7 @@ async def get_settings_endpoint(
         except Exception as e:
             logger.debug(f"Không thể lấy WeKnora info cho tenant {effective_tenant_key}: {e}")
 
-    record = await user_settings_service.get_user_settings(open_id)
+    record = await user_settings_service.get_user_settings(open_id, tenant_key=effective_tenant_key)
     if not record:
         return {
             "success": True,
@@ -406,7 +458,7 @@ async def get_settings_endpoint(
                 "llm_provider": "google",
                 "masked_gemini_api_key": "",
                 "llm_base_url": "",
-                "llm_model": "gemini-2.0-flash",
+                "llm_model": "gemini-2.5-flash",
                 "llm_timeout": 60.0,
                 "digest_schedule_time": "18:00",
                 "hitl_mode_enabled": True,

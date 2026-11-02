@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 from core.config import settings
 from models.lark import LarkMessage
@@ -49,6 +49,22 @@ _ws_thread: Optional[threading.Thread] = None
 _bot_started = False
 
 
+def _has_registered_custom_apps() -> bool:
+    """Return whether this server is running tenant-scoped Custom Apps."""
+    try:
+        from database.db import get_sync_db
+
+        db = get_sync_db()
+        collection = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
+        return bool(db[collection].find_one({
+            "tenant_key": {"$exists": True, "$nin": [None, ""]},
+            "status": {"$ne": "revoked"},
+        }, {"_id": 1}))
+    except Exception as exc:
+        logger.debug("Không kiểm tra được chế độ Custom App scoped: %s", exc)
+        return False
+
+
 # =============================================================================
 # 1. HÀM XỬ LÝ SỰ KIỆN TIN NHẮN TỪ LARK (CORE DISPATCHER)
 # =============================================================================
@@ -61,36 +77,49 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
       3. Điều phối câu lệnh điều hành của Chủ nhân trong DM 1-1 (owner_command_handler).
       4. Điều phối tin nhắn thông thường vào Staging và Chat Pipeline / Queue (member_message_handler).
     """
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    print("\n" + "=" * 65)
-    print("🔔 [LARK EVENT] BẮT ĐƯỢC TIN NHẮN TỪ LARK:")
-    print("-" * 65)
-    print(f"🕒 Thời gian      : {now_str}")
-    print(f"💬 Cuộc trò chuyện: {msg.chat_id} (Loại: {msg.chat_type})")
-    print(f"👤 Người gửi      : {msg.sender_id} {'[CHÍNH BẠN]' if msg.is_self else '[USER KHÁC]'}")
-    print(f"🆔 Message ID     : {msg.message_id}")
-    print(f"📄 NỘI DUNG       : \"{msg.text}\"")
-    print("-" * 65)
+    from services.lark.runtime import get_current_lark_service
+    active_lark_service = get_current_lark_service(lark_service)
+    logger.info(
+        "[INGRESS] msg=%s chat=%s type=%s sender=%s owner_hint=%s text=%r",
+        msg.message_id, msg.chat_id, msg.chat_type, msg.sender_id, msg.is_self, msg.text,
+    )
 
     # 1. Bỏ qua tin nhắn từ Bot
     if msg.is_bot:
-        print(f"ℹ️ Bỏ qua tin nhắn từ Bot ứng dụng ({msg.sender_id}).")
+        logger.debug("[DROP] msg=%s reason=bot_message", msg.message_id)
         return
 
-    # 2. Xác định danh tính Chủ nhân (Lãnh đạo)
-    is_owner = bool(
-        msg.is_self
-        or (lark_service.owner_open_id and msg.sender_id == lark_service.owner_open_id)
-        or not lark_service.owner_open_id
-    )
+    # 2. Xác định danh tính Chủ nhân (Lãnh đạo) có hỗ trợ Multi-Tenant
+    tenant_admin_open_id = None
+    if msg.tenant_key:
+        tenant_admin_open_id = active_lark_service.get_tenant_admin(msg.tenant_key)
+        if not tenant_admin_open_id:
+            try:
+                from database.db import get_tenant_config
+                t_cfg = await get_tenant_config(msg.tenant_key)
+                if t_cfg and t_cfg.get("admin_open_id"):
+                    tenant_admin_open_id = t_cfg["admin_open_id"]
+                    active_lark_service.register_tenant_admin(msg.tenant_key, tenant_admin_open_id)
+            except Exception as te:
+                logger.debug(f"Không thể tra cứu admin_open_id cho tenant {msg.tenant_key}: {te}")
+
+    if tenant_admin_open_id:
+        is_owner = bool(msg.sender_id == tenant_admin_open_id)
+        if is_owner:
+            msg.is_self = True
+    else:
+        is_owner = bool(
+            msg.is_self
+            or (active_lark_service.owner_open_id and msg.sender_id == active_lark_service.owner_open_id)
+            or (msg.chat_type == "p2p" and not active_lark_service.owner_open_id)
+        )
 
     # 3. Xử lý tệp đính kèm hoặc liên kết tài liệu Lark (EDL-0010)
     if await handle_document_or_links(msg, is_owner=is_owner):
         return
 
-    # 4. Xử lý lệnh của Chủ nhân hoặc lệnh cấu hình/onboarding trong DM 1-1
-    if msg.chat_type == "p2p" or is_owner:
+    # 4. Xử lý tương tác trong DM 1-1 (P2P): chỉ kích hoạt khi nhắn riêng với Bot
+    if msg.chat_type == "p2p":
         if await handle_owner_dm_command(msg):
             return
 
@@ -109,9 +138,9 @@ def start_digest_scheduler_daemon() -> threading.Thread:
     _scheduler_stop_event.clear()
 
     def _worker():
-        last_run_date = ""
-        target_hm = (settings.DIGEST_SCHEDULE_TIME or "23:00").strip()
-        print(f"⏰ [DIGEST SCHEDULER] Đã khởi động background thread (Giờ chạy hẹn trước: {target_hm})")
+        last_run_dates: Dict[str, str] = {}
+        default_target_hm = (settings.DIGEST_SCHEDULE_TIME or "23:00").strip()
+        logger.info("[SCHEDULER] Digest scheduler started default_time=%s", default_target_hm)
 
         while not _scheduler_stop_event.is_set():
             try:
@@ -123,28 +152,66 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                 current_hm = now_vn.strftime("%H:%M")
                 today_str = get_current_digest_date()
 
-                if current_hm == target_hm and last_run_date != today_str:
-                    print(f"\n⏰ [DIGEST SCHEDULER] Đến giờ hẹn ({target_hm})! Bắt đầu tổng hợp tin nhắn trong ngày...")
-                    last_run_date = today_str
-
+                if True:
                     import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        master_digest = loop.run_until_complete(
-                            digest_service.run_scheduled_daily_digests(
-                                date=today_str,
-                                require_approval=settings.DIGEST_REQUIRE_APPROVAL,
-                            )
-                        )
-                        if master_digest and master_digest.total_groups > 0:
-                            print(f"✔ [DIGEST SCHEDULER] Hoàn tất Master Daily Digest ({master_digest.id}) cho {master_digest.total_groups} nhóm ({master_digest.total_messages} tin nhắn).")
-                        else:
-                            print(f"ℹ️ [DIGEST SCHEDULER] Không có nhóm chat nào có tin nhắn hoạt động ngày {today_str}.")
+                        async def _run_all_tenants():
+                            from database.db import get_tenant_config, get_tenants_collection
+                            active_tenants = []
+                            try:
+                                t_col = get_tenants_collection()
+                                async for t_doc in t_col.find({"status": {"$ne": "uninstalled"}}):
+                                    tk = t_doc.get("tenant_key")
+                                    if tk:
+                                        active_tenants.append(tk)
+                            except Exception as te:
+                                logger.debug(f"Không thể tra cứu danh sách tenant cho scheduler: {te}")
+
+                            if active_tenants:
+                                for tk in active_tenants:
+                                    try:
+                                        target_hm = default_target_hm
+                                        t_doc = await get_tenant_config(tk)
+                                        admin_id = t_doc.get("admin_open_id") if t_doc else None
+                                        if admin_id:
+                                            from services.user_settings_service import user_settings_service
+                                            user_cfg = await user_settings_service.get_user_settings(admin_id, tenant_key=tk)
+                                            if user_cfg and user_cfg.digest_schedule_time:
+                                                target_hm = user_cfg.digest_schedule_time
+
+                                        if current_hm != target_hm or last_run_dates.get(tk) == today_str:
+                                            continue
+
+                                        m = await digest_service.run_scheduled_daily_digests(
+                                            date=today_str,
+                                            require_approval=settings.DIGEST_REQUIRE_APPROVAL,
+                                            tenant_key=tk,
+                                        )
+                                        last_run_dates[tk] = today_str
+                                        logger.info("[SCHEDULER] tenant=%s time=%s digest=started", tk, target_hm)
+                                        if m and m.total_groups > 0:
+                                            logger.info("[SCHEDULER] tenant=%s digest=completed groups=%d messages=%d", tk, m.total_groups, m.total_messages)
+                                    except Exception as ex:
+                                        logger.error(f"Lỗi khi chạy scheduled digest cho tenant {tk}: {ex}")
+                            else:
+                                # Fallback Single-Tenant
+                                if current_hm != default_target_hm or last_run_dates.get("__single__") == today_str:
+                                    return
+                                m = await digest_service.run_scheduled_daily_digests(
+                                    date=today_str,
+                                    require_approval=settings.DIGEST_REQUIRE_APPROVAL,
+                                )
+                                last_run_dates["__single__"] = today_str
+                                if m and m.total_groups > 0:
+                                    logger.info("[SCHEDULER] digest=completed groups=%d messages=%d", m.total_groups, m.total_messages)
+
+                        loop.run_until_complete(_run_all_tenants())
                     finally:
                         loop.close()
             except Exception as e:
-                print(f"⚠️ [DIGEST SCHEDULER] Lỗi: {e}")
+                logger.error("[SCHEDULER] digest scheduler error: %s", e, exc_info=True)
 
         logger.info("Digest Scheduler đã dừng an toàn.")
 
@@ -205,14 +272,20 @@ def start_bot_service() -> None:
     # 2. Khởi động Digest Scheduler
     start_digest_scheduler_daemon()
 
-    # 3. Kiểm tra tính hợp lệ và Ping User Access Token (Chống Crash)
-    from services.auth.token_verifier import check_and_warn_token
-    token_res = check_and_warn_token(token=lark_service.user_access_token)
+    # 3. Kiểm tra token. Với nhiều Custom App, không được ping token legacy
+    # của singleton vì token thật được resolve/refresh theo từng tenant + app.
+    scoped_apps_mode = _has_registered_custom_apps()
+    if scoped_apps_mode:
+        token_res = None
+        print("🔐 TOKEN MODE: tenant-scoped Custom App (kiểm tra/refresh theo từng tenant)")
+    else:
+        from services.auth.token_verifier import check_and_warn_token
+        token_res = check_and_warn_token(token=lark_service.user_access_token)
 
     # 4. Thông tin người dùng
-    user_info = lark_service.get_current_user()
+    user_info = {} if scoped_apps_mode else lark_service.get_current_user()
     if "name" in user_info:
-        status_suffix = "" if token_res.is_valid else " ⚠️ [Chế độ An Toàn - Token hết hạn]"
+        status_suffix = "" if token_res and token_res.is_valid else " ⚠️ [Chế độ An Toàn - Token hết hạn]"
         print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}{status_suffix}")
         print(f"   - Open ID           : {user_info.get('open_id')}")
 
@@ -244,45 +317,90 @@ def start_bot_service() -> None:
         _ws_thread = lark_service.start_ws_client(background=True)
 
     # 5. Khởi động Lark Base (Bitable) Sync & Subscribe Service
-    if lark_base_service.app_token:
-        try:
-            # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
-            lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
+    try:
+        # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
+        lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
 
-            # E. Non-blocking Bootstrap: Chuyển các network call đồng bộ lúc startup sang background task
-            async def _async_bitable_bootstrap():
-                try:
-                    # A. Đăng ký subscribe sự kiện trên Lark Cloud trong threadpool
-                    sub_ok = await asyncio.to_thread(lark_base_service.subscribe_events)
-                    if sub_ok:
-                        print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {lark_base_service.app_token})")
-
-                    # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base trong threadpool
-                    sync_res = await asyncio.to_thread(lark_base_service.sync_bot_chats)
-                    items = sync_res.get("added", []) + sync_res.get("updated", [])
-                    if items:
-                        print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
-                except Exception as ex:
-                    logger.warning(f"Lỗi trong background bitable bootstrap: {ex}")
-
-                # Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
-                try:
-                    await scope_service.sync_all_groups_from_base()
-                except Exception as ex:
-                    logger.warning(f"Lỗi trong sync_all_groups_from_base: {ex}")
-
+        # E. Non-blocking Bootstrap: Chuyển các network call đồng bộ lúc startup sang background task
+        async def _async_bitable_bootstrap():
             try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_async_bitable_bootstrap())
-                if getattr(settings, "POLICY_SYNC_ENABLED", True):
-                    from services.knowledge_service import policy_sync_service
-                    loop.create_task(policy_sync_service.start_loop())
-                from services.auth_service import start_token_refresh_loop
-                loop.create_task(start_token_refresh_loop())
-            except RuntimeError:
-                pass
-        except Exception as e:
-            logger.warning(f"Lỗi khởi tạo Lark Base Service trong lifecycle: {e}")
+                from services.lark.base_provision_service import base_provision_service
+                from database.db import get_tenants_collection
+
+                # 1. Phân giải cấu hình Base đang hoạt động (MongoDB system_config / tenants)
+                active_cfg = await base_provision_service.get_active_base_config()
+                if active_cfg and active_cfg.app_token:
+                    lark_base_service.app_token = active_cfg.app_token
+                    lark_base_service.table_id = active_cfg.chat_scope_table_id
+
+                # A. Tập hợp tất cả các Base app_token cần subscribe
+                base_tokens = set()
+                if lark_base_service.app_token:
+                    base_tokens.add(lark_base_service.app_token)
+                if active_cfg and active_cfg.app_token:
+                    base_tokens.add(active_cfg.app_token)
+
+                tenant_keys = []
+                try:
+                    t_col = get_tenants_collection()
+                    async for t_doc in t_col.find({"bitable_app_token": {"$exists": True, "$ne": ""}}):
+                        btok = t_doc.get("bitable_app_token")
+                        if btok:
+                            base_tokens.add(btok)
+                        tk = t_doc.get("tenant_key")
+                        if tk:
+                            tenant_keys.append(tk)
+                except Exception as t_err:
+                    logger.debug(f"Không thể đọc danh sách tenants để subscribe Base: {t_err}")
+
+                # Đăng ký subscribe tất cả các Base trên Lark Cloud
+                for btok in base_tokens:
+                    sub_ok = await asyncio.to_thread(lark_base_service.subscribe_events, btok)
+                    if sub_ok:
+                        print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {btok})")
+
+                # C. Dọn dẹp và chuẩn hóa schema cho các Base doanh nghiệp
+                from services.lark.base_provision_service import base_provision_service
+                for tk in tenant_keys:
+                    try:
+                        await base_provision_service.repair_enterprise_base_schema(tk)
+                    except Exception as rep_err:
+                        logger.debug(f"repair schema error cho tenant {tk}: {rep_err}")
+
+                # D. Đồng bộ chính sách ban đầu cho từng tenant
+                from services.knowledge.policy_sync import policy_sync_service
+                for tk in tenant_keys:
+                    try:
+                        await policy_sync_service.sync_policies(force=True, tenant_key=tk)
+                    except Exception as pol_err:
+                        logger.debug(f"policy sync error cho tenant {tk}: {pol_err}")
+
+                # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base trong threadpool
+                sync_res = await asyncio.to_thread(lark_base_service.sync_bot_chats)
+                items = sync_res.get("added", []) + sync_res.get("updated", [])
+                if items:
+                    print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
+            except Exception as ex:
+                logger.warning(f"Lỗi trong background bitable bootstrap: {ex}")
+
+            # Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
+            try:
+                await scope_service.sync_all_groups_from_base()
+            except Exception as ex:
+                logger.warning(f"Lỗi trong sync_all_groups_from_base: {ex}")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_async_bitable_bootstrap())
+            if getattr(settings, "POLICY_SYNC_ENABLED", True):
+                from services.knowledge_service import policy_sync_service
+                loop.create_task(policy_sync_service.start_loop())
+            from services.auth_service import start_token_refresh_loop
+            loop.create_task(start_token_refresh_loop())
+        except RuntimeError:
+            pass
+    except Exception as e:
+        logger.warning(f"Lỗi khởi tạo Lark Base Service trong lifecycle: {e}")
 
     _bot_started = True
     logger.info("✔ Lark Bot Service đã sẵn sàng!")

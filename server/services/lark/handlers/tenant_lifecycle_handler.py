@@ -15,6 +15,7 @@ Chịu trách nhiệm:
 from __future__ import annotations
 
 import logging
+import inspect
 from typing import Any, Dict, Optional
 
 from core.config import settings
@@ -84,14 +85,27 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
 
     try:
         col = get_tenants_collection()
-        await col.update_one(
-            {"tenant_key": tenant_key},
-            {
-                "$set": record,
-                "$setOnInsert": {"created_at": get_vietnam_now_iso()},
-            },
-            upsert=True,
-        )
+        existing = None
+        if tenant_key:
+            finder = getattr(col, "find_one", None)
+            if finder:
+                found = finder({"tenant_key": tenant_key})
+                existing = await found if inspect.isawaitable(found) else found
+        if normalized_status == "active" and isinstance(existing, dict) and existing.get("status") in {"ready", "provisioning"}:
+            logger.info(
+                "[TENANT LIFECYCLE] Bỏ qua provisioning lặp cho tenant '%s' (status=%s)",
+                tenant_key,
+                existing.get("status"),
+            )
+            return True
+        # Với active tenant, chỉ ghi một lần sau khi provision xong để tránh trạng thái
+        # active giả và giữ event handler idempotent. Các trạng thái khác ghi ngay.
+        if normalized_status != "active":
+            await col.update_one(
+                {"tenant_key": tenant_key},
+                {"$set": record, "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
+                upsert=True,
+            )
         logger.info(
             f"✔ [TENANT LIFECYCLE] Doanh nghiệp '{tenant_key}' đã ghi nhận trạng thái: "
             f"'{normalized_status}' (Sự kiện: {event_type})"
@@ -111,6 +125,18 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                 await base_provision_service.provision_enterprise_base(
                     admin_open_id=operator_id or None,
                     tenant_key=tenant_key,
+                )
+
+                provisioned_tenant_id = (
+                    tenant_cfg.get("weknora_tenant_id") if isinstance(tenant_cfg, dict)
+                    else getattr(tenant_cfg, "weknora_tenant_id", None)
+                )
+                ready_status = "ready" if isinstance(provisioned_tenant_id, (str, int)) and provisioned_tenant_id else "active"
+                await col.update_one(
+                    {"tenant_key": tenant_key},
+                    {"$set": {**record, "status": ready_status, "ready_at": get_vietnam_now_iso() if ready_status == "ready" else None},
+                     "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
+                    upsert=True,
                 )
 
                 # Gửi Thẻ tương tác Chào mừng & Bàn giao tài nguyên cho Admin (EDL-0021)
@@ -139,6 +165,13 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                         logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi thông điệp bàn giao WeKnora (text fallback) tới Admin ({operator_id})")
             except Exception as prov_err:
                 logger.error(f"Lỗi khi tự động cấp phát tài nguyên cho tenant {tenant_key}: {prov_err}", exc_info=True)
+                await col.update_one(
+                    {"tenant_key": tenant_key},
+                    {"$set": {**record, "status": "provisioning_failed", "provisioning_error": str(prov_err), "updated_at": get_vietnam_now_iso()},
+                     "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
+                    upsert=True,
+                )
+                return False
 
         return True
     except Exception as e:

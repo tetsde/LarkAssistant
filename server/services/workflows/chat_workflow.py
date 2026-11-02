@@ -52,15 +52,171 @@ def _resolve_dep(name: str, default_val: Any) -> Any:
 
 
 def _get_lark_service():
+    # Queue workers/background tasks may not inherit the ingress ContextVar.
+    # Prefer an explicitly bound runtime service before compatibility shims.
+    from services.lark.runtime import get_current_lark_service
+    runtime_service = get_current_lark_service()
+    if runtime_service is not None:
+        return runtime_service
     shim = sys.modules.get("services.chat_service")
     if shim and hasattr(shim, "lark_service"):
         return shim.lark_service
     from services.lark import lark_service
-    return lark_service
+    return get_current_lark_service(lark_service)
 
 
 # Giới hạn số lượng tác vụ gọi LLM đồng thời trên toàn server
 GLOBAL_LLM_SEMAPHORE = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_CHAT_PIPELINES", 3))
+
+
+def _sync_runtime_admin_open_id(open_id: str, lark_svc: Any = None) -> None:
+    """Đồng bộ ngay tức thì Open ID vừa tìm được vào settings và singleton LarkService."""
+    if not open_id or open_id == "ou_admin_fallback":
+        return
+    settings.LARK_USER_OPEN_ID = open_id
+    if lark_svc:
+        try:
+            lark_svc.known_user_open_id = open_id
+            if hasattr(lark_svc, "config") and lark_svc.config:
+                lark_svc.config.user_open_id = open_id
+        except Exception:
+            pass
+
+
+async def resolve_effective_owner_open_id(
+    lark_svc: Any = None,
+    tenant_key: Optional[str] = None,
+    chat_scope_record: Optional[Any] = None,
+    sender_open_id: Optional[str] = None,
+) -> str:
+    """
+    Xác định open_id của chủ nhân/admin linh hoạt qua nhiều nguồn:
+      1. lark_service.owner_open_id hoặc lark_service.known_user_open_id
+      2. settings.LARK_USER_OPEN_ID
+      3. Tra cứu từ MongoDB tenants collection (admin_open_id) theo tenant_key
+      4. Tra cứu từ MongoDB user_settings (bản ghi cấu hình từ Onboarding Screen Guide)
+      5. Tra cứu từ MongoDB system_config (lark_admin_config hoặc lark_base_config.provisioned_by)
+      6. Tra cứu từ MongoDB auth_tokens (primary_user_token)
+      7. Tra cứu từ danh sách admins trong chat_scope_record
+      8. Fallback sang sender_open_id nếu bắt đầu bằng ou_
+      9. Fallback an toàn 'ou_admin_fallback' thay vì gây crash pipeline
+    """
+    # 1. Với tenant-scoped runtime, phải lấy open_id từ user token của đúng
+    # Custom App trước. open_id của Lark có thể khác giữa các App; dùng
+    # settings/tenants/global token trước sẽ gây lỗi "open_id cross app".
+    if lark_svc:
+        if tenant_key and getattr(lark_svc, "user_access_token", None) and hasattr(lark_svc, "get_current_user"):
+            try:
+                curr_user = lark_svc.get_current_user()
+                if isinstance(curr_user, dict):
+                    scoped_user_id = curr_user.get("open_id") or curr_user.get("user_id")
+                    if scoped_user_id and isinstance(scoped_user_id, str) and scoped_user_id.strip():
+                        return scoped_user_id.strip()
+            except Exception as exc:
+                logger.debug("Không lấy được open_id theo runtime App của tenant %s: %s", tenant_key, exc)
+
+        owner = getattr(lark_svc, "owner_open_id", None)
+        if owner and isinstance(owner, str) and owner.strip():
+            return owner.strip()
+        known = getattr(lark_svc, "known_user_open_id", None)
+        if known and isinstance(known, str) and known.strip():
+            return known.strip()
+        if hasattr(lark_svc, "get_current_user"):
+            try:
+                curr_user = lark_svc.get_current_user()
+                if isinstance(curr_user, dict):
+                    u_id = curr_user.get("open_id") or curr_user.get("user_id")
+                    if u_id and isinstance(u_id, str) and u_id.strip():
+                        return u_id.strip()
+            except Exception:
+                pass
+
+    # 2. settings.LARK_USER_OPEN_ID
+    if getattr(settings, "LARK_USER_OPEN_ID", None) and settings.LARK_USER_OPEN_ID.strip():
+        resolved = settings.LARK_USER_OPEN_ID.strip()
+        if lark_svc and hasattr(lark_svc, "known_user_open_id"):
+            lark_svc.known_user_open_id = resolved
+        return resolved
+
+    # 3. Tra cứu tenants collection
+    eff_tenant = tenant_key or get_current_tenant_key()
+    try:
+        from database.db import get_tenants_collection
+        t_coll = get_tenants_collection()
+        if eff_tenant:
+            tdoc = await t_coll.find_one({"tenant_key": eff_tenant})
+            if tdoc and tdoc.get("admin_open_id") and str(tdoc["admin_open_id"]).strip():
+                resolved = str(tdoc["admin_open_id"]).strip()
+                _sync_runtime_admin_open_id(resolved, lark_svc)
+                return resolved
+        any_t = await t_coll.find_one({"admin_open_id": {"$exists": True, "$ne": ""}})
+        if any_t and any_t.get("admin_open_id") and str(any_t["admin_open_id"]).strip():
+            resolved = str(any_t["admin_open_id"]).strip()
+            _sync_runtime_admin_open_id(resolved, lark_svc)
+            return resolved
+    except Exception as e:
+        logger.debug(f"Không thể tra cứu admin_open_id từ tenants: {e}")
+
+    # 4. Tra cứu user_settings collection (được lưu từ Screen Guide Onboarding)
+    try:
+        from database.db import get_user_settings_collection
+        us_coll = get_user_settings_collection()
+        us_doc = await us_coll.find_one(
+            {"open_id": {"$exists": True, "$ne": ""}},
+            sort=[("updated_at", -1)],
+        )
+        if us_doc and us_doc.get("open_id") and str(us_doc["open_id"]).strip():
+            resolved = str(us_doc["open_id"]).strip()
+            _sync_runtime_admin_open_id(resolved, lark_svc)
+            return resolved
+    except Exception as e:
+        logger.debug(f"Không thể tra cứu open_id từ user_settings: {e}")
+
+    # 5. Tra cứu system_config
+    try:
+        from database.db import get_system_config_collection
+        sc_coll = get_system_config_collection()
+        admin_cfg = await sc_coll.find_one({"config_key": "lark_admin_config"})
+        if admin_cfg and admin_cfg.get("admin_open_id") and str(admin_cfg["admin_open_id"]).strip():
+            resolved = str(admin_cfg["admin_open_id"]).strip()
+            _sync_runtime_admin_open_id(resolved, lark_svc)
+            return resolved
+        base_cfg = await sc_coll.find_one({"config_key": "lark_base_config"})
+        if base_cfg and base_cfg.get("provisioned_by") and str(base_cfg["provisioned_by"]).strip():
+            resolved = str(base_cfg["provisioned_by"]).strip()
+            _sync_runtime_admin_open_id(resolved, lark_svc)
+            return resolved
+    except Exception as e:
+        logger.debug(f"Không thể tra cứu từ system_config: {e}")
+
+    # 6. Tra cứu auth_tokens
+    try:
+        from database.db import get_auth_collection
+        auth_coll = get_auth_collection()
+        auth_doc = await auth_coll.find_one({"_id": "primary_user_token"})
+        if auth_doc and auth_doc.get("open_id") and str(auth_doc["open_id"]).strip():
+            resolved = str(auth_doc["open_id"]).strip()
+            _sync_runtime_admin_open_id(resolved, lark_svc)
+            return resolved
+    except Exception as e:
+        logger.debug(f"Không thể tra cứu từ auth_tokens: {e}")
+
+    # 7. Chat Scope admins
+    if chat_scope_record and getattr(chat_scope_record, "admins", None):
+        admins = chat_scope_record.admins
+        if isinstance(admins, list):
+            for adm in admins:
+                if isinstance(adm, str) and adm.strip().startswith("ou_"):
+                    resolved = adm.strip()
+                    _sync_runtime_admin_open_id(resolved, lark_svc)
+                    return resolved
+
+    # 8. Sender nếu bắt đầu bằng ou_
+    if sender_open_id and isinstance(sender_open_id, str) and sender_open_id.strip().startswith("ou_"):
+        return sender_open_id.strip()
+
+    # 9. Fallback an toàn
+    return "ou_admin_fallback"
 
 
 # =============================================================================
@@ -227,6 +383,20 @@ async def process_memory_extraction(
                 f["status"] = "proposed"
             elif hasattr(f, "status"):
                 f.status = "proposed"
+    else:
+        facts_list = extraction_result.get("facts", []) if isinstance(extraction_result, dict) else getattr(extraction_result, "facts", [])
+        for f in facts_list:
+            if isinstance(f, dict):
+                f["status"] = "current"
+                asserted = dict(f.get("asserted_by") or {})
+                asserted.update({
+                    "user_id": asserted.get("user_id") or (asserted_by or {}).get("user_id") or "",
+                    "user_name": asserted.get("user_name") or (asserted_by or {}).get("user_name") or sender,
+                    "role": "owner",
+                })
+                f["asserted_by"] = asserted
+            elif hasattr(f, "status"):
+                f.status = "current"
 
     mongo_saved = await _save_extraction(
         extraction_result,
@@ -279,6 +449,7 @@ async def process_document_to_claims(
     scope_type: str = "chat",
     is_owner: bool = False,
     notify_realtime: bool = False,
+    tenant_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Tiếp nhận tài liệu đã chuẩn hóa (DocParseResult từ AnyDoc gRPC hoặc Lark OpenAPI)
@@ -292,6 +463,7 @@ async def process_document_to_claims(
         message_id: ID tin nhắn đính kèm tệp hoặc chứa liên kết.
         project_tag: Nhãn dự án (nếu có).
         scope_type: Loại scope ('chat' mặc định).
+        tenant_key: Mã tenant của tổ chức tiếp nhận tài liệu.
 
     Returns:
         Dict chứa thông tin thống kê: số entities, số claims mới, claims superseded.
@@ -312,14 +484,19 @@ async def process_document_to_claims(
         }
 
     msg_id = message_id or f"doc_{uuid.uuid4().hex[:8]}"
+    eff_tenant = tenant_key or get_current_tenant_key()
 
     _get_entities = _resolve_dep("get_mongo_entities", get_mongo_entities)
     _get_facts = _resolve_dep("get_mongo_facts", get_mongo_facts)
     _save_extraction = _resolve_dep("save_extraction_to_mongo", save_extraction_to_mongo)
 
     try:
-        existing_entities = await _get_entities()
-        existing_facts = await _get_facts(chat_id=chat_id, project_tag=project_tag)
+        existing_entities = await _get_entities(tenant_key=eff_tenant)
+        existing_facts = await _get_facts(
+            chat_id=chat_id,
+            project_tag=project_tag,
+            tenant_key=eff_tenant,
+        )
     except Exception as e:
         logger.error(f"Lỗi khi đọc từ MongoDB: {e}")
         existing_entities = []
@@ -353,7 +530,16 @@ async def process_document_to_claims(
         if isinstance(fact, dict):
             fact["source_doc"] = doc_result.doc_name
             fact["source_type"] = doc_result.source_type
-            if not is_owner:
+            if is_owner:
+                fact["status"] = "current"
+                asserted = dict(fact.get("asserted_by") or {})
+                asserted.update({
+                    "user_id": asserted.get("user_id") or sender_id or "",
+                    "user_name": asserted.get("user_name") or sender or "Admin",
+                    "role": "owner",
+                })
+                fact["asserted_by"] = asserted
+            else:
                 fact["status"] = "proposed"
             if doc_result.metadata.get("document_id"):
                 fact["document_id"] = doc_result.metadata["document_id"]
@@ -365,6 +551,7 @@ async def process_document_to_claims(
         chat_id=chat_id,
         project_tag=project_tag,
         scope_type=scope_type,
+        tenant_key=eff_tenant,
     )
 
     new_facts = mongo_saved.get("facts", [])
@@ -422,12 +609,16 @@ async def generate_grounded_answer(
     responder_name: Optional[str] = None,
     role: Optional[str] = None,
     max_output_tokens: int = 4096,
+    llm_client_override: Optional[Any] = None,
 ) -> str:
-    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, max 4096 tokens)."""
-    key = api_key or getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
-    if not key:
-        logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
-        return ""
+    """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, multi-provider BYOK)."""
+    client = llm_client_override or (LLMClient(api_key=api_key) if api_key else llm_client)
+    if not client.api_key and getattr(client, "provider", "google") == "google":
+        key = getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
+        if not key:
+            logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
+            return ""
+        client.api_key = key
 
     effective_role = role or getattr(settings, "LARK_USER_ROLE", "") or "CEO / Founder / CTO"
     effective_responder = responder_name or getattr(settings, "LARK_USER_NAME", "") or ""
@@ -446,7 +637,6 @@ async def generate_grounded_answer(
             query=query,
         )
 
-    client = LLMClient(api_key=api_key) if api_key else llm_client
     try:
         async with GLOBAL_LLM_SEMAPHORE:
             ans = await client.generate_text_async(
@@ -494,6 +684,34 @@ async def process_chat_pipeline(
     _scope = _resolve_dep("scope_service", scope_service)
     _draft_store = _resolve_dep("draft_store", draft_store)
     _lark = _resolve_dep("lark_service", _get_lark_service())
+    # Preserve injected/legacy clients for single-tenant callers, but never
+    # let that compatibility path override an explicitly bound runtime.
+    from services.lark.runtime import get_current_lark_service
+    bound_runtime = get_current_lark_service()
+    if bound_runtime is not None:
+        _lark = bound_runtime
+    # The debounced queue executes outside the webhook's ContextVar scope.
+    # Resolve the tenant's Custom App explicitly so owner IDs and outgoing
+    # messages use the same App that received the event.
+    if eff_tenant:
+        try:
+            from services.lark_app_service import lark_app_service
+            from services.lark.runtime import get_or_create_lark_service
+
+            app_record = await lark_app_service.get_by_tenant_key(eff_tenant)
+            if app_record:
+                _lark = await get_or_create_lark_service(app_record)
+                logger.debug(
+                    "[LARK RUNTIME] tenant=%s app=%s bound to chat pipeline",
+                    eff_tenant,
+                    app_record.get("app_id"),
+                )
+        except Exception as runtime_err:
+            logger.warning(
+                "[LARK RUNTIME] tenant=%s runtime resolve failed; using fallback client: %s",
+                eff_tenant,
+                runtime_err,
+            )
     _Composer = _resolve_dep("ContextComposer", ContextComposer)
     _process_memory = _resolve_dep("process_memory_extraction", process_memory_extraction)
     _generate_answer = _resolve_dep("generate_grounded_answer", generate_grounded_answer)
@@ -525,6 +743,7 @@ async def process_chat_pipeline(
                 speaker_name=user_name or "Thành viên",
                 speaker_id=sender or "",
                 chat_name=chat_id,
+                tenant_key=eff_tenant,
             )
         except Exception as e:
             logger.warning(f"Lỗi khi lưu Staging từ process_chat_pipeline: {e}")
@@ -611,7 +830,10 @@ async def process_chat_pipeline(
     jev_domain = "HYBRID"
     jev_domain_conf = 0.50
     try:
-        jev_result = await _jev.classify_message(clean_query)
+        jev_result = await _jev.classify_message(
+            clean_query,
+            speaker_role="owner" if is_owner else "member",
+        )
         jev_action = jev_result.get("action", "IGNORE")
         jev_confidence = jev_result.get("confidence", 0.0)
         jev_domain = jev_result.get("knowledge_domain", "HYBRID")
@@ -625,17 +847,18 @@ async def process_chat_pipeline(
         jev_domain_conf = 0.50
 
     # ── [OWNER ANTI-LOOP SHIELD] ──
-    # Nếu tin nhắn do CHÍNH CHỦ NHÂN phát ngôn trong GROUP:
-    # Tuyệt đối không sinh phản hồi để triệt tiêu 100% loop!
+    # Chủ nhân không được bot tự động reply vào chính nhóm của mình, nhưng
+    # quyền phân loại memory/ignore/reply/draft vẫn thuộc về JEV. Trước đây
+    # block này sửa kết quả JEV thành MEMORY_ONLY hoặc IGNORE, khiến mọi phát
+    # ngôn có vẻ "có tri thức" của chủ nhân đều bị lưu memory.
     if is_owner and channel == "lark_group":
-        if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
-            logger.info(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn có tri thức: Ép JEV {jev_action} -> MEMORY_ONLY (Chỉ ghi nhớ, cấm reply).")
-            print(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn: Ép {jev_action} -> MEMORY_ONLY (Chỉ bóc tách & lưu tri thức, không reply).")
-            jev_action = "MEMORY_ONLY"
-        else:
-            logger.info(f"👑 [OWNER SHIELD] Chủ nhân tán gẫu/hỏi đáp: Ép JEV {jev_action} -> IGNORE (Bỏ qua, không reply chống loop).")
-            print(f"👑 [OWNER SHIELD] Chủ nhân phát ngôn: Ép {jev_action} -> IGNORE (Bỏ qua, không reply chống loop).")
-            jev_action = "IGNORE"
+        logger.info(
+            "👑 [OWNER SHIELD] Giữ nguyên quyết định JEV=%s; chỉ tắt reply trực tiếp để chống loop.",
+            jev_action,
+        )
+        print(
+            f"👑 [OWNER SHIELD] Giữ nguyên JEV={jev_action}; không reply trực tiếp vào group."
+        )
 
     # TH1: IGNORE - Tin rác, chào hỏi vô thưởng vô phạt
     if jev_action == "IGNORE":
@@ -687,23 +910,35 @@ async def process_chat_pipeline(
         }
 
     # REPLY_ONLY và MEMORY_AND_DRAFT đều cần tạo nội dung từ context.
-    # 1. Lấy active claims (gồm cả Current và Proposed) và Entities từ MongoDB theo scope nhóm
+    # 1. Query claims theo tenant + domain scope, sau đó mới query entities
+    # thuộc các claims vừa lấy. Không mở rộng project query bằng global/project_tag.
     all_facts = []
     entity_map: Dict[str, Any] = {}
     try:
-        facts_coro = _get_facts(
-            chat_id=chat_id,
-            project_tag=proj_context_name,
-            tenant_key=eff_tenant,
-        )
-        entities_coro = _get_entities(workspace_id=None, tenant_key=eff_tenant)
-        facts_res, entities_res = await asyncio.gather(facts_coro, entities_coro, return_exceptions=True)
+        if jev_domain == "COMPANY_POLICY":
+            facts_res = await _get_facts(
+                scope_type="global",
+                tenant_key=eff_tenant,
+            )
+        else:
+            facts_res = await _get_facts(
+                chat_id=chat_id,
+                project_tag=proj_context_name if not chat_id else None,
+                tenant_key=eff_tenant,
+                strict_chat=bool(chat_id),
+            )
 
         if isinstance(facts_res, list):
             all_facts = facts_res
         elif isinstance(facts_res, Exception):
             logger.warning(f"Lỗi khi đọc facts từ MongoDB: {facts_res}")
 
+        entity_ids = list({str(f.get("entity_id")) for f in all_facts if f.get("entity_id")})
+        entities_res = await _get_entities(
+            workspace_id=None,
+            tenant_key=eff_tenant,
+            entity_ids=entity_ids or None,
+        )
         if isinstance(entities_res, list):
             entity_map = {str(e.get("id")): e for e in entities_res if isinstance(e, dict) and e.get("id")}
         elif isinstance(entities_res, Exception):
@@ -717,19 +952,25 @@ async def process_chat_pipeline(
         logger.info(f"🏛️ [Domain Separation] Câu hỏi Chính sách công ty -> Cấm nạp Project Claims ({len(all_facts)} facts bị loại bỏ).")
         active_claims = [f for f in all_facts if f.get("scope_type") == "global" and f.get("is_policy")]
     else:
-        # 2. Với câu hỏi Dự án: CHỈ nạp các facts hiện hành đã được phê duyệt chính thức (status == 'current').
-        # Tuyệt đối cấm nạp PROPOSED vào Chat Q&A để chống nói leo và rò rỉ đề xuất chưa duyệt.
-        # Đồng thời kiểm soát nghiêm ngặt Chat Scope: Chỉ nạp facts của đúng chat_id / project_tag / global.
+        # 2. Với câu hỏi Dự án: chỉ nạp facts current của đúng chat_id.
+        # project_tag chỉ là fallback khi không có chat_id.
         active_claims = [
             f for f in all_facts
             if f.get("status", "current") == "current"
             and (
-                f.get("scope_type") == "global"
-                or (chat_id and f.get("chat_id") == chat_id)
-                or (proj_context_name and f.get("project_tag") == proj_context_name)
-                or (not f.get("chat_id") and not f.get("project_tag"))
+                (chat_id and f.get("chat_id") == chat_id)
+                or (not chat_id and proj_context_name and f.get("project_tag") == proj_context_name)
             )
         ]
+
+    logger.info(
+        "[CLAIMS TRACE] tenant=%s chat=%s project=%s all_facts=%d active_claims=%d",
+        eff_tenant,
+        chat_id,
+        proj_context_name,
+        len(all_facts),
+        len(active_claims),
+    )
 
     # 2. Truy xuất các đoạn văn bản (chunks) từ WeKnora Knowledge Base theo phân quyền nhóm chat & Two-Tier Routing
     chunks = []
@@ -737,15 +978,34 @@ async def process_chat_pipeline(
         if not scope_record and chat_id:
             scope_record = await _scope.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
 
+        # Tra cứu cấu hình Tenant nếu có để định tuyến đúng Dataset WeKnora
+        tenant_cfg = None
+        weknora_tenant_id = None
+        if eff_tenant:
+            from database.db import get_tenant_config
+            tenant_cfg = await get_tenant_config(eff_tenant)
+            if tenant_cfg:
+                weknora_tenant_id = tenant_cfg.get("weknora_tenant_id")
+
         # 1. Kho dự án chuyên biệt của nhóm chat (chứa tài liệu dự án theo phân quyền)
-        project_dataset_id = scope_record.dataset_id if scope_record else (settings.WEKNORA_DATASET_ID or None)
+        project_dataset_id = (
+            (scope_record.dataset_id if scope_record and scope_record.dataset_id else None)
+            or (tenant_cfg.get("weknora_default_dataset_id") if tenant_cfg else None)
+            or settings.WEKNORA_DATASET_ID
+            or None
+        )
 
         # 2. Kho Chính Sách & Quy Định Toàn Công Ty (Sổ tay nhân viên, Code of Conduct, Policies...)
-        policy_dataset_id = settings.WEKNORA_POLICY_DATASET_ID or None
+        policy_dataset_id = (
+            (tenant_cfg.get("weknora_policy_dataset_id") if tenant_cfg else None)
+            or settings.WEKNORA_POLICY_DATASET_ID
+            or None
+        )
 
         # 3. Kho Wiki / Digest Hội thoại (nếu có cấu hình)
         wiki_dataset_id = (
             (scope_record.wiki_dataset_id if (scope_record and scope_record.wiki_dataset_id) else None)
+            or (tenant_cfg.get("weknora_wiki_dataset_id") if tenant_cfg else None)
             or settings.WEKNORA_WIKI_DATASET_ID
             or None
         )
@@ -785,6 +1045,7 @@ async def process_chat_pipeline(
                 knowledge_base_ids=global_policy_kbs,
                 knowledge_ids=None,
                 match_count=retrieve_count,
+                tenant_id=weknora_tenant_id,
             )
         elif jev_domain == "PROJECT" and project_dataset_id:
             logger.info(
@@ -795,6 +1056,7 @@ async def process_chat_pipeline(
                 knowledge_base_ids=[project_dataset_id],
                 knowledge_ids=target_knowledge_ids,
                 match_count=retrieve_count,
+                tenant_id=weknora_tenant_id,
             )
             # Fallback an toàn: Nếu tìm theo target_knowledge_ids trả về 0 chunks (do stale ID), quét dataset và để Strict Isolation lọc theo tên file
             if not chunks and target_knowledge_ids:
@@ -804,6 +1066,7 @@ async def process_chat_pipeline(
                     knowledge_base_ids=[project_dataset_id],
                     knowledge_ids=None,
                     match_count=retrieve_count,
+                    tenant_id=weknora_tenant_id,
                 )
         else:
             # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả kho dự án và kho chính sách
@@ -817,12 +1080,14 @@ async def process_chat_pipeline(
                         knowledge_base_ids=[project_dataset_id],
                         knowledge_ids=target_knowledge_ids,
                         match_count=retrieve_count,
+                        tenant_id=weknora_tenant_id,
                     ),
                     _weknora.retrieve(
                         query=clean_query,
                         knowledge_base_ids=global_policy_kbs,
                         knowledge_ids=None,
                         match_count=retrieve_count,
+                        tenant_id=weknora_tenant_id,
                     ),
                 ]
                 res_proj, res_policy = await asyncio.gather(*tasks, return_exceptions=True)
@@ -835,6 +1100,7 @@ async def process_chat_pipeline(
                         knowledge_base_ids=[project_dataset_id],
                         knowledge_ids=None,
                         match_count=retrieve_count,
+                        tenant_id=weknora_tenant_id,
                     )
                     chunks_proj = fb_res if isinstance(fb_res, list) else []
                 chunks_policy = res_policy if isinstance(res_policy, list) else []
@@ -854,6 +1120,7 @@ async def process_chat_pipeline(
                     knowledge_base_ids=[project_dataset_id],
                     knowledge_ids=target_knowledge_ids,
                     match_count=retrieve_count,
+                    tenant_id=weknora_tenant_id,
                 )
                 if not chunks and target_knowledge_ids:
                     chunks = await _weknora.retrieve(
@@ -861,6 +1128,7 @@ async def process_chat_pipeline(
                         knowledge_base_ids=[project_dataset_id],
                         knowledge_ids=None,
                         match_count=retrieve_count,
+                        tenant_id=weknora_tenant_id,
                     )
             elif global_policy_kbs:
                 chunks = await _weknora.retrieve(
@@ -868,6 +1136,7 @@ async def process_chat_pipeline(
                     knowledge_base_ids=global_policy_kbs,
                     knowledge_ids=None,
                     match_count=retrieve_count,
+                    tenant_id=weknora_tenant_id,
                 )
     except Exception as e:
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
@@ -962,6 +1231,11 @@ async def process_chat_pipeline(
         forbidden_labels=forbidden_labels,
         query=clean_query,
     )
+    logger.info(
+        "[CLAIMS TRACE] sanitized_claims=%d sanitized_chunks=%d",
+        len(clean_claims),
+        len(clean_proj_chunks),
+    )
     # Hợp nhất: Nếu câu hỏi hỏi về chính sách toàn công ty thì nạp policy_chunks
     # Nếu câu hỏi là về dự án, ưu tiên 100% clean_proj_chunks để tránh nhiễm bẩn tài liệu văn hóa / review code
     if is_explicit_policy_query:
@@ -1018,9 +1292,19 @@ async def process_chat_pipeline(
             else (scope_record.chat_name or "Dự án nội bộ")
         )
         scope_ctx_data = {
+            "chat_id": chat_id,
             "chat_name": scope_record.chat_name,
             "project_name": proj_name,
             "documents": documents,
+        }
+    elif chat_id:
+        # active_claims đã được lọc theo chat_id ở trên. Vẫn truyền scope tối
+        # thiểu để Composer không làm rơi claims chỉ vì scope record tạm thời
+        # chưa đọc được từ Mongo/Base.
+        scope_ctx_data = {
+            "chat_id": chat_id,
+            "project_name": proj_context_name or chat_id,
+            "documents": [],
         }
 
     composer = _Composer()
@@ -1029,17 +1313,26 @@ async def process_chat_pipeline(
         claims_data=clean_claims if clean_claims else None,
         query=clean_query,
         entity_map=entity_map,
+        # active_claims đã được lọc theo tenant + chat/project ở phía trên.
+        # auto_align hiện chỉ xếp hạng relevance; claim đúng scope nhưng không
+        # khớp keyword vẫn được giữ lại phía sau.
         auto_align=True,
         scope_context=scope_ctx_data,
+        tenant_key=eff_tenant,
+    )
+    logger.info(
+        "[CLAIMS TRACE] composed_claims=%s composed_chunks=%s",
+        composed.get("metadata", {}).get("num_claims", 0),
+        composed.get("metadata", {}).get("num_chunks", 0),
     )
 
-    # 4. Sinh câu trả lời Grounded QA từ Gemini (có hỗ trợ xưng hô đích danh & BYOK Key Resolver)
-    effective_api_key = None
+    # 4. Sinh câu trả lời Grounded QA từ LLM (hỗ trợ xưng hô đích danh & BYOK Resolver)
+    effective_client = None
     try:
         from services.user_settings_service import user_settings_service
-        effective_api_key = await user_settings_service.resolve_effective_llm_key(user_id=sender, chat_id=chat_id)
+        effective_client = await user_settings_service.resolve_effective_llm_client(user_id=sender, chat_id=chat_id)
     except Exception as key_err:
-        logger.debug(f"Không thể resolve BYOK key: {key_err}")
+        logger.debug(f"Không thể resolve BYOK client: {key_err}")
 
     target_user = user_name or (sender if sender and sender not in ("User", "api", "system") else None)
     answer = await _generate_answer(
@@ -1048,7 +1341,7 @@ async def process_chat_pipeline(
         user_name=target_user,
         responder_name=responder_name,
         role=role,
-        api_key=effective_api_key,
+        llm_client_override=effective_client,
     )
 
     # Fallback WeKnora chat nếu LLM answer trống
@@ -1067,16 +1360,12 @@ async def process_chat_pipeline(
     if jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
         dm_notice = None
 
-        owner_open_id = getattr(_lark, "owner_open_id", None)
-        if not owner_open_id and hasattr(_lark, "get_current_user"):
-            try:
-                curr_user = _lark.get_current_user()
-                if isinstance(curr_user, dict):
-                    owner_open_id = curr_user.get("open_id") or curr_user.get("user_id")
-            except Exception:
-                pass
-        if not owner_open_id:
-            raise RuntimeError("Thiếu LARK_USER_OPEN_ID để lưu draft chờ duyệt.")
+        owner_open_id = await resolve_effective_owner_open_id(
+            lark_svc=_lark,
+            tenant_key=eff_tenant,
+            chat_scope_record=scope_record,
+            sender_open_id=sender,
+        )
 
         await _draft_store.create(
             PendingDraft(
@@ -1113,8 +1402,18 @@ async def process_chat_pipeline(
             )
 
             try:
-                dm_notice = await _lark.send_bot_dm_to_owner(draft_card_payload)
-                logger.info(f"Đã lưu bản nháp vào cơ sở dữ liệu và gửi thẻ phê duyệt tới lãnh đạo (Message ID: {message_id})")
+                dm_notice = await _lark.send_bot_dm_to_owner(
+                    draft_card_payload,
+                    target_open_id=owner_open_id,
+                    tenant_key=eff_tenant,
+                )
+                if dm_notice and not dm_notice.get("success"):
+                    logger.warning(
+                        f"Thẻ duyệt chưa thể gửi tới DM chủ nhân ({owner_open_id}): "
+                        f"{dm_notice.get('msg') or dm_notice.get('error')}. Bản nháp vẫn được lưu an toàn trong CSDL."
+                    )
+                else:
+                    logger.info(f"Đã lưu bản nháp vào cơ sở dữ liệu và gửi thẻ phê duyệt tới lãnh đạo (Message ID: {message_id})")
             except Exception as e:
                 logger.error(f"Lỗi gửi bản nháp cho lãnh đạo: {e}")
                 dm_notice = {"error": str(e)}

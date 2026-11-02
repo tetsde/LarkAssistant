@@ -555,6 +555,7 @@ class ContextComposer:
         }
 
         matched_claims: List[NormalizedClaim] = []
+        scoped_claims: List[NormalizedClaim] = []
         matched_ids: Set[str] = set()
 
 
@@ -581,11 +582,20 @@ class ContextComposer:
                 continue
 
             # ── 1.2 Khóa theo project_tag / project_name ──
-            if target_proj and (c_proj or c_name):
+            # Khi claim đã có đúng chat_id, chat scope là nguồn xác định mạnh
+            # hơn entity name. Một tài liệu của dự án có thể chứa nhiều entity
+            # như OMNISHOP, OnePay hoặc nhân sự; không được coi các entity đó
+            # là project khác rồi loại claim hợp lệ.
+            same_target_chat = bool(target_chat_id and claim.chat_id == target_chat_id)
+            if target_proj and (c_proj or c_name) and not same_target_chat:
                 scope_str = (c_proj or c_name).lower()
                 if scope_str not in ("global", "chung", "hệ thống", "dự án", ""):
                     if target_proj not in scope_str and scope_str not in target_proj:
                         continue
+
+            # Claim đã vượt qua lớp cô lập scope. Relevance chỉ dùng để xếp hạng,
+            # không được tự động loại claim hợp lệ khỏi context.
+            scoped_claims.append(claim)
 
             # ── 2. RELEVANCE MATCHING ──
             is_matched = False
@@ -622,22 +632,30 @@ class ContextComposer:
                 matched_claims.append(claim)
                 matched_ids.add(cid)
 
-        # ── 3. SAFE SCOPED FALLBACK CHO CÂU HỎI TIẾN ĐỘ / TỔNG QUAN DỰ ÁN ──
+        # ── 3. SOFT FALLBACK: giữ claim cùng scope nhưng không match keyword ──
         if not matched_claims:
             is_general_status_query = any(
                 w in query_no_acc for w in ("tinh hinh", "tien do", "the nao", "ra sao", "thong tin", "tong quan", "ke hoach")
             )
-            if is_general_status_query:
-                # Chỉ lấy Key Facts hiện hành (CURRENT), tuyệt đối không lấy PROPOSED (EDL-0008 & EDL-0011)
+            if is_general_status_query or target_chat_id or target_proj:
+                # Chỉ fallback sang claim hiện hành. Proposed vẫn tuân thủ cơ chế duyệt.
                 overview_claims = [
-                    c for c in claims
-                    if c.status == "current" and (c.property or "").lower() in ("status", "deadline", "scope")
+                    c for c in scoped_claims
+                    if c.status == "current"
                 ]
-                return overview_claims[:3]
+                if overview_claims:
+                    return overview_claims[: self.max_claims]
             # Mặc định: Trả về rỗng [] để bảo vệ độ sạch của context khi hỏi HR / ngoài lề
             return []
 
-        return matched_claims[: self.max_claims]
+        # Match liên quan lên trước, các claim current cùng scope theo sau.
+        ranked_claims = list(matched_claims)
+        ranked_ids = {c.id for c in matched_claims}
+        ranked_claims.extend(
+            c for c in scoped_claims
+            if c.status == "current" and c.id not in ranked_ids
+        )
+        return ranked_claims[: self.max_claims]
 
     # -------------------------------------------------------------------------
     # 3. PHƯƠNG THỨC CHÍNH: COMPOSE

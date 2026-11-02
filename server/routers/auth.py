@@ -237,6 +237,24 @@ async def oauth_callback(
     if not code:
         raise HTTPException(status_code=400, detail="Thiếu tham số `code` trong callback URL!")
 
+    # 1.5 Xử lý chuyển tiếp cho luồng One-Click Setup nếu state chứa prefix 'setup_' hoặc là task của setup
+    is_setup_source = bool(
+        state and (state.startswith("setup_") or "setup" in state)
+    )
+    if is_setup_source:
+        import asyncio
+        from services.setup.one_click_setup_service import one_click_setup_service
+        eff_task_id = state.replace("setup_", "") if state.startswith("setup_") else state
+        claimed_task_id = await one_click_setup_service.claim_oauth_state(state) if state.startswith("setup_") else eff_task_id
+        if not claimed_task_id:
+            raise HTTPException(status_code=400, detail="OAuth state không hợp lệ hoặc đã được sử dụng.")
+        eff_task_id = claimed_task_id
+        logger.info(f"🚀 [ONE-CLICK SETUP] Nhận callback tại /auth/lark/callback cho task '{eff_task_id}'")
+        asyncio.create_task(
+            one_click_setup_service.run_setup_pipeline(task_id=eff_task_id, code=code, state=state)
+        )
+        return RedirectResponse(url=f"/setup?task_id={eff_task_id}")
+
     # 2. Tiến hành đổi code lấy cặp token
     try:
         result = await token_service.exchange_code_for_token(code=code)

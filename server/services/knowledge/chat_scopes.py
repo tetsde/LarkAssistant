@@ -46,13 +46,15 @@ def _get_active_scopes_col():
 
 # Ánh xạ tên trường và Field ID của Lark Base (Bitable)
 BASE_FIELD_MAP: Dict[str, List[str]] = {
-    "chat_id": ["fldMa7EqDd", "ID Group", "chat_id"],
-    "chat_name": ["fldQh1mqwW", "Dự án / Nhóm", "chat_name"],
-    "status": ["fldbk4Upv9", "Trạng thái", "status"],
-    "security_level": ["fldY4BvFLK", "Mức độ bảo mật", "security_level", "confidentiality"],
-    "forbidden_labels": ["fldsexGPII", "Nhãn cấm xem", "forbidden_labels"],
-    "allowed_labels": ["fldAYjcC5W", "Nhãn cho phép xem", "allowed_labels"],
-    "documents": ["fldHpn8M87", "Documents", "documents", "Link tài liệu", "Tài liệu", "doc_links", "Doc Links"],
+    # Field IDs hiện tại của Base "Danh mục Dự án & Nhóm chat".
+    # Giữ các ID cũ và tên cột để tương thích với các tenant/Base đã tạo trước đó.
+    "chat_id": ["fld2e3jI7n", "fldMa7EqDd", "Chat ID", "ID Group", "chat_id"],
+    "chat_name": ["fld83CoUi0", "fldQh1mqwW", "Text", "Tên dự án", "Dự án / Nhóm", "chat_name", "Tên nhóm"],
+    "status": ["fldbk4Upv9", "Trạng thái hoạt động", "Trạng thái", "status"],
+    "security_level": ["fldY4BvFLK", "Cấp độ bảo mật", "Mức độ bảo mật", "security_level", "confidentiality"],
+    "forbidden_labels": ["fldsexGPII", "Nhãn cấm xem", "Forbidden Keywords", "forbidden_labels"],
+    "allowed_labels": ["fldAYjcC5W", "Nhãn cho phép xem", "Allowed Labels", "allowed_labels"],
+    "documents": ["fldLOaKxBH", "fldHpn8M87", "Danh mục tài liệu", "Documents", "documents", "Link tài liệu", "Tài liệu", "doc_links", "Doc Links"],
     "dataset_id": ["fldKBId", "Knowledge Base ID", "dataset_id"],
     "wiki_dataset_id": ["fldWikiKB", "Wiki KB", "wiki_dataset_id", "wiki_kb_id"],
     "project_tag": ["fldProjTag", "Mã dự án", "Project Tag", "project_tag"],
@@ -222,6 +224,11 @@ class ScopeService:
             coll = _get_active_scopes_col()
             query = inject_tenant_filter({"chat_id": chat_id}, tenant_key)
             doc = await coll.find_one(query)
+            if not doc and tenant_key:
+                # Fallback tự động sửa lỗi bản ghi cũ chưa gắn tenant_key
+                doc = await coll.find_one({"chat_id": chat_id})
+                if doc and not doc.get("tenant_key"):
+                    await coll.update_one({"_id": doc["_id"]}, {"$set": {"tenant_key": tenant_key}})
             if doc:
                 return ChatScopeRecord(**doc)
             return None
@@ -300,9 +307,10 @@ class ScopeService:
         operator_name: str = "",
         chat_name: str = "",
         project_tag: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[ChatScopeRecord]]:
         """
-        Thiết lập liên kết Nhóm chat với một Knowledge Base WeKnora.
+        Thiết lập liên kết Nhóm chat với một Knowledge Base WeKnora (hỗ trợ tenant_key).
         Quy trình:
           1. Kiểm tra quyền Admin của người thực hiện (Chặn nhân viên phá hoại).
           2. Xác thực dataset_id với WeKnora API và lấy tên Knowledge Base.
@@ -312,6 +320,7 @@ class ScopeService:
             return False, "❌ chat_id và dataset_id không được để trống.", None
 
         clean_dataset_id = dataset_id.strip()
+        eff_tenant = tenant_key or get_current_tenant_key()
 
         # 1. Kiểm tra quyền Admin
         if not self.is_admin_user(operator_open_id):
@@ -340,7 +349,8 @@ class ScopeService:
         try:
             now_iso = get_vietnam_now_iso()
             coll = _get_active_scopes_col()
-            existing = await coll.find_one({"chat_id": chat_id})
+            query = inject_tenant_filter({"chat_id": chat_id}, eff_tenant)
+            existing = await coll.find_one(query)
 
             created_at = existing.get("created_at", now_iso) if existing else now_iso
             security_level = existing.get("security_level", "Nội bộ") if existing else "Nội bộ"
@@ -356,18 +366,20 @@ class ScopeService:
                 security_level=security_level,
                 updated_by=operator_open_id,
                 updated_by_name=operator_name or "Admin",
+                tenant_key=eff_tenant or (existing.get("tenant_key") if existing else None),
                 created_at=created_at,
                 updated_at=now_iso,
             )
 
             await coll.update_one(
-                {"chat_id": chat_id},
+                query,
                 {"$set": scope_rec.to_dict()},
                 upsert=True,
             )
 
             log_msg = f"✔ Đã liên kết nhóm thành công với Knowledge Base '{dataset_name}' (ID: {clean_dataset_id})!"
-            logger.info(f"[ChatScope] {log_msg} cho chat {chat_id} bởi {operator_open_id}")
+            logger.info(f"[ChatScope] {log_msg} cho chat {chat_id} (tenant: {eff_tenant}) bởi {operator_open_id}")
+            return True, log_msg, scope_rec
             return True, log_msg, scope_rec
 
         except Exception as e:
@@ -393,7 +405,11 @@ class ScopeService:
 
         try:
             coll = _get_active_scopes_col()
-            res = await coll.delete_one({"chat_id": chat_id})
+            eff_tenant = get_current_tenant_key()
+            delete_query = inject_tenant_filter({"chat_id": chat_id}, eff_tenant)
+            if eff_tenant and "tenant_key" not in delete_query:
+                return False, "❌ Thiếu tenant context, không thể xóa ChatScope an toàn."
+            res = await coll.delete_one(delete_query)
             if res.deleted_count > 0:
                 return (
                     True,
@@ -408,11 +424,13 @@ class ScopeService:
             logger.error(f"Lỗi khi xóa ChatScope cho chat {chat_id}: {e}", exc_info=True)
             return False, f"❌ Lỗi khi gỡ bỏ Knowledge Base: {e}"
 
-    async def list_all_scopes(self) -> List[ChatScopeRecord]:
-        """Lấy danh sách tất cả các nhóm chat đã được cấu hình KB riêng."""
+    async def list_all_scopes(self, tenant_key: Optional[str] = None) -> List[ChatScopeRecord]:
+        """Lấy danh sách tất cả các nhóm chat đã được cấu hình KB riêng (hỗ trợ lọc theo tenant_key)."""
+        eff_tenant = tenant_key or get_current_tenant_key()
         try:
             coll = _get_active_scopes_col()
-            cursor = coll.find().sort("updated_at", -1)
+            query = inject_tenant_filter({}, eff_tenant)
+            cursor = coll.find(query).sort("updated_at", -1)
             docs = await cursor.to_list(length=100)
             return [ChatScopeRecord(**d) for d in docs]
         except Exception as e:
@@ -453,6 +471,16 @@ class ScopeService:
 
         scope = await self.get_scope_by_chat_id(chat_id)
         effective_dataset_id, _ = await self.get_kb_info_for_chat(chat_id)
+
+        weknora_tenant_id = None
+        eff_tk = (scope.tenant_key if scope else None) or get_current_tenant_key()
+        if eff_tk:
+            from database.db import get_tenant_config
+            t_cfg = await get_tenant_config(eff_tk)
+            if t_cfg:
+                weknora_tenant_id = t_cfg.get("weknora_tenant_id")
+                if not effective_dataset_id or effective_dataset_id == settings.WEKNORA_DATASET_ID:
+                    effective_dataset_id = t_cfg.get("weknora_default_dataset_id") or effective_dataset_id
 
         from services.knowledge.doc_parser import doc_parser_service
 
@@ -508,6 +536,7 @@ class ScopeService:
                                 file_bytes=doc_bytes,
                                 dataset_id=effective_dataset_id,
                                 mime_type="text/markdown",
+                                tenant_id=weknora_tenant_id,
                             )
                             k_id = upload_res.get("knowledge_id", "")
                             doc_summary = upload_res.get("summary")
@@ -537,6 +566,7 @@ class ScopeService:
                                     sender_id=operator_open_id,
                                     project_tag=scope.project_tag if scope else None,
                                     is_owner=True,
+                                    tenant_key=eff_tk,
                                 )
                                 total_claims_count += claims_res.get("new_claims_count", 0)
                             except Exception as ce:
@@ -564,6 +594,7 @@ class ScopeService:
                                 file_bytes=doc_bytes,
                                 dataset_id=effective_dataset_id,
                                 mime_type="text/markdown",
+                                tenant_id=weknora_tenant_id,
                             )
                             k_id = upload_res.get("knowledge_id", "")
                             doc_summary = upload_res.get("summary")
@@ -592,6 +623,7 @@ class ScopeService:
                                     sender_id=operator_open_id,
                                     project_tag=scope.project_tag if scope else None,
                                     is_owner=True,
+                                    tenant_key=eff_tk,
                                 )
                                 total_claims_count += claims_res.get("new_claims_count", 0)
                             except Exception as ce:
@@ -658,6 +690,8 @@ class ScopeService:
         self,
         record: Any,
         target_dataset_id: Optional[str] = None,
+        tenant_key_override: Optional[str] = None,
+        tenant_config_override: Optional[Dict[str, Any]] = None,
     ) -> Optional[ChatScopeRecord]:
         """
         Đồng bộ 1 bản ghi cấu hình nhóm từ Lark Base sang MongoDB & WeKnora:
@@ -695,13 +729,61 @@ class ScopeService:
         forbidden_labels = _extract_labels(_get_base_field(raw_fields, "forbidden_labels"))
         allowed_labels = _extract_labels(_get_base_field(raw_fields, "allowed_labels"))
 
-        # 5. Xác định Dataset ID & Wiki Dataset ID
-        effective_dataset_id = target_dataset_id or settings.WEKNORA_DATASET_ID or ""
+        # 5. Xác định Dataset ID, Wiki Dataset ID & Tenant Context
+        # Base webhook có thể không gửi tenant_key trong header (đặc biệt với
+        # Custom App). Khi đó caller phải truyền tenant đã resolve từ
+        # bitable_app_token/table_id; không được phụ thuộc vào ContextVar của
+        # task webhook.
+        eff_tenant = tenant_key_override or get_current_tenant_key()
+        tenant_cfg = tenant_config_override
+        from database.db import get_tenant_config, get_tenants_collection
+        if tenant_cfg and not eff_tenant:
+            eff_tenant = tenant_cfg.get("tenant_key")
+        if not tenant_cfg and eff_tenant:
+            tenant_cfg = await get_tenant_config(eff_tenant)
+
+        # Nếu chưa có tenant_cfg từ context, tra cứu theo Base app_token hoặc Chat ID
+        if not tenant_cfg:
+            try:
+                t_col = get_tenants_collection()
+                from services.lark.bitable import lark_base_service
+                if lark_base_service.app_token:
+                    tenant_cfg = await t_col.find_one({"bitable_app_token": lark_base_service.app_token})
+                if not tenant_cfg and chat_id:
+                    existing_s = await self.get_scope_by_chat_id(chat_id)
+                    if existing_s and existing_s.tenant_key:
+                        tenant_cfg = await get_tenant_config(existing_s.tenant_key)
+            except Exception as t_err:
+                logger.debug(f"Không thể tra cứu tenant_cfg phụ: {t_err}")
+
+        weknora_tenant_id = None
+        if tenant_cfg:
+            weknora_tenant_id = tenant_cfg.get("weknora_tenant_id")
+            if not target_dataset_id:
+                target_dataset_id = tenant_cfg.get("weknora_default_dataset_id") or tenant_cfg.get("weknora_wiki_dataset_id")
+
+        if not weknora_tenant_id:
+            logger.error(
+                "❌ [ChatScope Sync] Thiếu weknora_tenant_id cho chat=%s, dataset=%s; "
+                "WeKnora sẽ từ chối upload bằng TENANT_REQUIRED.",
+                chat_id,
+                target_dataset_id or settings.WEKNORA_DATASET_ID,
+            )
+        else:
+            logger.info(
+                "🔐 [ChatScope Sync] WeKnora routing: tenant_id=%s, dataset=%s, lark_tenant=%s",
+                weknora_tenant_id,
+                target_dataset_id or settings.WEKNORA_DATASET_ID,
+                eff_tenant or "<resolved-from-base>",
+            )
+
+        raw_kb_field = _extract_text_field(_get_base_field(raw_fields, "dataset_id") or _get_base_field(raw_fields, "knowledge_base_id"))
+        effective_dataset_id = raw_kb_field or target_dataset_id or settings.WEKNORA_DATASET_ID or ""
         if "," in effective_dataset_id:
             effective_dataset_id = effective_dataset_id.split(",")[0].strip()
 
         raw_wiki = _extract_text_field(_get_base_field(raw_fields, "wiki_dataset_id"))
-        wiki_dataset_id = raw_wiki or settings.WEKNORA_WIKI_DATASET_ID or ""
+        wiki_dataset_id = raw_wiki or (tenant_cfg.get("weknora_wiki_dataset_id") if tenant_cfg else None) or settings.WEKNORA_WIKI_DATASET_ID or ""
 
         # 6. Đọc tài liệu đính kèm & liên kết Lark Docs từ trường Documents
         docs_val = _get_base_field(raw_fields, "documents")
@@ -750,6 +832,7 @@ class ScopeService:
                             file_bytes=file_bytes,
                             dataset_id=effective_dataset_id,
                             mime_type=mime_type,
+                            tenant_id=weknora_tenant_id,
                         )
                         k_id = upload_res.get("knowledge_id", "")
                         doc_summary = upload_res.get("summary")
@@ -760,7 +843,7 @@ class ScopeService:
 
             if k_id and not doc_summary:
                 try:
-                    doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id)
+                    doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id, tenant_id=weknora_tenant_id)
                     if doc_info and doc_info.get("summary"):
                         doc_summary = doc_info["summary"]
                 except Exception as e:
@@ -826,6 +909,7 @@ class ScopeService:
                                             file_bytes=doc_bytes,
                                             dataset_id=effective_dataset_id,
                                             mime_type="text/markdown",
+                                            tenant_id=weknora_tenant_id,
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
@@ -843,6 +927,7 @@ class ScopeService:
                                             file_bytes=doc_bytes,
                                             dataset_id=effective_dataset_id,
                                             mime_type="text/markdown",
+                                            tenant_id=weknora_tenant_id,
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
@@ -855,6 +940,7 @@ class ScopeService:
                                             file_name=doc_name,
                                             file_bytes=file_bytes,
                                             dataset_id=effective_dataset_id,
+                                            tenant_id=weknora_tenant_id,
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
@@ -863,7 +949,7 @@ class ScopeService:
 
                         if k_id and not doc_summary:
                             try:
-                                doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id)
+                                doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id, tenant_id=weknora_tenant_id)
                                 if doc_info and doc_info.get("summary"):
                                     doc_summary = doc_info["summary"]
                             except Exception:
@@ -919,11 +1005,18 @@ class ScopeService:
                             file_bytes=doc_bytes,
                             dataset_id=effective_dataset_id,
                             mime_type="text/markdown",
+                            tenant_id=weknora_tenant_id,
                         )
                         k_id = upload_res.get("knowledge_id", "")
                         doc_summary = upload_res.get("summary")
                         if k_id:
                             logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp Lark Doc thành công: knowledge_id={k_id}")
+                        elif not upload_res.get("success", False):
+                            logger.error(
+                                "❌ [ChatScope Sync] WeKnora từ chối nạp Lark Doc '%s': %s",
+                                doc_name,
+                                upload_res.get("error") or upload_res,
+                            )
                     else:
                         err_msg = doc_res.error if doc_res else "Phân giải tài liệu không thành công"
                         logger.warning(f"⚠️ [ChatScope Sync] Không thể phân giải Lark {link_type} ({token}): {err_msg}")
@@ -932,7 +1025,7 @@ class ScopeService:
 
             if k_id and not doc_summary:
                 try:
-                    doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id)
+                    doc_info = await _get_active_weknora().get_document_info(effective_dataset_id, k_id, tenant_id=weknora_tenant_id)
                     if doc_info and doc_info.get("summary"):
                         doc_summary = doc_info["summary"]
                 except Exception as e:
@@ -956,6 +1049,8 @@ class ScopeService:
         created_at = existing_scope.created_at if existing_scope else now_iso
         effective_project_tag = raw_project_tag or (existing_scope.project_tag if existing_scope else None)
 
+        resolved_tenant_key = eff_tenant or (tenant_cfg.get("tenant_key") if tenant_cfg else None)
+
         scope_rec = ChatScopeRecord(
             chat_id=chat_id,
             chat_name=chat_name,
@@ -970,6 +1065,7 @@ class ScopeService:
             documents=synced_docs,
             knowledge_ids=list(dict.fromkeys(knowledge_ids)),
             record_id=rec_id,
+            tenant_key=resolved_tenant_key,
             updated_by="larkbase_sync",
             updated_by_name="Lark Base Auto-Sync",
             created_at=created_at,
@@ -1032,27 +1128,69 @@ class ScopeService:
                 return
 
             table_id = getattr(event, "table_id", "")
+            file_token = getattr(event, "file_token", "")
             action_list = getattr(event, "action_list", []) or []
             record_ids = [getattr(a, "record_id", "") for a in action_list if getattr(a, "record_id", "")]
             if not record_ids:
                 return
 
+            # Tra cứu tenant sở hữu file_token hoặc table_id này
+            tenant = None
+            try:
+                from database.db import get_tenants_collection
+                t_col = get_tenants_collection()
+                tenant = await t_col.find_one({"$or": [
+                    {"bitable_app_token": file_token},
+                    {"company_policy_table_id": table_id},
+                    {"chat_scope_table_id": table_id},
+                ]})
+            except Exception as t_lookup_err:
+                logger.debug(f"Không thể tra cứu tenant cho bitable change: {t_lookup_err}")
+
+            is_policy_table = False
+            if table_id and (
+                table_id == settings.LARK_BASE_POLICY_TABLE_ID
+                or (tenant and tenant.get("company_policy_table_id") == table_id)
+            ):
+                is_policy_table = True
+
             # Kiểm tra nếu sự kiện xuất phát từ Bảng Chính Sách Công Ty
-            if table_id and table_id == settings.LARK_BASE_POLICY_TABLE_ID:
+            if is_policy_table:
                 logger.info(f"🏛️ [Bitable Realtime Event] Phát hiện thay đổi trong Bảng Chính Sách ({table_id}) -> Kích hoạt Policy Sync!")
                 from services.knowledge.policy_sync import policy_sync_service
-                await policy_sync_service.sync_policies()
+                await policy_sync_service.sync_policies(
+                    tenant_key=tenant.get("tenant_key") if tenant else None,
+                    force=True,
+                )
                 return
 
-            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi, tiến hành đồng bộ: {record_ids}")
+            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}'), tiến hành đồng bộ: {record_ids}")
             from services.lark.bitable import lark_base_service
+            if file_token:
+                lark_base_service.app_token = file_token
+            if table_id:
+                lark_base_service.table_id = table_id
+
+            target_ds_id = tenant.get("weknora_default_dataset_id") if tenant else None
+
             records = await lark_base_service.aget_all_records(use_tenant_token=True)
             record_map = {r.record_id: r for r in records}
 
             for rid in record_ids:
                 target_record = record_map.get(rid)
                 if target_record:
-                    await self.sync_group_from_base_record(target_record)
+                    await self.sync_group_from_base_record(
+                        target_record,
+                        target_dataset_id=target_ds_id,
+                        tenant_key_override=tenant.get("tenant_key") if tenant else None,
+                        tenant_config_override=tenant,
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ [Bitable Realtime Event] Không tìm thấy record %s trong bảng %s để đồng bộ.",
+                        rid,
+                        table_id,
+                    )
         except Exception as e:
             logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
 

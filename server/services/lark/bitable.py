@@ -58,10 +58,20 @@ if not logger.handlers:
 
 VIETNAM_TZ = timezone(timedelta(hours=7))
 
-# Tên cột mặc định trong Lark Base
-DEFAULT_COL_CHAT_ID = "ID Group"
-DEFAULT_COL_PROJECT_NAME = "Dự án / Nhóm"
+# Tên cột mặc định trong Lark Base (Hỗ trợ tương thích ngược)
+DEFAULT_COL_CHAT_ID = "Chat ID"
+DEFAULT_COL_PROJECT_NAME = "Tên dự án"
 DEFAULT_COL_KB_ID = "Knowledge Base ID"
+
+# Danh sách bí danh tương thích cho từng loại cột
+FIELD_ALIASES = {
+    "chat_id": ["Chat ID", "ID Group", "chat_id"],
+    "project_name": ["Tên dự án", "Dự án / Nhóm", "Text", "chat_name", "Tên nhóm"],
+    "status": ["Trạng thái hoạt động", "Trạng thái", "status"],
+    "security_level": ["Cấp độ bảo mật", "Mức độ bảo mật", "security_level"],
+    "documents": ["Danh mục tài liệu", "Documents", "Tài liệu", "Link tài liệu"],
+    "owner": ["Người phụ trách", "Chủ sở hữu", "Owner"],
+}
 
 
 # =============================================================================
@@ -169,7 +179,7 @@ class LarkBaseService:
           - Nếu có tenant_key hoặc IS_ISV_MODE=True: Gọi qua ISVTokenService.
           - Ngược lại: Gọi endpoint /internal của Custom App (Single-Tenant).
         """
-        if tenant_key or getattr(settings, "IS_ISV_MODE", False):
+        if getattr(settings, "IS_ISV_MODE", False) and tenant_key:
             try:
                 from services.auth.isv_token_service import isv_token_service
                 token = isv_token_service.get_tenant_access_token_sync(
@@ -228,13 +238,15 @@ class LarkBaseService:
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-    def _get_headers(self, use_tenant_token: bool = False) -> Dict[str, str]:
-        """Tạo header xác thực với User Access Token hoặc Tenant Access Token."""
+    def _get_headers(self, use_tenant_token: bool = False, tenant_key: Optional[str] = None) -> Dict[str, str]:
+        """Tạo header xác thực với User Access Token hoặc Tenant Access Token (hỗ trợ tenant_key cho ISV)."""
         self._validate_config(use_tenant_token=use_tenant_token)
         if use_tenant_token:
-            token = self.get_tenant_access_token()
+            from database.db import get_current_tenant_key
+            eff_tenant = tenant_key or get_current_tenant_key()
+            token = self.get_tenant_access_token(tenant_key=eff_tenant)
             if not token:
-                raise PermissionError("Không thể lấy tenant_access_token của Bot để truy cập Lark Base.")
+                raise PermissionError(f"Không thể lấy tenant_access_token của Bot để truy cập Lark Base (tenant: {eff_tenant}).")
             return {
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json; charset=utf-8",
@@ -484,29 +496,102 @@ class LarkBaseService:
             fields=fields,
         )
 
+    def _get_table_field_names(self, use_tenant_token: bool = True) -> List[str]:
+        """Lấy danh sách tên các cột thực tế của bảng hiện tại (có cache độc lập theo app_token & table_id)."""
+        now = time.time()
+        cache_key = f"{self.app_token}:{self.table_id}"
+        if not hasattr(self, "_table_fields_cache") or self._table_fields_cache is None:
+            self._table_fields_cache = {}
+
+        cached_entry = self._table_fields_cache.get(cache_key)
+        if cached_entry:
+            cached_time, cached_names = cached_entry
+            if now - cached_time < 300 and cached_names:
+                return cached_names
+
+        try:
+            fields = self.get_fields(use_tenant_token=use_tenant_token)
+            names = [f.field_name for f in fields if f.field_name]
+            if names:
+                self._table_fields_cache[cache_key] = (now, names)
+            return names
+        except Exception as e:
+            logger.debug(f"Không thể đọc schema trường của bảng ({cache_key}): {e}")
+            return []
+
+    def _adapt_fields(self, fields: Dict[str, Any], use_tenant_token: bool = True) -> Dict[str, Any]:
+        """
+        Tự động chuẩn hóa và ánh xạ tên cột để tương thích 100% với cấu trúc schema thực tế của bảng:
+          - 'ID Group' <-> 'Chat ID'
+          - 'Dự án / Nhóm' <-> 'Tên dự án'
+          - 'Trạng thái' <-> 'Trạng thái hoạt động'
+          - 'Mức độ bảo mật' <-> 'Cấp độ bảo mật'
+          - 'Documents' / 'Link tài liệu' <-> 'Danh mục tài liệu'
+        """
+        table_cols = self._get_table_field_names(use_tenant_token=use_tenant_token)
+        adapted: Dict[str, Any] = {}
+
+        if table_cols:
+            all_known_aliases = {a for aliases in FIELD_ALIASES.values() for a in aliases}
+            for group_name, aliases in FIELD_ALIASES.items():
+                val = None
+                for a in aliases:
+                    if a in fields and fields[a] is not None:
+                        val = fields[a]
+                        break
+                if val is not None:
+                    for col in aliases:
+                        if col in table_cols:
+                            adapted[col] = val
+                            break
+
+            for k, v in fields.items():
+                if k not in all_known_aliases and k in table_cols:
+                    adapted[k] = v
+
+            return adapted
+
+        # Fallback nếu không lấy được schema: Khử trùng lặp alias
+        all_known_aliases = {a for aliases in FIELD_ALIASES.values() for a in aliases}
+        for group_name, aliases in FIELD_ALIASES.items():
+            for a in aliases:
+                if a in fields and fields[a] is not None:
+                    adapted[aliases[0]] = fields[a]
+                    break
+
+        for k, v in fields.items():
+            if k not in all_known_aliases:
+                adapted[k] = v
+
+        return adapted or fields
+
     def find_record_by_chat_id(self, chat_id: str, use_tenant_token: bool = True) -> Optional[LarkBaseRecord]:
-        """Tìm kiếm bản ghi đầu tiên có ID Group trùng khớp với chat_id (Sync)."""
+        """Tìm kiếm bản ghi đầu tiên có Chat ID hoặc ID Group trùng khớp với chat_id (Sync)."""
         if not chat_id:
             return None
         clean_chat_id = str(chat_id).strip()
 
+        table_cols = self._get_table_field_names(use_tenant_token=use_tenant_token)
+        chat_col = "Chat ID" if "Chat ID" in table_cols else ("ID Group" if "ID Group" in table_cols else DEFAULT_COL_CHAT_ID)
+
         try:
             records = self.get_all_records(
-                filter=f'CurrentValue.[{DEFAULT_COL_CHAT_ID}] = "{clean_chat_id}"',
+                filter=f'CurrentValue.[{chat_col}] = "{clean_chat_id}"',
                 use_tenant_token=use_tenant_token,
             )
             if records:
                 return records[0]
         except Exception as e:
-            logger.debug(f"Filter trực tiếp theo cột '{DEFAULT_COL_CHAT_ID}' thất bại, chuyển sang quét toàn bộ: {e}")
+            logger.debug(f"Filter trực tiếp theo cột '{chat_col}' thất bại, chuyển sang quét toàn bộ: {e}")
 
         # Quét dự phòng toàn bảng nếu filter Lark Base không hỗ trợ
         try:
             all_records = self.get_all_records(use_tenant_token=use_tenant_token)
             for r in all_records:
-                raw_val = r.clean_fields.get(DEFAULT_COL_CHAT_ID) or r.fields.get(DEFAULT_COL_CHAT_ID)
-                if str(raw_val or "").strip() == clean_chat_id:
-                    return r
+                for possible_key in ["Chat ID", "ID Group", DEFAULT_COL_CHAT_ID]:
+                    raw_val = r.clean_fields.get(possible_key) or r.fields.get(possible_key)
+                    if str(raw_val or "").strip() == clean_chat_id:
+                        return r
         except Exception as e:
             logger.error(f"Lỗi khi tìm bản ghi theo chat_id '{clean_chat_id}': {e}")
 
@@ -519,11 +604,12 @@ class LarkBaseService:
         use_tenant_token: bool = True,
     ) -> LarkBaseRecord:
         """Tạo mới một bản ghi trong bảng Lark Base (Sync)."""
+        adapted_fields = self._adapt_fields(fields, use_tenant_token=use_tenant_token)
         data = self._request(
             method="POST",
             url=self._records_url,
             params={"user_id_type": user_id_type},
-            json_data={"fields": fields},
+            json_data={"fields": adapted_fields},
             use_tenant_token=use_tenant_token,
             action_name="Tạo record",
         )
@@ -540,12 +626,13 @@ class LarkBaseService:
         if not record_id:
             raise ValueError("record_id không được để trống khi cập nhật.")
 
+        adapted_fields = self._adapt_fields(fields, use_tenant_token=use_tenant_token)
         url = f"{self._records_url}/{record_id}"
         data = self._request(
             method="PUT",
             url=url,
             params={"user_id_type": user_id_type},
-            json_data={"fields": fields},
+            json_data={"fields": adapted_fields},
             use_tenant_token=use_tenant_token,
             action_name="Cập nhật record",
         )
@@ -648,28 +735,35 @@ class LarkBaseService:
             logger.info(f"🔄 Đã tự động đồng bộ {synced_count} nhóm chat vào Base (Cập nhật dòng trống: {len(updated)}, Thêm mới: {len(added)})")
         return {"total_chats": len(chats), "added": added, "updated": updated}
 
-    def subscribe_events(self) -> bool:
-        """Đăng ký nhận sự kiện thay đổi của bảng Base (Bitable) qua Drive Subscribe API."""
+    def subscribe_events(self, app_token: Optional[str] = None, tenant_key: Optional[str] = None) -> bool:
+        """Đăng ký nhận sự kiện thay đổi của bảng Base (Bitable) qua Drive Subscribe API (hỗ trợ tenant_key)."""
         try:
-            t_token = self.get_tenant_access_token()
-            if not t_token:
-                logger.warning("Không lấy được tenant_access_token để subscribe sự kiện Base.")
+            target_token = app_token or self.app_token
+            if not target_token:
+                logger.warning("Không có app_token để subscribe sự kiện Base.")
                 return False
 
-            url = f"{self.domain}/open-apis/drive/v1/files/{self.app_token}/subscribe?file_type=bitable"
+            from database.db import get_current_tenant_key
+            eff_tenant = tenant_key or get_current_tenant_key()
+            t_token = self.get_tenant_access_token(tenant_key=eff_tenant)
+            if not t_token:
+                logger.warning(f"Không lấy được tenant_access_token để subscribe sự kiện Base (tenant: {eff_tenant}).")
+                return False
+
+            url = f"{self.domain}/open-apis/drive/v1/files/{target_token}/subscribe?file_type=bitable"
             headers = {
                 "Authorization": f"Bearer {t_token}",
                 "Content-Type": "application/json; charset=utf-8",
             }
             resp = self.sync_client.post(url, headers=headers, json={})
             if resp.status_code == 200 and resp.json().get("code") == 0:
-                logger.info(f"✅ Đã đăng ký (subscribe) thành công sự kiện cho Base: {self.app_token}")
+                logger.info(f"✅ Đã đăng ký (subscribe) thành công sự kiện cho Base: {target_token} (tenant: {eff_tenant})")
                 return True
             else:
-                logger.warning(f"⚠️ Subscribe Base trả về mã HTTP {resp.status_code}: {resp.text}")
+                logger.warning(f"⚠️ Subscribe Base {target_token} trả về mã HTTP {resp.status_code}: {resp.text}")
                 return False
         except Exception as e:
-            logger.warning(f"Không thể gọi API subscribe Base: {e}")
+            logger.warning(f"Không thể gọi API subscribe Base {target_token}: {e}")
             return False
 
 

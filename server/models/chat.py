@@ -65,6 +65,7 @@ class PendingDraft(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     status: str = Field(default="pending", description="Trạng thái: pending, sent, discarded, failed")
     approved_content: Optional[str] = Field(default=None, description="Nội dung thực tế sau khi duyệt/sửa")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     last_error: Optional[str] = Field(default=None, description="Lỗi gần nhất nếu gửi thất bại")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)
@@ -85,6 +86,7 @@ class PendingDraft(BaseModel):
             responder_name=document.get("responder_name"),
             status=document.get("status", "pending"),
             approved_content=document.get("approved_content"),
+            tenant_key=document.get("tenant_key"),
             last_error=document.get("last_error"),
             created_at=document.get("created_at") or get_vietnam_now_iso(),
             updated_at=document.get("updated_at") or get_vietnam_now_iso(),

@@ -283,7 +283,7 @@ class ChatQueueService:
         """Thực thi pipeline trò chuyện chuẩn của HiLark."""
         from services.workflows.chat_workflow import process_chat_pipeline
 
-        print(f"\n⚙️ [QUEUE DISPATCH] Bắt đầu xử lý pipeline cho '{item.user_name}': \"{item.combined_text}\"")
+        logger.debug("[QUEUE] dispatch msg=%s chat=%s user=%s", item.anchor_message_id, item.chat_id, item.user_name)
 
         try:
             async with async_tenant_context(item.tenant_key):
@@ -304,33 +304,30 @@ class ChatQueueService:
             jev_action = result.get("jev_action", "IGNORE")
             confidence = result.get("jev_confidence", 0.0)
             status = result.get("status", "")
-            print(f"🎯 Phân loại JEV  : {jev_action} (Độ tin cậy: {confidence:.2f}) | Trạng thái: {status}")
+            logger.info("[ROUTE] msg=%s action=%s confidence=%.2f status=%s", item.anchor_message_id, jev_action, confidence, status)
 
             if status == "forbidden_query":
                 chk = result.get("forbidden_check") or {}
                 matched = chk.get("matched_label") or "Chủ đề bị cấm"
-                print(f"🚫 [FORBIDDEN DROP] Câu hỏi vi phạm nhãn cấm '{matched}'. Kích hoạt Zero-response (Im lặng tuyệt đối).")
+                logger.warning("[DROP] msg=%s reason=forbidden label=%s", item.anchor_message_id, matched)
             elif status == "group_inactive":
-                print(f"🛑 [GROUP INACTIVE] Nhóm chat tạm dừng hoạt động. Bỏ qua tin nhắn.")
+                logger.info("[DROP] msg=%s reason=group_inactive", item.anchor_message_id)
             elif jev_action == "IGNORE":
-                print(f"🔇 [IGNORE] Tin rác/chào hỏi không quan trọng. Không lưu, không trả lời.")
+                logger.info("[STORE] msg=%s staging=yes memory=no reason=jev_ignore", item.anchor_message_id)
             elif jev_action == "MEMORY_ONLY":
                 ext = result.get("extraction") or {}
-                print(f"💾 [MEMORY_ONLY] Đã âm thầm trích xuất & lưu vào MongoDB ({len(ext.get('facts', []))} facts).")
+                logger.info("[STORE] msg=%s staging=yes memory=yes facts=%d", item.anchor_message_id, len(ext.get("facts", [])))
             elif jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT"):
                 draft_ans = result.get("draft_answer") or result.get("answer", "")
-                print(f"📝 [{jev_action}] SOẠN NHÁP CHỜ DUYỆT:")
-                print(f"   • Bản nháp: \"{draft_ans[:150]}{'...' if len(draft_ans) > 150 else ''}\"")
-                print(f"   (Đã gửi thông báo riêng tới DM của chủ nhân, KHÔNG phát ngôn vào nhóm)")
+                logger.info("[DRAFT] msg=%s action=%s approval_required=yes answer_chars=%d", item.anchor_message_id, jev_action, len(draft_ans))
             elif jev_action == "REPLY_ONLY":
                 answer = result.get("answer", "")
-                print(f"💬 [TRẢ LỜI] Câu trả lời đã tạo ({len(answer)} ký tự):")
-                print(f"   \"{answer[:150]}{'...' if len(answer) > 150 else ''}\"")
+                logger.info("[REPLY] msg=%s answer_chars=%d", item.anchor_message_id, len(answer))
                 lark_res = result.get("lark_response") or {}
                 if lark_res.get("success"):
-                    print(f"✔ ĐÃ GỬI PHẢN HỒI THÀNH CÔNG NHÂN DANH {(item.responder_name or 'User').upper()}!")
+                    logger.info("[REPLY] msg=%s sent=yes identity=%s", item.anchor_message_id, item.responder_name or "User")
                 else:
-                    print(f"⚠️ Trạng thái gửi reply Lark: {lark_res}")
+                    logger.warning("[REPLY] msg=%s sent=no result=%s", item.anchor_message_id, lark_res)
         except Exception as e:
             logger.error(f"Lỗi khi thực thi pipeline từ Queue: {e}", exc_info=True)
 

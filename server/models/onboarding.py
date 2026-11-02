@@ -62,6 +62,12 @@ class TestBotCredentialsRequest(BaseModel):
     app_secret: str = Field(..., description="Khóa bí mật của ứng dụng Lark")
 
 
+class RegisterLarkAppRequest(TestBotCredentialsRequest):
+    """Đăng ký Custom App vào registry mà không ghi đè cấu hình global."""
+    verification_token: Optional[str] = Field(default="", description="Verification Token của App event webhook")
+    encrypt_key: Optional[str] = Field(default="", description="Encrypt Key của App event webhook")
+
+
 class SaveBotConfigRequest(BaseModel):
     """Payload lưu cấu hình Bot và kết nối MongoDB tùy chọn."""
     app_id: str = Field(..., description="Mã ứng dụng Lark (cli_xxx)")

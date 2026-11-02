@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import httpx
 from fastapi import HTTPException
 from core.config import settings
@@ -118,7 +118,12 @@ class WeKnoraService:
 
                     return result_payload
 
-    async def get_kb_info(self, kb_id: str, client: Optional[httpx.AsyncClient] = None) -> Optional[Dict[str, Any]]:
+    async def get_kb_info(
+        self,
+        kb_id: str,
+        client: Optional[httpx.AsyncClient] = None,
+        tenant_id: Optional[Union[int, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Lấy thông tin chi tiết của Knowledge Base từ WeKnora (ID, Tên, Mô tả).
         Endpoint WeKnora: GET /knowledge-bases/{kb_id}
@@ -129,9 +134,12 @@ class WeKnoraService:
 
         clean_id = kb_id.strip()
         url = f"{self.base_url}/knowledge-bases/{clean_id}"
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
         try:
             async with self._get_client_session(client) as http_client:
-                resp = await http_client.get(url, headers=self.headers, timeout=10.0)
+                resp = await http_client.get(url, headers=headers, timeout=10.0)
                 if resp.status_code == 200:
                     data = resp.json().get("data", {})
                     return {
@@ -154,7 +162,12 @@ class WeKnoraService:
         return []
 
     async def save_to_kb(
-        self, text: str, dataset_id: str = None, name: Optional[str] = None, client: Optional[httpx.AsyncClient] = None
+        self,
+        text: str,
+        dataset_id: str = None,
+        name: Optional[str] = None,
+        tenant_id: Optional[Union[int, str]] = None,
+        client: Optional[httpx.AsyncClient] = None,
     ) -> dict:
         target_id = dataset_id or settings.WEKNORA_DATASET_ID
         if target_id and "," in target_id:
@@ -169,9 +182,12 @@ class WeKnoraService:
             "content": text,
             "status": "publish",
         }
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
 
         async with self._get_client_session(client) as http_client:
-            response = await http_client.post(url, headers=self.headers, json=payload, timeout=30.0)
+            response = await http_client.post(url, headers=headers, json=payload, timeout=30.0)
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail=f"Failed to save to KB: {response.text}")
 
@@ -184,6 +200,7 @@ class WeKnoraService:
         dataset_id: Optional[str] = None,
         mime_type: str = "application/pdf",
         timeout: float = 60.0,
+        tenant_id: Optional[Union[int, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
     ) -> Dict[str, Any]:
         """
@@ -208,6 +225,9 @@ class WeKnoraService:
         headers = {
             "X-API-Key": self.api_key,
         }
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
+
         files = {
             "file": (file_name, file_bytes, mime_type),
         }
@@ -247,23 +267,33 @@ class WeKnoraService:
         dataset_id: str,
         knowledge_id: str,
         timeout: float = 10.0,
+        tenant_id: Optional[Union[int, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Lấy thông tin chi tiết và tóm tắt (summary) của một tài liệu từ WeKnora.
-        Endpoint: GET /knowledge-bases/{dataset_id}/knowledge/{knowledge_id}
+        Endpoint: GET /knowledge/{knowledge_id} hoặc GET /knowledge-bases/{dataset_id}/knowledge/{knowledge_id}
         """
-        if not self.api_key or not self.base_url or not dataset_id or not knowledge_id:
+        if not self.api_key or not self.base_url or not knowledge_id:
             return None
 
-        url = f"{self.base_url}/knowledge-bases/{dataset_id.strip()}/knowledge/{knowledge_id.strip()}"
+        clean_kid = knowledge_id.strip()
+        url = f"{self.base_url}/knowledge/{clean_kid}"
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
         try:
             async with self._get_client_session(client) as http_client:
-                resp = await http_client.get(url, headers=self.headers, timeout=timeout)
+                resp = await http_client.get(url, headers=headers, timeout=timeout)
+                if resp.status_code == 404 and dataset_id:
+                    # Fallback sang cấu trúc URL cũ nếu WeKnora phiên bản khác
+                    alt_url = f"{self.base_url}/knowledge-bases/{dataset_id.strip()}/knowledge/{clean_kid}"
+                    resp = await http_client.get(alt_url, headers=headers, timeout=timeout)
+
                 if resp.status_code == 200:
                     data = resp.json().get("data", {})
                     return {
-                        "id": data.get("id", knowledge_id),
+                        "id": data.get("id", clean_kid),
                         "title": data.get("title") or data.get("name") or "",
                         "summary": data.get("summary") or data.get("description") or None,
                         "status": data.get("status") or "",
@@ -284,6 +314,7 @@ class WeKnoraService:
         disable_vector_match: bool = False,
         rerank_enabled: bool = True,
         timeout: float = 30.0,
+        tenant_id: Optional[Union[int, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -352,9 +383,29 @@ class WeKnoraService:
                 if not rerank_enabled:
                     payload["rerank"] = {"enabled": False}
 
+                headers = dict(self.headers)
+                if tenant_id:
+                    headers["X-Tenant-ID"] = str(tenant_id)
+                else:
+                    try:
+                        from database.scoped_query import get_current_tenant_key
+                        from database.db import get_tenant_config_sync
+                        cur_tk = get_current_tenant_key()
+                        if cur_tk:
+                            t_cfg = get_tenant_config_sync(cur_tk)
+                            if t_cfg and t_cfg.get("weknora_tenant_id"):
+                                headers["X-Tenant-ID"] = str(t_cfg["weknora_tenant_id"])
+                    except Exception:
+                        pass
+                    if "X-Tenant-ID" not in headers:
+                        # Không được fallback sang tenant mặc định trong production:
+                        # thiếu mapping là lỗi cấu hình, không phải quyền truy cập global.
+                        print("[WeKnora] Từ chối retrieval: chưa resolve được X-Tenant-ID.")
+                        return []
+
                 response = await http_client.post(
                     search_url,
-                    headers=self.headers,
+                    headers=headers,
                     json=payload,
                     timeout=timeout,
                 )
@@ -373,7 +424,7 @@ class WeKnoraService:
                     # Endpoint fallback nếu /knowledge-search chưa mount: gọi /knowledge-bases/{id}/hybrid-search
                     if target_kbs:
                         fb_url = f"{self.base_url}/knowledge-bases/{target_kbs[0]}/hybrid-search"
-                        fb_res = await client.post(fb_url, headers=self.headers, json=payload)
+                        fb_res = await client.post(fb_url, headers=headers, json=payload)
                         if fb_res.status_code == 200:
                             fb_data = fb_res.json()
                             return fb_data.get("data", []) if isinstance(fb_data, dict) else []
@@ -392,6 +443,7 @@ class WeKnoraService:
         knowledge_ids: Optional[List[str]] = None,
         match_count: int = 5,
         timeout: float = 30.0,
+        tenant_id: Optional[Union[int, str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Phiên bản đồng bộ dùng httpx.Client() trực tiếp cho CLI / Scripts kiểm thử.
@@ -415,9 +467,27 @@ class WeKnoraService:
         elif target_kbs:
             payload["knowledge_base_ids"] = target_kbs
 
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
+        else:
+            try:
+                from database.scoped_query import get_current_tenant_key
+                from database.db import get_tenant_config_sync
+                cur_tk = get_current_tenant_key()
+                if cur_tk:
+                    t_cfg = get_tenant_config_sync(cur_tk)
+                    if t_cfg and t_cfg.get("weknora_tenant_id"):
+                        headers["X-Tenant-ID"] = str(t_cfg["weknora_tenant_id"])
+            except Exception:
+                pass
+            if "X-Tenant-ID" not in headers:
+                print("[WeKnora] Từ chối retrieval_sync: chưa resolve được X-Tenant-ID.")
+                return []
+
         try:
             with httpx.Client(timeout=timeout) as client:
-                response = client.post(search_url, headers=self.headers, json=payload)
+                response = client.post(search_url, headers=headers, json=payload)
                 if response.status_code == 200:
                     data = response.json()
                     if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
@@ -435,7 +505,7 @@ class WeKnoraService:
     # =========================================================================
 
     async def get_datasource_info(
-        self, datasource_id: str, client: Optional[httpx.AsyncClient] = None
+        self, datasource_id: str, client: Optional[httpx.AsyncClient] = None, tenant_id: Optional[Union[int, str]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Lấy thông tin chi tiết của một Data Source trong WeKnora.
@@ -446,9 +516,11 @@ class WeKnoraService:
 
         clean_id = datasource_id.strip()
         url = f"{self.base_url}/datasource/{clean_id}"
+        headers = dict(self.headers)
+        headers["X-Tenant-ID"] = str(tenant_id) if tenant_id else "10000"
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.get(url, headers=self.headers, timeout=30.0)
+                response = await http_client.get(url, headers=headers, timeout=30.0)
                 if response.status_code == 200:
                     return response.json()
                 print(f"[WeKnora] get_datasource_info HTTP {response.status_code}: {response.text}")
@@ -458,7 +530,7 @@ class WeKnoraService:
             return None
 
     async def update_datasource_resources(
-        self, datasource_id: str, resource_ids: List[str], client: Optional[httpx.AsyncClient] = None
+        self, datasource_id: str, resource_ids: List[str], client: Optional[httpx.AsyncClient] = None, tenant_id: Optional[Union[int, str]] = None
     ) -> bool:
         """
         Cập nhật danh sách resource_ids (folder/doc tokens) cho Data Source.
@@ -469,7 +541,7 @@ class WeKnoraService:
             return False
 
         clean_id = datasource_id.strip()
-        current_info = await self.get_datasource_info(clean_id, client=client)
+        current_info = await self.get_datasource_info(clean_id, client=client, tenant_id=tenant_id)
         if not current_info or not isinstance(current_info, dict):
             print(f"[WeKnora] Không thể lấy thông tin hiện tại của datasource {clean_id} để update.")
             return False
@@ -480,9 +552,11 @@ class WeKnoraService:
         current_info["config"] = config
 
         url = f"{self.base_url}/datasource/{clean_id}"
+        headers = dict(self.headers)
+        headers["X-Tenant-ID"] = str(tenant_id) if tenant_id else "10000"
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.put(url, headers=self.headers, json=current_info, timeout=30.0)
+                response = await http_client.put(url, headers=headers, json=current_info, timeout=30.0)
                 if response.status_code == 200:
                     return True
                 print(f"[WeKnora] update_datasource_resources HTTP {response.status_code}: {response.text}")
@@ -492,7 +566,7 @@ class WeKnoraService:
             return False
 
     async def trigger_datasource_sync(
-        self, datasource_id: str, client: Optional[httpx.AsyncClient] = None
+        self, datasource_id: str, client: Optional[httpx.AsyncClient] = None, tenant_id: Optional[Union[int, str]] = None
     ) -> Dict[str, Any]:
         """
         Kích hoạt tác vụ đồng bộ ngay lập tức cho Data Source.
@@ -503,9 +577,11 @@ class WeKnoraService:
 
         clean_id = datasource_id.strip()
         url = f"{self.base_url}/datasource/{clean_id}/sync"
+        headers = dict(self.headers)
+        headers["X-Tenant-ID"] = str(tenant_id) if tenant_id else "10000"
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.post(url, headers=self.headers, timeout=30.0)
+                response = await http_client.post(url, headers=headers, timeout=30.0)
                 if response.status_code in (200, 201, 202):
                     return {"success": True, "data": response.json()}
                 return {
@@ -516,11 +592,11 @@ class WeKnoraService:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def get_datasource_sync_status(self, datasource_id: str) -> Dict[str, Any]:
+    async def get_datasource_sync_status(self, datasource_id: str, tenant_id: Optional[Union[int, str]] = None) -> Dict[str, Any]:
         """
         Kiểm tra trạng thái đồng bộ và kết quả lần sync gần nhất của Data Source.
         """
-        info = await self.get_datasource_info(datasource_id)
+        info = await self.get_datasource_info(datasource_id, tenant_id=tenant_id)
         if not info:
             return {"status": "unknown", "error": "Datasource not found"}
 

@@ -23,7 +23,8 @@ def _get_lark_service():
     if shim and hasattr(shim, "lark_service"):
         return shim.lark_service
     from services.lark import lark_service
-    return lark_service
+    from services.lark.runtime import get_current_lark_service
+    return get_current_lark_service(lark_service)
 
 
 class DraftService:
@@ -34,22 +35,23 @@ class DraftService:
         self,
         owner_id: str,
         approved_content: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[PendingDraft], Optional[Dict[str, Any]]]:
         # Tự động refresh store nếu đang bị mock patch
         self.store = _get_draft_store()
-        draft = await self.store.claim_latest_pending(owner_id)
+        draft = await self.store.claim_latest_pending(owner_id, tenant_key=tenant_key)
         if not draft:
             return False, "Không có bản nháp nào đang chờ duyệt.", None, None
         content = approved_content or draft.approved_content or draft.draft_answer
         return await self._send_claimed(draft, content)
 
-    async def discard_latest(self, owner_id: str) -> Optional[PendingDraft]:
+    async def discard_latest(self, owner_id: str, tenant_key: Optional[str] = None) -> Optional[PendingDraft]:
         self.store = _get_draft_store()
-        return await self.store.discard_latest_pending(owner_id)
+        return await self.store.discard_latest_pending(owner_id, tenant_key=tenant_key)
 
-    async def get_latest_pending(self, owner_id: str) -> Optional[PendingDraft]:
+    async def get_latest_pending(self, owner_id: str, tenant_key: Optional[str] = None) -> Optional[PendingDraft]:
         self.store = _get_draft_store()
-        return await self.store.get_latest_pending(owner_id)
+        return await self.store.get_latest_pending(owner_id, tenant_key=tenant_key)
 
     async def update_content(self, draft_id: str, new_draft_answer: str) -> bool:
         self.store = _get_draft_store()
@@ -67,6 +69,7 @@ class DraftService:
                 message_id=draft.message_id,
                 text=content,
                 as_user=True,
+                tenant_key=draft.tenant_key,  # ✅ FIX: truyền đúng tenant để lấy đúng token
             )
         except Exception as exc:
             error = await self._restore_pending(draft, str(exc), content)

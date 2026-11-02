@@ -22,6 +22,7 @@ class SetScopeRequest(BaseModel):
     dataset_id: str = Field(..., description="WeKnora Knowledge Base ID")
     chat_name: Optional[str] = Field(default="", description="Tên nhóm chat hiển thị")
     project_tag: Optional[str] = Field(default=None, description="Mã dự án (nếu có)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (ISV Multi-Tenant)")
     operator_open_id: Optional[str] = Field(default=None, description="Lark open_id của người thực hiện")
     operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
 
@@ -30,27 +31,28 @@ class IngestScopeDocumentsRequest(BaseModel):
     urls: List[str] = Field(..., description="Danh sách URL tài liệu Lark DocX, Wiki hoặc Thư mục Lark Drive")
     operator_open_id: Optional[str] = Field(default=None, description="Open ID người thực hiện")
     operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (ISV Multi-Tenant)")
     extract_claims: bool = Field(default=True, description="Tự động bóc tách Claims/Facts vào MongoDB")
 
 
 @router.get("", response_model=List[Dict[str, Any]], summary="Danh sách toàn bộ ánh xạ Chat <-> KB")
-async def list_scopes():
-    """Lấy danh sách tất cả các nhóm chat đã được gán Knowledge Base riêng trong MongoDB."""
-    scopes = await scope_service.list_all_scopes()
+async def list_scopes(tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (ISV)")):
+    """Lấy danh sách tất cả các nhóm chat đã được gán Knowledge Base riêng trong MongoDB (hỗ trợ tenant_key)."""
+    scopes = await scope_service.list_all_scopes(tenant_key=tenant_key)
     return [s.to_dict() for s in scopes]
 
 
 @router.get("/{chat_id}", summary="Lấy thông tin Knowledge Base của một nhóm chat")
-async def get_scope(chat_id: str):
+async def get_scope(chat_id: str, tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (ISV)")):
     """Tra cứu Knowledge Base của một nhóm chat (nếu chưa gán riêng sẽ trả về KB mặc định)."""
-    scope = await scope_service.get_scope_by_chat_id(chat_id)
+    scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=tenant_key)
     if scope:
         return {
             "configured": True,
             "scope": scope.to_dict(),
         }
 
-    default_id, default_name = await scope_service.get_kb_info_for_chat(None)
+    default_id, default_name = await scope_service.get_kb_info_for_chat(None, tenant_key=tenant_key)
     return {
         "configured": False,
         "dataset_id": default_id,
@@ -75,6 +77,7 @@ async def set_scope(req: SetScopeRequest):
         operator_name=op_name,
         chat_name=req.chat_name or "",
         project_tag=req.project_tag,
+        tenant_key=req.tenant_key,
     )
 
     if not ok:

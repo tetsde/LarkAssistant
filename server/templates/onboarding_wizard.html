@@ -582,86 +582,45 @@
                 <h2>Kết Nối Lark Bot &amp; Hạ Tầng Điều Hành</h2>
                 <p class="desc">Chào mừng {{effective_user_name}} đến với HiLark. Thiết lập danh tính trợ lý AI trên Lark Developer và cấu hình cổng giao tiếp cho doanh nghiệp.</p>
                 
-                <!-- Collapsible Guide: How to create a bot in 2 minutes -->
-                <div class="guide-collapsible" style="margin-bottom: 14px;">
-                    <div class="guide-header" onclick="toggleBotGuide()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-weight: 600; color: var(--text-primary);">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <span>Hướng dẫn tạo Bot trên Lark Developer Portal (2 phút)</span>
-                        </div>
-                        <span id="botGuideToggleText" style="font-size: 12px; color: var(--accent); font-weight: 500;">Xem chi tiết ▾</span>
-                    </div>
-                    <div id="botGuideContent" style="display: none; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); font-size: 12.5px; color: var(--text-secondary); line-height: 1.6;">
-                        <div style="margin-bottom: 8px;">
-                            <strong style="color: var(--text-primary);">1. Tạo ứng dụng:</strong> Mở <a href="https://open.larksuite.com/app" target="_blank" style="color: var(--accent); text-decoration: underline; font-weight: 600;">Lark Developer Console ↗</a> và nhấn <strong>Create Custom App</strong>.
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <strong style="color: var(--text-primary);">2. Bật tính năng Bot:</strong> Vào menu <strong>Add Features</strong> ở thanh bên trái &rarr; Bấm <strong>Add</strong> tại mục <strong>Bot</strong>.
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <strong style="color: var(--text-primary);">3. Chọn chế độ WebSocket:</strong> Vào <strong>Events & Callbacks</strong>, mục Connection Method chọn <strong>Long Connection (WebSocket)</strong> để nhận tin trực tiếp, không cần mở port mạng.
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <strong style="color: var(--text-primary);">4. Phát hành ứng dụng:</strong> Vào <strong>Version Management & Release</strong> &rarr; Bấm <strong>Create a version</strong> và <strong>Publish</strong>.
-                        </div>
-                        <div>
-                            <strong style="color: var(--text-primary);">5. Lấy khóa kết nối:</strong> Mở mục <strong>Credentials & Basic Info</strong>, sao chép <strong>App ID</strong> và <strong>App Secret</strong> dán vào form bên dưới.
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Lark Bot Credentials Form Card -->
                 <div class="admin-card" style="margin-bottom: 14px;">
                     <div class="admin-card-header">
                         <div class="admin-card-title">Thông Tin Xác Thực Lark Bot</div>
-                        <span id="botStatusBadge" class="status-pill unlinked">Chưa kiểm tra</span>
+                        <span id="botStatusBadge" class="status-pill connected">Đã kết nối tự động</span>
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px;">
-                        <div>
-                            <label style="display: block; font-size: 12.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 5px;">
-                                Mã ứng dụng Lark (App ID) <span style="color: var(--danger);">*</span>
-                            </label>
-                            <input 
-                                type="text" 
-                                id="inputAppId" 
-                                placeholder="cli_xxxxxxxxxxxxxxxx" 
-                                class="text-input"
-                                oninput="validateAppIdLive()"
-                                style="width: 100%; font-family: ui-monospace, monospace; font-size: 13px;"
-                            />
-                            <div id="appIdHint" style="font-size: 11.5px; color: var(--text-secondary); margin-top: 4px;">
-                                Bắt buộc có tiền tố "cli_" theo chuẩn Lark Open Platform.
-                            </div>
-                        </div>
+                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5;">
+                        Ứng dụng HiLark đã được xác thực an toàn qua <strong>Tenant Access Token</strong> từ Lark Open Platform. Mặc định hệ thống tự kết nối với Bot hiện hành của bạn.
+                    </div>
 
-                        <div>
-                            <label style="display: block; font-size: 12.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 5px;">
-                                Khóa bí mật ứng dụng (App Secret) <span style="color: var(--danger);">*</span>
-                            </label>
-                            <div style="position: relative; display: flex; align-items: center;">
-                                <input 
-                                    type="password" 
-                                    id="inputAppSecret" 
-                                    placeholder="Nhập hoặc dán App Secret từ Lark Console" 
-                                    class="text-input"
-                                    style="width: 100%; padding-right: 65px; font-family: ui-monospace, monospace; font-size: 13px;"
-                                />
-                                <button 
-                                    type="button" 
-                                    onclick="toggleSecretVisibility()" 
-                                    style="position: absolute; right: 8px; background: none; border: none; font-size: 11.5px; color: var(--text-secondary); cursor: pointer; padding: 4px 6px;"
-                                    id="btnToggleSecret"
-                                >
-                                    Hiện
-                                </button>
-                            </div>
-                        </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; margin-top: 10px; background: var(--surface-secondary); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
+                        <span style="color: var(--text-secondary);">Cổng giao tiếp thời gian thực:</span>
+                        <span id="botWsStatusText" style="font-weight: 600; color: var(--success);">Lark WebSocket (Active)</span>
+                    </div>
 
-                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px;">
-                            <button type="button" id="btnTestBot" onclick="testBotCredentials()" class="btn btn-secondary" style="font-size: 12px;">
-                                Kiểm tra kết nối Bot
+                    <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+                        <button type="button" class="btn btn-secondary" onclick="toggleCustomBotCredentials()" style="font-size: 11.5px; padding: 5px 12px; border-radius: var(--radius-sm);">
+                            <span id="botToggleBtnText">Đổi sang Bot / Tài khoản khác ▾</span>
+                        </button>
+                    </div>
+
+                    <div id="customBotCredentialsContent" style="display: none; margin-top: 12px; padding: 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); border: 1px solid var(--border);">
+                        <div style="font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">
+                            Nhập App ID &amp; App Secret của Bot mới:
+                        </div>
+                        <div class="input-group" style="margin-bottom: 10px;">
+                            <label class="input-label" style="font-size: 11.5px;">App ID mới (cli_xxx):</label>
+                            <input type="text" id="inputNewAppId" placeholder="cli_a1b2c3d4e5f6..." class="text-input" style="font-size: 12.5px; font-family: ui-monospace, monospace;">
+                        </div>
+                        <div class="input-group" style="margin-bottom: 10px;">
+                            <label class="input-label" style="font-size: 11.5px;">App Secret mới:</label>
+                            <input type="password" id="inputNewAppSecret" placeholder="Nhập App Secret mới..." class="text-input" style="font-size: 12.5px; font-family: ui-monospace, monospace;">
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <button type="button" id="btnSaveNewBot" onclick="saveNewBotCredentials()" class="btn btn-primary" style="font-size: 12px; padding: 6px 14px;">
+                                Kết nối Bot mới
                             </button>
-                            <span id="botTestStatus" style="font-size: 12px;"></span>
+                            <span id="botSwitchStatus" style="font-size: 12px;"></span>
                         </div>
                     </div>
                 </div>
@@ -760,13 +719,9 @@
                 <h2>Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</h2>
                 <p class="desc">Thiết lập thời gian nhận bản tóm tắt Master Daily Digest gửi riêng vào tin nhắn của bạn:</p>
 
-                <label style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Khung giờ nhận báo cáo tổng hợp:</label>
-                <select id="digestTimeSelect" class="custom-select" style="margin-top: 6px;">
-                    <option value="18:00" selected>18:00 (Cuối giờ làm việc)</option>
-                    <option value="17:30">17:30 (Trước giờ tan ca)</option>
-                    <option value="21:00">21:00 (Buổi tối)</option>
-                    <option value="23:00">23:00 (Tổng kết đêm muộn)</option>
-                </select>
+                <label for="digestTimeSelect" style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Khung giờ nhận báo cáo tổng hợp:</label>
+                <input id="digestTimeSelect" class="custom-select" type="time" value="18:00" step="60" aria-describedby="digestTimeHelp" style="margin-top: 6px;">
+                <div id="digestTimeHelp" style="margin-top: 6px; font-size: 12px; color: var(--text-secondary);">Bạn có thể chọn bất kỳ giờ nào trong ngày. Mặc định: 18:00.</div>
 
                 <div class="setting-card">
                     <label style="display: flex; align-items: flex-start; gap: 12px; cursor: pointer;">
@@ -955,74 +910,11 @@
         }
 
         function validateAppIdLive() {
-            const input = document.getElementById("inputAppId");
-            const hint = document.getElementById("appIdHint");
-            if (!input || !hint) return false;
-            const val = input.value.trim();
-            if (!val) {
-                hint.style.color = "var(--text-secondary)";
-                hint.innerText = 'Bắt buộc có tiền tố "cli_" theo chuẩn Lark Open Platform.';
-                return false;
-            }
-            if (!val.startsWith("cli_")) {
-                hint.style.color = "var(--danger)";
-                hint.innerText = 'Lỗi: Mã ứng dụng Lark bắt buộc phải bắt đầu bằng "cli_" (Ví dụ: cli_aa4770ba50789e2c).';
-                return false;
-            }
-            if (val.length < 10) {
-                hint.style.color = "var(--danger)";
-                hint.innerText = "Lỗi: App ID quá ngắn (tối thiểu 10 ký tự).";
-                return false;
-            }
-            hint.style.color = "var(--success)";
-            hint.innerText = "Định dạng App ID hợp lệ.";
             return true;
         }
 
         async function testBotCredentials() {
-            const appIdInput = document.getElementById("inputAppId");
-            const appSecretInput = document.getElementById("inputAppSecret");
-            const statusSpan = document.getElementById("botTestStatus");
-            const badge = document.getElementById("botStatusBadge");
-            const btn = document.getElementById("btnTestBot");
-
-            const appId = appIdInput ? appIdInput.value.trim() : "";
-            const appSecret = appSecretInput ? appSecretInput.value.trim() : "";
-
-            if (!appId || !appSecret) {
-                statusSpan.innerHTML = '<span style="color: var(--danger); font-weight: 500;">Vui lòng nhập đầy đủ cả App ID và App Secret.</span>';
-                return;
-            }
-            if (!appId.startsWith("cli_")) {
-                statusSpan.innerHTML = '<span style="color: var(--danger); font-weight: 500;">App ID bắt buộc phải bắt đầu bằng tiền tố "cli_".</span>';
-                return;
-            }
-
-            btn.disabled = true;
-            statusSpan.innerHTML = '<span style="color: var(--accent);">Đang gọi Lark Open Platform xác thực...</span>';
-
-            try {
-                const res = await fetch("/onboarding/api/test-bot", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ app_id: appId, app_secret: appSecret })
-                });
-                const json = await res.json();
-                if (json.success) {
-                    badge.innerText = "Hợp lệ";
-                    badge.className = "status-pill connected";
-                    statusSpan.innerHTML = `<span style="color: var(--success); font-weight: 500;">${json.message}</span>`;
-                    await saveBotConfigQuietly();
-                } else {
-                    badge.innerText = "Từ chối";
-                    badge.className = "status-pill unlinked";
-                    statusSpan.innerHTML = `<span style="color: var(--danger); font-weight: 500;">${json.message}</span>`;
-                }
-            } catch (err) {
-                statusSpan.innerHTML = `<span style="color: var(--danger);">Lỗi kiểm tra: ${err.message}</span>`;
-            } finally {
-                btn.disabled = false;
-            }
+            return true;
         }
 
         async function testMongoConnection() {
@@ -1059,28 +951,17 @@
         }
 
         async function saveBotConfigQuietly() {
-            const appIdInput = document.getElementById("inputAppId");
-            const appSecretInput = document.getElementById("inputAppSecret");
             const mongoInput = document.getElementById("inputMongoUrl");
-            if (!appIdInput) return;
-
-            const appId = appIdInput.value.trim();
-            const appSecret = appSecretInput ? appSecretInput.value.trim() : "";
             const mongoUrl = mongoInput ? mongoInput.value.trim() : "";
-
-            if (appId && appId.startsWith("cli_")) {
+            if (mongoUrl) {
                 try {
                     await fetch("/onboarding/api/save-bot-config", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            app_id: appId,
-                            app_secret: appSecret || null,
-                            custom_mongo_url: mongoUrl || null
-                        })
+                        body: JSON.stringify({ custom_mongo_url: mongoUrl })
                     });
                 } catch (e) {
-                    console.debug("Lưu bot config ngầm:", e);
+                    console.debug("Lưu mongo config ngầm:", e);
                 }
             }
         }
@@ -1091,22 +972,7 @@
                 const json = await res.json();
                 if (json.success && json.data) {
                     const d = json.data;
-                    const appIdInput = document.getElementById("inputAppId");
-                    const appSecretInput = document.getElementById("inputAppSecret");
                     const mongoInput = document.getElementById("inputMongoUrl");
-                    const badge = document.getElementById("botStatusBadge");
-
-                    if (appIdInput && d.app_id) {
-                        appIdInput.value = d.app_id;
-                        validateAppIdLive();
-                    }
-                    if (appSecretInput && d.masked_app_secret) {
-                        appSecretInput.placeholder = `Đã cấu hình (${d.masked_app_secret})`;
-                    }
-                    if (badge && d.has_credentials) {
-                        badge.innerText = "Đã cấu hình";
-                        badge.className = "status-pill connected";
-                    }
                     if (mongoInput && d.custom_mongo_url) {
                         mongoInput.value = d.custom_mongo_url;
                         const content = document.getElementById("mongoAdvancedContent");
@@ -1120,16 +986,70 @@
             }
         }
 
-        async function navigateStep(direction) {
-            if (direction === 1 && currentStep === 1 && !isIsvMode) {
-                const appId = document.getElementById("inputAppId") ? document.getElementById("inputAppId").value.trim() : "";
-                if (appId && !appId.startsWith("cli_")) {
-                    alert('Lỗi: App ID bắt buộc phải bắt đầu bằng "cli_". Vui lòng kiểm tra lại trước khi tiếp tục.');
-                    return;
-                }
-                await saveBotConfigQuietly();
+        function toggleCustomBotCredentials() {
+            const content = document.getElementById("customBotCredentialsContent");
+            const btnText = document.getElementById("botToggleBtnText");
+            if (!content) return;
+            if (content.style.display === "none" || !content.style.display) {
+                content.style.display = "block";
+                if (btnText) btnText.innerText = "Thu gọn ▴";
+            } else {
+                content.style.display = "none";
+                if (btnText) btnText.innerText = "Đổi sang Bot / Tài khoản khác ▾";
+            }
+        }
+
+        async function saveNewBotCredentials() {
+            const appIdInput = document.getElementById("inputNewAppId");
+            const appSecretInput = document.getElementById("inputNewAppSecret");
+            const statusSpan = document.getElementById("botSwitchStatus");
+            const btn = document.getElementById("btnSaveNewBot");
+
+            const appId = appIdInput ? appIdInput.value.trim() : "";
+            const appSecret = appSecretInput ? appSecretInput.value.trim() : "";
+
+            if (!appId || !appId.startsWith("cli_")) {
+                if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--danger); font-size: 11.5px;">App ID không hợp lệ (phải bắt đầu bằng cli_)</span>';
+                return;
+            }
+            if (!appSecret) {
+                if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--danger); font-size: 11.5px;">Vui lòng nhập App Secret</span>';
+                return;
             }
 
+            if (btn) btn.disabled = true;
+            if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--accent); font-size: 11.5px;">Đang kết nối Bot mới...</span>';
+
+            try {
+                const res = await fetch("/onboarding/api/save-bot-config", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        app_id: appId,
+                        app_secret: appSecret
+                    })
+                });
+                const json = await res.json();
+                if (json.success) {
+                    if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 11.5px;">Đã kết nối Bot mới thành công!</span>';
+                    const badge = document.getElementById("botStatusBadge");
+                    if (badge) badge.innerText = `Đã đổi: ${appId.slice(0, 10)}...`;
+                    const wsText = document.getElementById("botWsStatusText");
+                    if (wsText) wsText.innerText = `Lark WebSocket (${appId.slice(0, 10)}...)`;
+                    setTimeout(() => {
+                        toggleCustomBotCredentials();
+                    }, 1200);
+                } else {
+                    if (statusSpan) statusSpan.innerHTML = `<span style="color: var(--danger); font-size: 11.5px;">Lỗi: ${json.detail || json.message || "Không thể kết nối"}</span>`;
+                }
+            } catch (err) {
+                if (statusSpan) statusSpan.innerHTML = `<span style="color: var(--danger); font-size: 11.5px;">Lỗi mạng: ${err.message}</span>`;
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function navigateStep(direction) {
             if (direction === 1 && currentStep === totalSteps) {
                 saveFinalSettings();
                 return;
@@ -1264,8 +1184,8 @@
                 llm_timeout: isByok ? timeoutVal : 60,
                 digest_schedule_time: document.getElementById("digestTimeSelect").value,
                 hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
-                app_id: document.getElementById("inputAppId") ? document.getElementById("inputAppId").value.trim() : null,
-                app_secret: document.getElementById("inputAppSecret") ? document.getElementById("inputAppSecret").value.trim() : null,
+                app_id: null,
+                app_secret: null,
                 custom_mongo_url: document.getElementById("inputMongoUrl") ? document.getElementById("inputMongoUrl").value.trim() : null
             };
 

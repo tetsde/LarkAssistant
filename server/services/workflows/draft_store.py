@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from pymongo import ReturnDocument
 
 from database.db import get_draft_logs_collection as default_get_collection
+from database.scoped_query import inject_tenant_filter, get_current_tenant_key
 from models.chat import PendingDraft
 from models.memory import get_vietnam_now_iso
 
@@ -22,22 +23,36 @@ def _get_collection():
 
 
 class DraftStore:
-    """Read and update draft approval state in MongoDB."""
+    """Read and update draft approval state in MongoDB with tenant isolation."""
 
     async def create(self, draft: PendingDraft) -> PendingDraft:
+        if not draft.tenant_key:
+            draft.tenant_key = get_current_tenant_key()
         await _get_collection().insert_one(draft.to_dict())
         return draft
 
-    async def get_latest_pending(self, owner_id: str) -> Optional[PendingDraft]:
+    async def get_latest_pending(
+        self,
+        owner_id: str,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[PendingDraft]:
+        eff_tenant = tenant_key or get_current_tenant_key()
+        query = inject_tenant_filter({"owner_id": owner_id, "status": "pending"}, eff_tenant)
         document = await _get_collection().find_one(
-            {"owner_id": owner_id, "status": "pending"},
+            query,
             sort=[("created_at", -1)],
         )
         return PendingDraft.from_document(document) if document else None
 
-    async def claim_latest_pending(self, owner_id: str) -> Optional[PendingDraft]:
+    async def claim_latest_pending(
+        self,
+        owner_id: str,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[PendingDraft]:
+        eff_tenant = tenant_key or get_current_tenant_key()
+        query = inject_tenant_filter({"owner_id": owner_id, "status": "pending"}, eff_tenant)
         document = await _get_collection().find_one_and_update(
-            {"owner_id": owner_id, "status": "pending"},
+            query,
             {
                 "$set": {
                     "status": "sending",
@@ -85,9 +100,15 @@ class DraftStore:
         )
         return result.modified_count == 1
 
-    async def discard_latest_pending(self, owner_id: str) -> Optional[PendingDraft]:
+    async def discard_latest_pending(
+        self,
+        owner_id: str,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[PendingDraft]:
+        eff_tenant = tenant_key or get_current_tenant_key()
+        query = inject_tenant_filter({"owner_id": owner_id, "status": "pending"}, eff_tenant)
         document = await _get_collection().find_one_and_update(
-            {"owner_id": owner_id, "status": "pending"},
+            query,
             {"$set": {"status": "discarded", "updated_at": get_vietnam_now_iso()}},
             sort=[("created_at", -1)],
             return_document=ReturnDocument.AFTER,
