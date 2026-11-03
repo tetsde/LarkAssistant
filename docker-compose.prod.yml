@@ -57,14 +57,16 @@ services:
     env_file:
       - .env
     environment:
-      # Tự động kết nối Mongo local container nếu user không cấu hình MONGO_URL trong .env.
-      # Nếu user cấu hình Atlas (mongodb+srv://...), hệ thống sẽ tự động ưu tiên Atlas.
-      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
-      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017}
+      # Không nhúng credential thật vào file này: chuỗi Atlas từng nằm trong lịch sử Git
+      # nên mật khẩu phải được đổi và chỉ được lấy từ .env trên máy deploy.
+      # Cú pháp `:?` làm `docker compose` fail ngay khi khởi động nếu biến chưa được set,
+      # thay vì âm thầm chạy bằng DB của môi trường khác.
+      - MONGO_URL=${MONGO_URL:?MONGO_URL chưa được set trong .env của máy deploy}
+      - MONGODB_URI=${MONGODB_URI:?MONGODB_URI chưa được set trong .env của máy deploy}
       - MONGO_DB=${MONGO_DB:-LarkAssistant}
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
-      - BASE_URL=${DOCKER_WEKNORA_BASE_URL:-http://WeKnora-app:8080/api/v1}
-      - DOCREADER_GRPC_HOST=${DOCREADER_GRPC_HOST:-WeKnora-docreader}
+      - BASE_URL=${DOCKER_WEKNORA_BASE_URL:-http://host.docker.internal/api/v1}
+      - DOCREADER_GRPC_HOST=${DOCREADER_GRPC_HOST:-host.docker.internal}
       - DOCREADER_GRPC_PORT=${DOCREADER_GRPC_PORT:-50051}
       - WEKNORA_API_KEY=${WEKNORA_API_KEY:-${api_weknora:-}}
       - api_weknora=${api_weknora:-${WEKNORA_API_KEY:-}}
