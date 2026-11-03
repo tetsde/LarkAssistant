@@ -53,7 +53,8 @@ EXPOSE 8000
 
 # Production Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
-    CMD curl --fail http://localhost:8000/health || exit 1
+    CMD curl --fail http://localhost:${PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Tự động hỗ trợ biến $PORT của Railway, Render, Fly.io (fallback 8000 cho Docker local)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
