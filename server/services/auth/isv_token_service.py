@@ -26,6 +26,7 @@ import lark_oapi as lark
 
 from core.config import settings
 from core.http_client import get_http_client
+from core.tenant_errors import TenantContextMissing, TokenUnavailable
 from database.db import get_isv_auth_collection, get_sync_db
 
 logger = logging.getLogger("hilark.isv_token")
@@ -33,6 +34,17 @@ logger.setLevel(logging.INFO)
 
 ISV_TICKET_DOC_ID = "isv_app_ticket"
 VIETNAM_TZ = timezone(timedelta(hours=7))
+
+
+# =============================================================================
+# HELPER: RESOLVE APP CREDENTIALS -> KHÔNG CÒN Ở ĐÂY
+# =============================================================================
+# Hai hàm `_resolve_app_credentials_sync_safe` / `_resolve_app_credentials_async` trước
+# đây trả lời câu hỏi "App của tenant này là gì" theo ba tầng: tenant_key → "App mới nhất
+# trong DB" → `.env`. Hai tầng sau khiến một tenant vô tình gọi Lark bằng credential của
+# tenant khác mà không có dấu hiệu nào. Nay điểm vào duy nhất là
+# `services.tenancy.tenant_resolver.tenant_resolver.resolve_credentials()` — thiếu dữ
+# liệu của chính tenant là raise exception có kiểu.
 
 
 class ISVTokenService:
@@ -260,22 +272,31 @@ class ISVTokenService:
         force_refresh: bool = False,
     ) -> str:
         """
-        Lấy tenant_access_token cho một doanh nghiệp cụ thể (dựa vào tenant_key):
-          - Nếu không truyền tenant_key hoặc không ở chế độ ISV: Fallback về internal Custom App token.
-          - Nếu ở chế độ ISV:
-            1. Đọc cache in-memory theo tenant_key (nếu còn > 10 phút).
-            2. Nếu hết hạn: Đổi app_access_token + tenant_key lấy tenant_access_token mới.
-            3. Lưu cache RAM và MongoDB.
+        Lấy tenant_access_token cho MỘT doanh nghiệp cụ thể, chỉ dành cho ISV/Marketplace App:
+          1. Đọc cache in-memory theo tenant_key (nếu còn > 10 phút).
+          2. Nếu hết hạn: đổi app_access_token + tenant_key lấy tenant_access_token mới.
+          3. Lưu cache RAM và MongoDB.
+
+        Custom App (không phải ISV) bị từ chối ở đây: token của nó phải đi qua
+        `token_broker` để broker chọn provider theo `settings.IS_ISV_MODE`.
         """
         # Custom App dùng endpoint /internal; tenant_key không biến nó thành ISV App.
         # Chỉ Store/ISV App mới dùng app_access_token + tenant_key.
         isv_active = self.is_isv_mode or bool(self._app_ticket or self._app_access_token)
         if not isv_active:
-            return await self._get_custom_app_tenant_token(force_refresh=force_refresh)
+            # Custom App không còn dùng đường này. Caller phải gọi token_broker để broker
+            # tự chọn provider theo mode; nếu gọi thẳng vào đây nghĩa là chọn sai provider.
+            raise TokenUnavailable(
+                "get_tenant_access_token() chỉ dùng cho ISV/Marketplace App. "
+                "Custom App phải lấy token qua token_broker.",
+                tenant_key=tenant_key,
+                kind="tenant",
+            )
 
         if not tenant_key:
-            logger.warning("get_tenant_access_token được gọi trong ISV mode nhưng thiếu tenant_key.")
-            return ""
+            # ISV mà không biết tenant nào thì không thể chọn app_ticket: thà raise còn
+            # hơn trả "" (caller sẽ gửi request với Bearer rỗng rồi lỗi mù ở Lark).
+            raise TenantContextMissing("get_tenant_access_token() trong ISV mode bắt buộc tenant_key.")
 
         now = time.time()
         cached = self._tenant_tokens.get(tenant_key)
@@ -345,70 +366,22 @@ class ISVTokenService:
         tenant_key: str = "",
         force_refresh: bool = False,
     ) -> str:
-        """Wrapper đồng bộ cho các lệnh gọi đồng bộ (LarkBaseService, CLI scripts)."""
-        isv_active = self.is_isv_mode or bool(self._app_ticket or self._app_access_token)
-        if not isv_active:
-            return self._get_custom_app_tenant_token_sync(force_refresh=force_refresh)
+        """
+        Wrapper đồng bộ. Trước đây hàm này gọi `asyncio.run(...)` trong thread phụ -
+        đúng con đường tạo event loop mới rồi đóng lại trong khi lock của token manager
+        thuộc loop khác (gây treo). Nay mọi lối lấy token đều đi qua token loop duy nhất.
+        """
+        from services.auth.tenant_token_manager import token_broker
 
-        # Kiểm tra RAM cache trước
-        now = time.time()
-        cached = self._tenant_tokens.get(tenant_key)
-        if not force_refresh and cached and (now < cached.get("expires_at", 0) - 600):
-            return cached.get("token", "")
-
-        try:
-            loop = asyncio.get_running_loop()
-            # Đang trong event loop -> tạo task
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(asyncio.run, self.get_tenant_access_token(tenant_key, force_refresh))
-                return fut.result(timeout=15.0)
-        except RuntimeError:
-            # Chưa có event loop
-            return asyncio.run(self.get_tenant_access_token(tenant_key, force_refresh))
+        return token_broker.get_token_sync(tenant_key, "bot", force_refresh=force_refresh)
 
     # -------------------------------------------------------------------------
-    # 4. TƯƠNG THÍCH NGƯỢC (FALLBACK CUSTOM APP TOKEN)
+    # 4. CUSTOM APP TOKEN: KHÔNG CÒN Ở ĐÂY
     # -------------------------------------------------------------------------
-
-    async def _get_custom_app_tenant_token(self, force_refresh: bool = False) -> str:
-        """Lấy tenant_access_token cho Custom App (Single-Tenant) qua endpoint /internal."""
-        app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
-        app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
-        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
-
-        if not app_id or not app_secret:
-            return ""
-
-        url = f"{domain}/open-apis/auth/v3/tenant_access_token/internal"
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, json={"app_id": app_id, "app_secret": app_secret})
-                data = resp.json()
-                if data.get("code") == 0:
-                    return data.get("tenant_access_token", "")
-        except Exception as e:
-            logger.error(f"Lỗi lấy internal tenant token: {e}")
-        return ""
-
-    def _get_custom_app_tenant_token_sync(self, force_refresh: bool = False) -> str:
-        """Lấy internal tenant token đồng bộ."""
-        app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
-        app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
-        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
-
-        if not app_id or not app_secret:
-            return ""
-
-        url = f"{domain}/open-apis/auth/v3/tenant_access_token/internal"
-        try:
-            resp = httpx.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10.0)
-            data = resp.json()
-            if data.get("code") == 0:
-                return data.get("tenant_access_token", "")
-        except Exception as e:
-            logger.error(f"Lỗi lấy internal tenant token sync: {e}")
-        return ""
+    # Nhánh Custom App (`_get_custom_app_tenant_token` / `..._sync`) đã được chuyển vào
+    # `services.auth.tenant_token_manager.CustomAppProvider`. Lý do: hai hàm cũ tự
+    # resolve credential theo kiểu "App bất kỳ trong DB → .env" và không cache gì,
+    # nên mỗi lần gọi là một request Lark mới và có thể gắn nhầm App của tenant khác.
 
     # -------------------------------------------------------------------------
     # 5. REQUEST OPTION BUILDER CHO LARK SDK

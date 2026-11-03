@@ -76,9 +76,15 @@ fi
 # ------------------------------------------------------------------------------
 # 4. Xây dựng và khởi chạy Docker Compose Stack
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}[4/5] Xây dựng và khởi chạy các dịch vụ sản xuất...${NC}"
-$DOCKER_COMPOSE_CMD -f docker-compose.prod.yml build
-$DOCKER_COMPOSE_CMD -f docker-compose.prod.yml up -d
+COMPOSE_FILE="docker-compose.prod.yml"
+if [ "$1" == "--all-in-one" ] || [ "$1" == "-a" ]; then
+    COMPOSE_FILE="docker-compose.all-in-one.yml"
+    echo -e "${GREEN}✓ Chế độ All-in-One được kích hoạt: Khởi chạy trọn bộ HiLark + WeKnora Vault.${NC}"
+fi
+
+echo -e "${YELLOW}[4/5] Xây dựng và khởi chạy các dịch vụ sản xuất (${COMPOSE_FILE})...${NC}"
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" build
+$DOCKER_COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
 # ------------------------------------------------------------------------------
 # 5. Kiểm tra Healthcheck dịch vụ

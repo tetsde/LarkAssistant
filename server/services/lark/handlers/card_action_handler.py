@@ -15,10 +15,29 @@ Mục đích:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
+import threading
+import time
+from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger("hilark.bot.card_action_handler")
+
+# Cache chống xử lý trùng lặp và lưu kết quả thẻ đã xử lý (chống race condition WebSocket & HTTP webhook)
+# key: dedup_key -> (timestamp, Optional[result_tuple])
+_PROCESSED_CARD_ACTIONS: OrderedDict[str, Tuple[float, Optional[Tuple[bool, str, Optional[Dict[str, Any]]]]]] = OrderedDict()
+_ACTION_LOCK = threading.Lock()
+
+READ_ONLY_ACTIONS = {
+    "view_owner_hub",
+    "view_weknora_info",
+    "view_digest_detail",
+    "manual_edit_draft",
+    "cancel_manual_edit",
+}
 
 from services.claim_service import claim_service as default_claim_service
 from services.digest_service import digest_service as default_digest_service
@@ -26,16 +45,13 @@ from services.draft_service import draft_service as default_draft_service
 from services.lark import lark_service as default_lark_service
 from services.lark.card_builder import (
     PROPERTY_LABELS,
-    build_admin_status_card,
-    build_digest_approval_card,
+    build_draft_card,
+    build_draft_edit_form_card,
     build_onboarding_welcome_card,
     build_owner_control_hub_card,
     build_project_digest_detail_card,
     build_updated_status_card,
 )
-
-
-logger = logging.getLogger("hilark.bot.card_action_handler")
 
 
 def _resolve_service(name: str, default: Any) -> Any:
@@ -81,6 +97,38 @@ def parse_card_action_payload(payload: Dict[str, Any]) -> Tuple[str, str, Dict[s
     if header_tenant and not action_val.get("tenant_key"):
         action_val["tenant_key"] = header_tenant
 
+    # Trích xuất form_value nếu có (hỗ trợ component form & textarea trong Card JSON 2.0)
+    event_dict = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+    action_dict = event_dict.get("action") if event_dict else (payload.get("action") or {})
+    form_val = (
+        event_dict.get("form_value")
+        or (action_dict.get("form_value") if isinstance(action_dict, dict) else None)
+        or payload.get("form_value")
+    )
+    if form_val and isinstance(form_val, dict) and "form_value" not in action_val:
+        action_val["form_value"] = form_val
+    input_val = (
+        event_dict.get("input_value")
+        or (action_dict.get("input_value") if isinstance(action_dict, dict) else None)
+        or payload.get("input_value")
+    )
+    if input_val and "input_value" not in action_val:
+        action_val["input_value"] = input_val
+    name_val = (
+        (action_dict.get("name") if isinstance(action_dict, dict) else None)
+        or event_dict.get("name")
+        or payload.get("name")
+    )
+    if name_val and "name" not in action_val:
+        action_val["name"] = name_val
+    tag_val = (
+        (action_dict.get("tag") if isinstance(action_dict, dict) else None)
+        or event_dict.get("tag")
+        or payload.get("tag")
+    )
+    if tag_val and "tag" not in action_val:
+        action_val["tag"] = tag_val
+
     return open_id, message_id, action_val
 
 
@@ -115,12 +163,110 @@ async def _execute_card_action(
     action_value: Dict[str, Any],
     tenant_key: Optional[str] = None,
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-    """Thực thi logic nội bộ hành động thẻ với tenant context đã xác định."""
+    """Điều phối xử lý hành động thẻ: chống race condition, cache kết quả và gọi hàm thực thi."""
     action = action_value.get("action")
+    if not action:
+        btn_name = str(action_value.get("name") or "").strip()
+        form_val = action_value.get("form_value") or {}
+
+        if btn_name in ("btn_approve_draft", "approve_draft"):
+            action = "approve_draft"
+        elif btn_name in ("btn_manual_edit_draft", "manual_edit_draft"):
+            action = "manual_edit_draft"
+        elif btn_name in ("btn_discard_draft", "discard_draft"):
+            action = "discard_draft"
+        elif btn_name in ("submit_manual_edit", "btn_submit_manual_edit", "submit_btn", "btn_submit"):
+            action = "submit_manual_edit"
+        elif btn_name in ("cancel_manual_edit", "btn_cancel_manual_edit", "cancel_btn", "btn_cancel"):
+            action = "cancel_manual_edit"
+        elif ("edited_content" in form_val) or ("edited_content" in action_value) or (form_val and not action):
+            action = "submit_manual_edit"
+        elif btn_name in ("btn_approve_claim", "approve_claim"):
+            action = "approve_claim"
+        elif btn_name in ("btn_reject_claim", "reject_claim"):
+            action = "reject_claim"
+        elif btn_name in ("btn_edit_claim", "edit_claim"):
+            action = "edit_claim"
+        elif btn_name in ("btn_approve_digest", "approve_digest"):
+            action = "approve_digest"
+        elif btn_name in ("btn_discard_digest", "discard_digest"):
+            action = "discard_digest"
+
     if not action:
         return False, "Không xác định được hành động từ thẻ", None
 
-    lark_svc = _resolve_service("lark_service", default_lark_service)
+    dedup_key = f"{open_id}:{message_id}:{action}:{action_value.get('draft_id', '')}"
+    now = time.time()
+    wait_for_in_flight = False
+
+    with _ACTION_LOCK:
+        while _PROCESSED_CARD_ACTIONS and (now - next(iter(_PROCESSED_CARD_ACTIONS.values()))[0] > 15.0):
+            _PROCESSED_CARD_ACTIONS.popitem(last=False)
+
+        if dedup_key in _PROCESSED_CARD_ACTIONS:
+            cached_ts, cached_res = _PROCESSED_CARD_ACTIONS[dedup_key]
+            if (now - cached_ts) < 8.0:
+                if cached_res is not None:
+                    logger.info(f"⚡ [CARD DEDUP CACHE HIT] Trả về thẻ đã xử lý cho {dedup_key}")
+                    return cached_res
+                else:
+                    wait_for_in_flight = True
+            else:
+                _PROCESSED_CARD_ACTIONS[dedup_key] = (now, None)
+        else:
+            _PROCESSED_CARD_ACTIONS[dedup_key] = (now, None)
+
+    if wait_for_in_flight:
+        for _ in range(25):
+            await asyncio.sleep(0.1)
+            with _ACTION_LOCK:
+                if dedup_key in _PROCESSED_CARD_ACTIONS:
+                    _, cached_res = _PROCESSED_CARD_ACTIONS[dedup_key]
+                    if cached_res is not None:
+                        logger.info(f"⚡ [CARD DEDUP WAITED HIT] Nhận kết quả từ request song song cho {dedup_key}")
+                        return cached_res
+
+        if action not in READ_ONLY_ACTIONS:
+            logger.info(f"🚫 [CARD DEDUP] Bỏ qua thao tác ghi đang xử lý dở: {dedup_key}")
+            return True, "Thao tác đã được ghi nhận", None
+        logger.info(f"🔄 [CARD FALLBACK RUN] Tiếp tục render thẻ cho {action}")
+
+    result: Tuple[bool, str, Optional[Dict[str, Any]]] = (False, "Lỗi chưa xác định", None)
+    try:
+        result = await _do_execute_card_action(open_id, message_id, action, action_value, tenant_key)
+    finally:
+        with _ACTION_LOCK:
+            _PROCESSED_CARD_ACTIONS[dedup_key] = (time.time(), result)
+
+    return result
+
+
+async def _do_execute_card_action(
+    open_id: str,
+    message_id: str,
+    action: str,
+    action_value: Dict[str, Any],
+    tenant_key: Optional[str] = None,
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Thực thi logic nội bộ hành động thẻ với tenant context đã xác định."""
+    # Lazy load lark_svc khi thực sự cần (tránh lãng phí 2000-3000ms query DB + refresh OIDC token cho các action đơn giản)
+    _cached_lark_svc = None
+
+    async def _get_action_lark_svc():
+        nonlocal _cached_lark_svc
+        if _cached_lark_svc is None:
+            _cached_lark_svc = _resolve_service("lark_service", default_lark_service)
+            if tenant_key:
+                try:
+                    from services.lark_app_service import lark_app_service
+                    from services.lark.runtime import get_or_create_lark_service
+                    app_rec = await lark_app_service.get_by_tenant_key(tenant_key)
+                    if app_rec:
+                        _cached_lark_svc = await get_or_create_lark_service(app_rec)
+                except Exception as e:
+                    logger.debug(f"Không thể resolve lark_svc cho tenant {tenant_key}: {e}")
+        return _cached_lark_svc
+
     draft_svc = _resolve_service("draft_service", default_draft_service)
     claim_svc = _resolve_service("claim_service", default_claim_service)
     digest_svc = _resolve_service("digest_service", default_digest_service)
@@ -131,7 +277,10 @@ async def _execute_card_action(
     # 1. HÀNH ĐỘNG DUYỆT BẢN NHÁP CÂU TRẢ LỜI
     # =========================================================================
     if action == "approve_draft":
-        ok, detail, draft, _ = await draft_svc.send_latest(open_id, tenant_key=tenant_key)
+        try:
+            ok, detail, draft, _ = await draft_svc.send_latest(open_id, tenant_key=tenant_key, background=True)
+        except TypeError:
+            ok, detail, draft, _ = await draft_svc.send_latest(open_id, tenant_key=tenant_key)
         if ok and draft:
             resp_name = getattr(draft, "responder_name", None) or (draft.get("responder_name") if isinstance(draft, dict) else None) or "User"
             appr_content = getattr(draft, "approved_content", None) or (draft.get("approved_content") if isinstance(draft, dict) else None) or getattr(draft, "draft_answer", None) or (draft.get("draft_answer") if isinstance(draft, dict) else None) or ""
@@ -144,12 +293,32 @@ async def _execute_card_action(
                 ],
                 template="green",
             )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
+            # Lưu ý: Cập nhật thẻ đồng bộ qua Sync Response (tránh double patch gây xung đột version và lỗi 200341)
             return True, "Đã gửi câu trả lời vào nhóm thành công", updated_card
+
+        # Idempotency check: Nếu bấm đúp hoặc retry do mạng chậm, kiểm tra xem bản nháp đã vừa được gửi chưa
+        try:
+            from services.workflows.draft_store import _get_collection, inject_tenant_filter
+            recent_sent = await _get_collection().find_one(
+                inject_tenant_filter({"owner_id": open_id, "status": "sent"}, tenant_key),
+                sort=[("updated_at", -1)],
+            )
+            if recent_sent:
+                resp_name = recent_sent.get("responder_name") or "User"
+                appr_content = recent_sent.get("approved_content") or recent_sent.get("draft_answer") or ""
+                updated_card = build_updated_status_card(
+                    title="Bản nháp câu trả lời",
+                    status_message="Đã duyệt và gửi câu trả lời vào nhóm thảo luận",
+                    detail_lines=[
+                        f"Người trả lời: {resp_name}",
+                        f"Nội dung đã gửi: \"{appr_content}\"",
+                    ],
+                    template="green",
+                )
+                return True, "Đã gửi câu trả lời vào nhóm thành công", updated_card
+        except Exception as check_err:
+            logger.debug(f"Không thể kiểm tra idempotency recent_sent: {check_err}")
+
         return False, f"Chưa thể gửi bản nháp: {detail}", None
 
     if action == "discard_draft":
@@ -165,23 +334,163 @@ async def _execute_card_action(
                 ],
                 template="grey",
             )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
             return True, "Đã hủy bỏ bản nháp thành công", updated_card
         return False, "Hiện không có bản nháp nào đang chờ duyệt để hủy", None
 
-    if action == "ai_rewrite_draft":
-        msg_prompt = "Vui lòng nhắn trong cuộc trò chuyện này: Sửa AI: <yêu cầu cụ thể> để AI điều chỉnh câu trả lời theo chỉ đạo."
-        await lark_svc.send_bot_dm_to_owner(msg_prompt, target_open_id=open_id, tenant_key=tenant_key)
-        return True, "Nhắn 'Sửa AI: <yêu cầu>' để viết lại", None
-
     if action == "manual_edit_draft":
-        msg_prompt = "Vui lòng nhắn trong cuộc trò chuyện này: Sửa: <nội dung mới> để cập nhật và gửi trực tiếp câu trả lời vào nhóm."
-        await lark_svc.send_bot_dm_to_owner(msg_prompt, target_open_id=open_id, tenant_key=tenant_key)
-        return True, "Nhắn 'Sửa: <nội dung>' để tự sửa", None
+        target_draft_id = action_value.get("draft_id")
+        draft = None
+        if target_draft_id:
+            try:
+                from services.workflows.draft_store import _get_collection, inject_tenant_filter
+                doc = await _get_collection().find_one(
+                    inject_tenant_filter({"status": "pending", "$or": [{"id": target_draft_id}, {"message_id": target_draft_id}]}, tenant_key)
+                )
+                if doc:
+                    from models.chat import PendingDraft
+                    draft = PendingDraft.from_document(doc)
+            except Exception as e:
+                logger.debug(f"Không thể tìm draft theo draft_id {target_draft_id}: {e}")
+        if not draft:
+            draft = await draft_svc.get_latest_pending(open_id, tenant_key=tenant_key)
+        if draft:
+            d_query = getattr(draft, "query", "") or (draft.get("query") if isinstance(draft, dict) else "") or ""
+            d_answer = (
+                getattr(draft, "approved_content", None)
+                or (draft.get("approved_content") if isinstance(draft, dict) else None)
+                or getattr(draft, "draft_answer", "")
+                or (draft.get("draft_answer") if isinstance(draft, dict) else "")
+                or ""
+            )
+            d_user = getattr(draft, "user_name", "Thành viên") or (draft.get("user_name") if isinstance(draft, dict) else "Thành viên") or "Thành viên"
+            d_id = getattr(draft, "id", "") or (draft.get("id") if isinstance(draft, dict) else "") or action_value.get("draft_id", "")
+            d_chat_id = getattr(draft, "chat_id", "") or (draft.get("chat_id") if isinstance(draft, dict) else "") or "Nhóm thảo luận"
+
+            edit_card = build_draft_edit_form_card(
+                draft_id=d_id,
+                chat_title=d_chat_id,
+                user_name=d_user,
+                query=d_query,
+                draft_answer=d_answer,
+                tenant_key=tenant_key,
+            )
+            return True, "Đã mở khung chỉnh sửa câu trả lời", edit_card
+        return False, "Hiện không có bản nháp nào đang chờ duyệt để chỉnh sửa", None
+
+    if action == "submit_manual_edit":
+        # Trích xuất nội dung sau khi chỉnh sửa từ form_value hoặc action_value (hỗ trợ linh hoạt mọi key component)
+        form_val = action_value.get("form_value") or {}
+        single_form_val = list(form_val.values())[0] if form_val and isinstance(form_val, dict) and len(form_val) == 1 else ""
+        edited_content = (
+            form_val.get("edited_content")
+            or action_value.get("edited_content")
+            or action_value.get("input_value")
+            or single_form_val
+            or ""
+        )
+        if not edited_content or not str(edited_content).strip():
+            return False, "Vui lòng nhập nội dung câu trả lời trước khi gửi", None
+
+        target_draft_id = action_value.get("draft_id")
+        try:
+            ok, detail, draft, _ = await draft_svc.send_latest(
+                open_id,
+                approved_content=str(edited_content).strip(),
+                tenant_key=tenant_key,
+                background=True,
+                draft_id=target_draft_id,
+            )
+        except TypeError:
+            ok, detail, draft, _ = await draft_svc.send_latest(
+                open_id,
+                approved_content=str(edited_content).strip(),
+                tenant_key=tenant_key,
+                background=True,
+            )
+        if ok and draft:
+            resp_name = getattr(draft, "responder_name", None) or (draft.get("responder_name") if isinstance(draft, dict) else None) or "User"
+            appr_content = getattr(draft, "approved_content", None) or (draft.get("approved_content") if isinstance(draft, dict) else None) or str(edited_content).strip()
+            updated_card = build_updated_status_card(
+                title="Bản nháp câu trả lời",
+                status_message="Đã chỉnh sửa và gửi câu trả lời vào nhóm thảo luận",
+                detail_lines=[
+                    f"Người trả lời: {resp_name}",
+                    f"Nội dung đã gửi: \"{appr_content}\"",
+                ],
+                template="green",
+            )
+            return True, "Đã gửi câu trả lời đã chỉnh sửa vào nhóm thành công", updated_card
+
+        # Idempotency check: Nếu bấm đúp hoặc retry do mạng chậm, kiểm tra xem bản nháp đã vừa được gửi chưa
+        try:
+            from services.workflows.draft_store import _get_collection, inject_tenant_filter
+            sent_filters: Dict[str, Any] = {"status": "sent"}
+            if target_draft_id:
+                sent_filters["$or"] = [{"id": target_draft_id}, {"message_id": target_draft_id}]
+            else:
+                sent_filters["owner_id"] = open_id
+            recent_sent = await _get_collection().find_one(
+                inject_tenant_filter(sent_filters, tenant_key),
+                sort=[("updated_at", -1)],
+            )
+            if recent_sent:
+                resp_name = recent_sent.get("responder_name") or "User"
+                appr_content = recent_sent.get("approved_content") or recent_sent.get("draft_answer") or str(edited_content).strip()
+                updated_card = build_updated_status_card(
+                    title="Bản nháp câu trả lời",
+                    status_message="Đã chỉnh sửa và gửi câu trả lời vào nhóm thảo luận",
+                    detail_lines=[
+                        f"Người trả lời: {resp_name}",
+                        f"Nội dung đã gửi: \"{appr_content}\"",
+                    ],
+                    template="green",
+                )
+                return True, "Đã gửi câu trả lời đã chỉnh sửa vào nhóm thành công", updated_card
+        except Exception as check_err:
+            logger.debug(f"Không thể kiểm tra idempotency recent_sent: {check_err}")
+
+        return False, f"Chưa thể gửi bản nháp đã sửa: {detail}", None
+
+    if action == "cancel_manual_edit":
+        target_draft_id = action_value.get("draft_id")
+        draft = None
+        if target_draft_id:
+            try:
+                from services.workflows.draft_store import _get_collection, inject_tenant_filter
+                doc = await _get_collection().find_one(
+                    inject_tenant_filter({"status": "pending", "$or": [{"id": target_draft_id}, {"message_id": target_draft_id}]}, tenant_key)
+                )
+                if doc:
+                    from models.chat import PendingDraft
+                    draft = PendingDraft.from_document(doc)
+            except Exception as e:
+                logger.debug(f"Không thể tìm draft theo draft_id {target_draft_id}: {e}")
+        if not draft:
+            draft = await draft_svc.get_latest_pending(open_id, tenant_key=tenant_key)
+        if draft:
+            d_query = getattr(draft, "query", "") or (draft.get("query") if isinstance(draft, dict) else "") or ""
+            d_answer = (
+                getattr(draft, "approved_content", None)
+                or (draft.get("approved_content") if isinstance(draft, dict) else None)
+                or getattr(draft, "draft_answer", "")
+                or (draft.get("draft_answer") if isinstance(draft, dict) else "")
+                or ""
+            )
+            d_user = getattr(draft, "user_name", "Thành viên") or (draft.get("user_name") if isinstance(draft, dict) else "Thành viên") or "Thành viên"
+            d_id = getattr(draft, "id", "") or (draft.get("id") if isinstance(draft, dict) else "") or action_value.get("draft_id", "")
+            d_chat_id = getattr(draft, "chat_id", "") or (draft.get("chat_id") if isinstance(draft, dict) else "") or "Nhóm thảo luận"
+
+            original_card = build_draft_card(
+                draft_id=d_id,
+                chat_title=d_chat_id,
+                user_name=d_user,
+                query=d_query,
+                draft_answer=d_answer,
+                reason="Bản nháp câu trả lời đang chờ duyệt.",
+                tenant_key=tenant_key,
+            )
+            return True, "Đã quay lại bản nháp ban đầu", original_card
+        return True, "Đã đóng khung chỉnh sửa", None
 
     # =========================================================================
     # 2. HÀNH ĐỘNG DUYỆT THÔNG TIN ĐỀ XUẤT (CLAIMS / FACTS)
@@ -209,12 +518,6 @@ async def _execute_card_action(
                 ],
                 template="green",
             )
-            target_msg_id = message_id or action_value.get("message_id")
-            if target_msg_id:
-                try:
-                    await lark_svc.update_card_message(target_msg_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
             return True, "Đã duyệt thông tin đề xuất thành công", updated_card
         return False, f"Không thể duyệt thông tin: {msg_reply}", None
 
@@ -240,18 +543,13 @@ async def _execute_card_action(
                 ],
                 template="grey",
             )
-            target_msg_id = message_id or action_value.get("message_id")
-            if target_msg_id:
-                try:
-                    await lark_svc.update_card_message(target_msg_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
             return True, "Đã từ chối thông tin đề xuất", updated_card
         return False, f"Không thể từ chối thông tin: {msg_reply}", None
 
     if action == "edit_claim":
         msg_prompt = "Vui lòng nhắn trong cuộc trò chuyện này: Sửa fact: <giá trị mới> để cập nhật giá trị và phê duyệt thành chính thức."
-        await lark_svc.send_bot_dm_to_owner(msg_prompt, target_open_id=open_id, tenant_key=tenant_key)
+        active_lark_svc = await _get_action_lark_svc()
+        await active_lark_svc.send_bot_dm_to_owner(msg_prompt, target_open_id=open_id, tenant_key=tenant_key)
         return True, "Nhắn 'Sửa fact: <giá trị mới>' để sửa", None
 
     # =========================================================================
@@ -294,11 +592,6 @@ async def _execute_card_action(
                 detail_lines=detail_lines,
                 template="green",
             )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
             return True, "Đã duyệt và đồng bộ báo cáo thành công", updated_card
         return False, f"Không thể duyệt báo cáo: {msg_reply}", None
 
@@ -316,11 +609,6 @@ async def _execute_card_action(
                 ],
                 template="grey",
             )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, updated_card, tenant_key=tenant_key)
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
             return True, "Đã từ chối báo cáo thành công", updated_card
         return False, f"Không thể từ chối báo cáo: {msg_reply}", None
 
@@ -328,109 +616,28 @@ async def _execute_card_action(
         latest_master = await digest_svc.get_latest_pending_master_digest(tenant_key=tenant_key)
         if latest_master:
             detail_card = build_project_digest_detail_card(latest_master)
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, detail_card, tenant_key=tenant_key)
-                    return True, "Đã mở chi tiết báo cáo các nhóm", detail_card
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ chi tiết tại chỗ: {e}")
-            await lark_svc.send_bot_card_to_owner(detail_card, target_open_id=open_id, tenant_key=tenant_key)
-            return True, "Đã gửi chi tiết báo cáo vào tin nhắn", detail_card
+            return True, "Đã mở chi tiết báo cáo các nhóm", detail_card
         return False, "Không tìm thấy nội dung chi tiết báo cáo", None
-
-    if action == "view_master_digest":
-        latest_master = await digest_svc.get_latest_pending_master_digest(tenant_key=tenant_key)
-        if latest_master:
-            pending_claims = []
-            try:
-                pending_claims = await claim_svc.get_pending_claims_for_date(
-                    date_str=getattr(latest_master, "date", None),
-                    tenant_key=tenant_key,
-                )
-            except Exception as e:
-                logger.warning(f"Không thể lấy pending claims khi quay lại master digest: {e}")
-
-            cost_summary = None
-            try:
-                from decorators.cost_telemetry import get_cost_telemetry_summary
-                cost_summary = await get_cost_telemetry_summary(hours=24)
-            except Exception as e:
-                logger.warning(f"Không thể lấy cost_summary khi quay lại master digest: {e}")
-            master_card = build_digest_approval_card(
-                latest_master,
-                pending_claims=pending_claims,
-                cost_summary=cost_summary,
-                tenant_key=tenant_key,
-            )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, master_card, tenant_key=tenant_key)
-                    return True, "Đã quay lại báo cáo tổng quan", master_card
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ báo cáo tại chỗ: {e}")
-            await lark_svc.send_bot_card_to_owner(master_card, target_open_id=open_id, tenant_key=tenant_key)
-            return True, "Đã gửi báo cáo tổng quan vào tin nhắn", master_card
-        return False, "Không tìm thấy báo cáo tổng quan", None
 
     if action == "summarize_digest":
         latest_master = await digest_svc.get_latest_pending_master_digest(tenant_key=tenant_key)
         if latest_master:
             summary = latest_master.executive_summary or "Không có tóm tắt chung."
-            await lark_svc.send_bot_dm_to_owner(
+            active_lark_svc = await _get_action_lark_svc()
+            await active_lark_svc.send_bot_dm_to_owner(
                 f"Tóm tắt điều hành ngày {latest_master.date}:\n{summary}",
                 target_open_id=open_id,
                 tenant_key=tenant_key,
             )
             return True, "Đã gửi tóm tắt ngắn vào tin nhắn", None
         return False, "Không tìm thấy báo cáo để tóm tắt", None
-        return False, "Không tìm thấy báo cáo để tóm tắt", None
 
     if action in ("open_onboarding", "open_onboarding_web"):
         return True, "Đang mở Trình hướng dẫn thiết lập HiLark...", None
 
     # =========================================================================
-    # 4. HÀNH ĐỘNG ĐIỀU PHỐI QUẢN TRỊ (EXECUTIVE CONTROL HUB & STATUS)
+    # 4. HÀNH ĐỘNG ĐIỀU PHỐI QUẢN TRỊ (EXECUTIVE CONTROL HUB)
     # =========================================================================
-    if action == "view_tenant_status":
-        tenant_key = action_value.get("tenant_key")
-        if not tenant_key:
-            try:
-                from database.db import get_tenants_collection
-                t_col = get_tenants_collection()
-                found_t = await t_col.find_one({"admin_open_id": open_id})
-                if found_t:
-                    tenant_key = found_t.get("tenant_key")
-            except Exception as e:
-                logger.debug(f"Không thể tìm tenant cho admin {open_id}: {e}")
-
-        tenant_cfg = None
-        if tenant_key:
-            from database.db import get_tenant_config
-            tenant_cfg = await get_tenant_config(tenant_key)
-
-        active_chat_count = 0
-        if tenant_key:
-            try:
-                from database.db import get_chat_scopes_collection
-                c_col = get_chat_scopes_collection()
-                active_chat_count = await c_col.count_documents({"tenant_key": tenant_key})
-            except Exception:
-                pass
-
-        if tenant_cfg:
-            from models.tenant import TenantConfigRecord
-            rec = TenantConfigRecord.from_dict(tenant_cfg) if isinstance(tenant_cfg, dict) else tenant_cfg
-            status_card = build_admin_status_card(rec, active_chat_count=active_chat_count)
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, status_card, tenant_key=tenant_key)
-                    return True, "Đã mở báo cáo trạng thái doanh nghiệp", status_card
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
-            await lark_svc.send_bot_card_to_owner(status_card, target_open_id=open_id, tenant_key=tenant_key)
-            return True, "Đã gửi báo cáo trạng thái doanh nghiệp", status_card
-        return False, "Chưa tìm thấy cấu hình doanh nghiệp cho tài khoản của bạn", None
-
     if action == "view_owner_hub":
         tenant_key = action_value.get("tenant_key")
         if not tenant_key:
@@ -473,13 +680,6 @@ async def _execute_card_action(
         else:
             hub_card = build_onboarding_welcome_card(open_id=open_id, tenant_key=tenant_key)
 
-        if message_id:
-            try:
-                await lark_svc.update_card_message(message_id, hub_card, tenant_key=tenant_key)
-                return True, "Đã mở Bảng điều khiển quản trị", hub_card
-            except Exception as e:
-                logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
-        await lark_svc.send_bot_card_to_owner(hub_card, target_open_id=open_id, tenant_key=tenant_key)
         return True, "Bảng điều khiển quản trị", hub_card
 
     if action == "view_weknora_info":
@@ -519,14 +719,7 @@ async def _execute_card_action(
                 ],
                 template="wathet",
             )
-            if message_id:
-                try:
-                    await lark_svc.update_card_message(message_id, info_card, tenant_key=tenant_key)
-                    return True, "Đã hiển thị thông tin WeKnora", info_card
-                except Exception as e:
-                    logger.warning(f"Không thể cập nhật thẻ tại chỗ: {e}")
-            await lark_svc.send_bot_card_to_owner(info_card, target_open_id=open_id, tenant_key=tenant_key)
-            return True, "Đã gửi thông tin WeKnora", info_card
+            return True, "Đã hiển thị thông tin WeKnora", info_card
         return False, "Không tìm thấy cấu hình WeKnora cho doanh nghiệp", None
 
     return False, f"Chưa hỗ trợ thao tác '{action}'", None

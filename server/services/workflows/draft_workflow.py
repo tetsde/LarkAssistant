@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
@@ -9,6 +11,9 @@ from typing import Any, Dict, Optional, Tuple
 from services.workflows.draft_store import PendingDraft, draft_store
 
 logger = logging.getLogger(__name__)
+
+# Executor chạy ngầm các tác vụ gửi tin nhắn Lark OpenAPI sau khi duyệt thẻ (Non-blocking callback)
+_bg_delivery_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="draft_delivery_worker")
 
 
 def _get_draft_store():
@@ -36,13 +41,29 @@ class DraftService:
         owner_id: str,
         approved_content: Optional[str] = None,
         tenant_key: Optional[str] = None,
+        background: bool = False,
+        draft_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[PendingDraft], Optional[Dict[str, Any]]]:
         # Tự động refresh store nếu đang bị mock patch
         self.store = _get_draft_store()
-        draft = await self.store.claim_latest_pending(owner_id, tenant_key=tenant_key)
+        draft = None
+        if draft_id and hasattr(self.store, "claim_draft"):
+            draft = await self.store.claim_draft(owner_id, draft_id=draft_id, tenant_key=tenant_key)
+        if not draft:
+            draft = await self.store.claim_latest_pending(owner_id, tenant_key=tenant_key)
         if not draft:
             return False, "Không có bản nháp nào đang chờ duyệt.", None, None
         content = approved_content or draft.approved_content or draft.draft_answer
+
+        if background:
+            # Gửi tin nhắn vào nhóm ở background để callback response phản hồi Lark tức thì (< 50ms)
+            _bg_delivery_executor.submit(
+                lambda: asyncio.run(self._send_claimed(draft, content))
+            )
+            draft.status = "sent"
+            draft.approved_content = content
+            return True, "sent", draft, {"success": True}
+
         return await self._send_claimed(draft, content)
 
     async def discard_latest(self, owner_id: str, tenant_key: Optional[str] = None) -> Optional[PendingDraft]:
@@ -82,11 +103,24 @@ class DraftService:
             state_error = await self._restore_pending(draft, error, content)
             return False, state_error, draft, response if isinstance(response, dict) else None
 
-        if not await self.store.mark_sent(draft.id, content):
+        reply_data = response.get("data") if isinstance(response, dict) else None
+        bot_msg_id = getattr(reply_data, "message_id", None) if reply_data else None
+        if not bot_msg_id and isinstance(reply_data, dict):
+            bot_msg_id = reply_data.get("message_id")
+
+        if bot_msg_id and draft.message_id:
+            try:
+                from database.db import save_bot_reply_to_staging
+                await save_bot_reply_to_staging(draft.message_id, bot_msg_id)
+            except Exception as stg_err:
+                logger.debug(f"Không thể lưu bot_reply_message_id vào staging: {stg_err}")
+
+        if not await self.store.mark_sent(draft.id, content, bot_reply_message_id=bot_msg_id):
             return False, "Lark đã nhận tin nhưng không lưu được trạng thái sent vào MongoDB.", draft, response
 
         draft.status = "sent"
         draft.approved_content = content
+        draft.bot_reply_message_id = bot_msg_id
         return True, "sent", draft, response
 
     async def _restore_pending(self, draft: PendingDraft, error: str, content: str) -> str:

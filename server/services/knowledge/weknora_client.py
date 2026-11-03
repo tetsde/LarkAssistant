@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 import sys
 from typing import Any, Dict, List, Optional, Union
 import httpx
@@ -7,6 +8,8 @@ from core.config import settings
 from core.http_client import get_http_client
 from models.chat import ChatRequest
 from services.ai.text_filter import text_filter
+
+logger = logging.getLogger("hilark.weknora")
 
 
 
@@ -164,16 +167,21 @@ class WeKnoraService:
     async def save_to_kb(
         self,
         text: str,
-        dataset_id: str = None,
+        dataset_id: Optional[str] = None,
         name: Optional[str] = None,
         tenant_id: Optional[Union[int, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
     ) -> dict:
-        target_id = dataset_id or settings.WEKNORA_DATASET_ID
+        # `dataset_id` là bắt buộc về hợp đồng: không được mượn kho mặc định từ .env,
+        # vì kho đó thuộc về một doanh nghiệp cụ thể.
+        target_id = (dataset_id or "").strip()
         if target_id and "," in target_id:
             target_id = target_id.split(",")[0].strip()
         if not target_id:
-            raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
+            raise ValueError(
+                "save_to_kb() yêu cầu dataset_id của tenant đang ghi; không dùng "
+                "WEKNORA_DATASET_ID mặc định từ .env."
+            )
             
         url = f"{self.base_url}/knowledge-bases/{target_id}/knowledge/manual"
         doc_name = name or f"Memory_{text[:15]}..."
@@ -212,11 +220,15 @@ class WeKnoraService:
           - knowledge_id: ID tài liệu WeKnora
           - is_duplicate: True nếu file đã tồn tại trên WeKnora (deduplication 409)
         """
-        target_id = dataset_id or settings.WEKNORA_DATASET_ID
+        # `dataset_id` phải do caller cung cấp theo tenant; không fallback .env.
+        target_id = (dataset_id or "").strip()
         if target_id and "," in target_id:
             target_id = target_id.split(",")[0].strip()
         if not target_id:
-            raise HTTPException(status_code=500, detail="WEKNORA_DATASET_ID is not configured")
+            raise ValueError(
+                "upload_file() yêu cầu dataset_id của tenant đang nạp tài liệu; không dùng "
+                "WEKNORA_DATASET_ID mặc định từ .env."
+            )
 
         if not self.api_key or not self.base_url:
             raise HTTPException(status_code=500, detail="Missing WeKnora API Key or base_url in .env")
@@ -302,6 +314,75 @@ class WeKnoraService:
         except Exception:
             return None
 
+    async def list_knowledges(
+        self,
+        dataset_id: str,
+        page: int = 1,
+        page_size: int = 200,
+        tenant_id: Optional[Union[int, str]] = None,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Liệt kê danh sách tài liệu hiện có trong Knowledge Base của WeKnora.
+        Endpoint WeKnora: GET /knowledge-bases/{dataset_id}/knowledge
+        """
+        if not self.api_key or not self.base_url or not dataset_id:
+            return []
+
+        target_id = dataset_id.strip()
+        if "," in target_id:
+            target_id = target_id.split(",")[0].strip()
+
+        url = f"{self.base_url}/knowledge-bases/{target_id}/knowledge"
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
+
+        params = {"page": page, "page_size": page_size}
+        try:
+            async with self._get_client_session(client) as http_client:
+                resp = await http_client.get(url, headers=headers, params=params, timeout=20.0)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    data = res_json.get("data", []) if isinstance(res_json, dict) else []
+                    return data if isinstance(data, list) else []
+                logger.warning(f"[WeKnora] list_knowledges HTTP {resp.status_code}: {resp.text}")
+                return []
+        except Exception as e:
+            logger.warning(f"[WeKnora] Lỗi khi list_knowledges (kb={target_id}): {e}")
+            return []
+
+    async def delete_knowledge(
+        self,
+        knowledge_id: str,
+        tenant_id: Optional[Union[int, str]] = None,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> bool:
+        """
+        Xoá một tài liệu khỏi WeKnora qua endpoint: DELETE /knowledge/{knowledge_id}
+        Xoá các chunks, vector embeddings và knowledge graph của tài liệu cũ.
+        """
+        if not self.api_key or not self.base_url or not knowledge_id:
+            return False
+
+        clean_kid = knowledge_id.strip()
+        url = f"{self.base_url}/knowledge/{clean_kid}"
+        headers = dict(self.headers)
+        if tenant_id:
+            headers["X-Tenant-ID"] = str(tenant_id)
+
+        try:
+            async with self._get_client_session(client) as http_client:
+                resp = await http_client.delete(url, headers=headers, timeout=20.0)
+                if resp.status_code in (200, 204):
+                    logger.info(f"✔ [WeKnora] Đã xoá tài liệu '{clean_kid}' thành công.")
+                    return True
+                logger.warning(f"⚠️ [WeKnora] Xoá tài liệu '{clean_kid}' trả về HTTP {resp.status_code}: {resp.text}")
+                return False
+        except Exception as e:
+            logger.warning(f"[WeKnora] Lỗi khi delete_knowledge({clean_kid}): {e}")
+            return False
+
     async def retrieve(
         self,
         query: str,
@@ -384,7 +465,29 @@ class WeKnoraService:
                     payload["rerank"] = {"enabled": False}
 
                 headers = dict(self.headers)
+                # P0 FIX #3: Validate tenant_id matches current context to prevent spoofing
                 if tenant_id:
+                    try:
+                        from database.scoped_query import get_current_tenant_key
+                        from database.db import get_tenant_config_sync
+                        cur_tk = get_current_tenant_key()
+                        
+                        if cur_tk:
+                            # Verify tenant_id matches expected value for current tenant
+                            t_cfg = get_tenant_config_sync(cur_tk)
+                            expected_tenant_id = t_cfg.get("weknora_tenant_id") if t_cfg else None
+                            
+                            if expected_tenant_id and str(tenant_id) != str(expected_tenant_id):
+                                logger.error(
+                                    f"🔴 SECURITY: Tenant {cur_tk} attempting to access WeKnora tenant {tenant_id}, "
+                                    f"but expected {expected_tenant_id}. Request BLOCKED."
+                                )
+                                raise ValueError(f"Tenant ID mismatch: {tenant_id} != {expected_tenant_id}")
+                    except Exception as e:
+                        if "Tenant ID mismatch" in str(e):
+                            raise
+                        logger.warning(f"Could not validate tenant_id: {e}")
+                    
                     headers["X-Tenant-ID"] = str(tenant_id)
                 else:
                     try:
@@ -400,7 +503,7 @@ class WeKnoraService:
                     if "X-Tenant-ID" not in headers:
                         # Không được fallback sang tenant mặc định trong production:
                         # thiếu mapping là lỗi cấu hình, không phải quyền truy cập global.
-                        print("[WeKnora] Từ chối retrieval: chưa resolve được X-Tenant-ID.")
+                        logger.warning("[WeKnora] Từ chối retrieval: chưa resolve được X-Tenant-ID.")
                         return []
 
                 response = await http_client.post(

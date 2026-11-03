@@ -164,77 +164,89 @@ def build_draft_card(
             },
         },
         {"tag": "hr"},
-        # Hàng nút thao tác
+        # Hàng nút thao tác chuẩn Card JSON 2.0 (thay thế tag action đã bị deprecate)
         {
-            "tag": "action",
-            "actions": [
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "default",
+            "columns": [
                 {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Duyệt và gửi",
-                    },
-                    "type": "primary",
-                    "value": {
-                        "action": "approve_draft",
-                        "draft_id": draft_id,
-                        "tenant_key": tenant_key or "",
-                    },
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "name": "btn_approve_draft",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": "Duyệt và gửi",
+                            },
+                            "type": "primary",
+                            "value": {
+                                "action": "approve_draft",
+                                "draft_id": draft_id,
+                                "tenant_key": tenant_key or "",
+                            },
+                        }
+                    ],
                 },
                 {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Nhờ AI sửa lại",
-                    },
-                    "type": "default",
-                    "value": {
-                        "action": "ai_rewrite_draft",
-                        "draft_id": draft_id,
-                        "tenant_key": tenant_key or "",
-                    },
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "name": "btn_manual_edit_draft",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": "Tự sửa",
+                            },
+                            "type": "default",
+                            "value": {
+                                "action": "manual_edit_draft",
+                                "draft_id": draft_id,
+                                "tenant_key": tenant_key or "",
+                            },
+                        }
+                    ],
                 },
                 {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Tự sửa",
-                    },
-                    "type": "default",
-                    "value": {
-                        "action": "manual_edit_draft",
-                        "draft_id": draft_id,
-                        "tenant_key": tenant_key or "",
-                    },
-                },
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Hủy bỏ",
-                    },
-                    "type": "danger",
-                    "value": {
-                        "action": "discard_draft",
-                        "draft_id": draft_id,
-                        "tenant_key": tenant_key or "",
-                    },
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [
+                        {
+                            "tag": "button",
+                            "name": "btn_discard_draft",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": "Hủy bỏ",
+                            },
+                            "type": "danger",
+                            "value": {
+                                "action": "discard_draft",
+                                "draft_id": draft_id,
+                                "tenant_key": tenant_key or "",
+                            },
+                        }
+                    ],
                 },
             ],
         },
         # Hướng dẫn thao tác nhanh bằng tin nhắn
         {
-            "tag": "note",
-            "elements": [
-                {
-                    "tag": "plain_text",
-                    "content": "Thao tác nhanh bằng tin nhắn: Gửi / Bỏ / Sửa: <nội dung> / Sửa AI: <yêu cầu>",
-                }
-            ],
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "<font color='grey'>Thao tác nhanh bằng tin nhắn: Gửi / Bỏ / Sửa: &lt;nội dung&gt;</font>",
+            },
         },
     ]
 
     return {
+        "schema": "2.0",
         "config": {
             "wide_screen_mode": True,
         },
@@ -245,7 +257,172 @@ def build_draft_card(
                 "content": header_title,
             },
         },
-        "elements": elements,
+        "body": {
+            "elements": elements,
+        },
+    }
+
+
+def build_draft_edit_form_card(
+    draft_id: str,
+    chat_title: str,
+    user_name: str,
+    query: str,
+    draft_answer: str,
+    tenant_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Xây dựng Thẻ chỉnh sửa bản nháp câu trả lời trực tiếp (Card JSON 2.0 In-place Form).
+    Điền sẵn toàn bộ nội dung bản nháp hiện tại (draft_answer) trong ô input nhiều dòng (multiline_text)
+    để Lãnh đạo tiện sửa nhanh và submit gửi thẳng vào nhóm chat.
+    """
+    clean_chat = _clean_group_name(chat_title)
+    clean_user = user_name.strip() if user_name else "Thành viên"
+
+    elements: List[Dict[str, Any]] = [
+        # Thông tin câu hỏi
+        {
+            "tag": "div",
+            "fields": [
+                {
+                    "is_short": True,
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**Nhóm:** {clean_chat}",
+                    },
+                },
+                {
+                    "is_short": True,
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**Người hỏi:** {clean_user}",
+                    },
+                },
+            ],
+        },
+        {"tag": "hr"},
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Câu hỏi:**\n\"{query.strip()}\"",
+            },
+        },
+        {"tag": "hr"},
+        # Form chỉnh sửa Card JSON 2.0
+        {
+            "tag": "form",
+            "name": "edit_draft_form",
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "**Chỉnh sửa trực tiếp câu trả lời bên dưới:**",
+                    },
+                },
+                {
+                    "tag": "input",
+                    "name": "edited_content",
+                    "input_type": "multiline_text",
+                    "rows": 4,
+                    "auto_resize": True,
+                    "max_rows": 10,
+                    "default_value": draft_answer.strip(),
+                    "placeholder": {
+                        "tag": "plain_text",
+                        "content": "Nhập hoặc chỉnh sửa câu trả lời trước khi gửi...",
+                    },
+                },
+                {
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "horizontal_spacing": "default",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "name": "submit_manual_edit",
+                                    "text": {
+                                        "tag": "plain_text",
+                                        "content": "Lưu và gửi vào nhóm",
+                                    },
+                                    "type": "primary",
+                                    "form_action_type": "submit",
+                                    "value": {
+                                        "action": "submit_manual_edit",
+                                        "draft_id": draft_id,
+                                        "tenant_key": tenant_key or "",
+                                    },
+                                    "behaviors": [
+                                        {
+                                            "type": "callback",
+                                            "value": {
+                                                "action": "submit_manual_edit",
+                                                "draft_id": draft_id,
+                                                "tenant_key": tenant_key or "",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "name": "cancel_manual_edit",
+                                    "text": {
+                                        "tag": "plain_text",
+                                        "content": "Quay lại",
+                                    },
+                                    "type": "default",
+                                    "value": {
+                                        "action": "cancel_manual_edit",
+                                        "draft_id": draft_id,
+                                        "tenant_key": tenant_key or "",
+                                    },
+                                    "behaviors": [
+                                        {
+                                            "type": "callback",
+                                            "value": {
+                                                "action": "cancel_manual_edit",
+                                                "draft_id": draft_id,
+                                                "tenant_key": tenant_key or "",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        },
+    ]
+
+    return {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": "Chỉnh sửa câu trả lời",
+            },
+        },
+        "body": {
+            "elements": elements,
+        },
     }
 
 
@@ -815,18 +992,6 @@ def build_project_digest_detail_card(master_digest: Any) -> Dict[str, Any]:
                         "date": date_str,
                     },
                 },
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Quay lại báo cáo tổng quan",
-                    },
-                    "type": "default",
-                    "value": {
-                        "action": "view_master_digest",
-                        "digest_id": digest_id,
-                    },
-                },
             ],
         },
     ])
@@ -877,6 +1042,7 @@ def build_updated_status_card(
         })
 
     return {
+        "schema": "2.0",
         "config": {
             "wide_screen_mode": True,
         },
@@ -887,7 +1053,9 @@ def build_updated_status_card(
                 "content": title,
             },
         },
-        "elements": elements,
+        "body": {
+            "elements": elements,
+        },
     }
 
 
@@ -1268,6 +1436,7 @@ def build_admin_status_card(
     tenant_config: Any,
     active_chat_count: int = 0,
     wizard_url: Optional[str] = None,
+    metrics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Xây dựng Thẻ báo cáo trạng thái vận hành của doanh nghiệp cho Admin (/status).
@@ -1289,57 +1458,106 @@ def build_admin_status_card(
 
     effective_wizard_url = wizard_url or f"/onboarding/wizard?tenant_key={tenant_key}"
 
+    content_lines = [
+        f"**Báo Cáo Hiện Trạng Vận Hành — {ent_name}**",
+        "",
+        f"• **Mã Doanh Nghiệp (Tenant):** `{tenant_key}`",
+    ]
+
+    if metrics:
+        total_scopes = metrics.get("chat_scopes", {}).get("total", active_chat_count)
+        active_scopes = metrics.get("chat_scopes", {}).get("active", total_scopes)
+        msg_today = metrics.get("messages", {}).get("today", 0)
+        msg_total = metrics.get("messages", {}).get("total", 0)
+        claims_curr = metrics.get("claims", {}).get("current", 0)
+        claims_prop = metrics.get("claims", {}).get("proposed", 0)
+        drafts_sent = metrics.get("drafts", {}).get("sent", 0)
+        drafts_pending = metrics.get("drafts", {}).get("pending", 0)
+        total_tokens = metrics.get("telemetry", {}).get("total_tokens", 0)
+        est_cost = metrics.get("telemetry", {}).get("estimated_cost_usd", 0.0)
+
+        content_lines.extend([
+            f"• **Nhóm Chat Phân Quyền:** {total_scopes} nhóm ({active_scopes} đang hoạt động)",
+            f"• **Tin Nhắn Hôm Nay:** {msg_today} tin (Tổng lịch sử: {msg_total})",
+            f"• **Tri Thức Đã Tích Lũy:** {claims_curr} thông tin chính thức (+{claims_prop} đề xuất)",
+            f"• **Bản Nháp Phê Duyệt:** {drafts_sent} đã gửi ({drafts_pending} đang chờ)",
+            f"• **Chi Phí AI & Token:** {total_tokens:,} tokens (~${est_cost})",
+        ])
+    else:
+        content_lines.extend([
+            f"• **Nhóm Chat Phân Quyền:** {active_chat_count} nhóm đang hoạt động",
+            f"• **Lark Base Quản Trị:** {'Đã kết nối' if base_url else 'Chưa khởi tạo'}",
+            f"• **Kho Tri Thức Policy:** `{policy_kb}`",
+            f"• **Kho Tri Thức Wiki:** `{wiki_kb}`",
+        ])
+
     elements: List[Dict[str, Any]] = [
         {
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": (
-                    f"**Báo Cáo Hiện Trạng Vận Hành — {ent_name}**\n\n"
-                    f"• **Mã Doanh Nghiệp (Tenant):** `{tenant_key}`\n"
-                    f"• **Nhóm Chat Phân Quyền:** {active_chat_count} nhóm đang hoạt động\n"
-                    f"• **Lark Base Quản Trị:** {'Đã kết nối' if base_url else 'Chưa khởi tạo'}\n"
-                    f"• **Kho Tri Thức Policy:** `{policy_kb}`\n"
-                    f"• **Kho Tri Thức Wiki:** `{wiki_kb}`\n"
-                ),
+                "content": "\n".join(content_lines),
             },
         },
         {
             "tag": "hr",
         },
+    ]
+
+    # Hàng nút 1: Nền tảng
+    row1_actions: List[Dict[str, Any]] = [
         {
-            "tag": "action",
-            "actions": [
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Mở Lark Base",
-                    },
-                    "type": "primary",
-                    "url": base_url or "#",
-                },
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "WeKnora Console",
-                    },
-                    "type": "default",
-                    "url": web_url,
-                },
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "Cấu Hình (Wizard)",
-                    },
-                    "type": "default",
-                    "url": effective_wizard_url,
-                },
-            ],
+            "tag": "button",
+            "text": {
+                "tag": "plain_text",
+                "content": "Mở Lark Base",
+            },
+            "type": "primary",
+            "url": base_url or "#",
+        },
+        {
+            "tag": "button",
+            "text": {
+                "tag": "plain_text",
+                "content": "WeKnora Console",
+            },
+            "type": "default",
+            "url": web_url,
         },
     ]
+    elements.append({
+        "tag": "action",
+        "actions": row1_actions,
+    })
+
+    # Hàng nút 2: Điều phối
+    row2_actions: List[Dict[str, Any]] = [
+        {
+            "tag": "button",
+            "text": {
+                "tag": "plain_text",
+                "content": "Cấu Hình (Wizard)",
+            },
+            "type": "default",
+            "url": effective_wizard_url,
+        },
+        {
+            "tag": "button",
+            "text": {
+                "tag": "plain_text",
+                "content": "⬅️ Bảng Điều Khiển",
+            },
+            "type": "default",
+            "value": {
+                "action": "view_owner_hub",
+                "tenant_key": tenant_key,
+            },
+        },
+    ]
+    elements.append({
+        "tag": "action",
+        "actions": row2_actions,
+    })
 
     return {
         "config": {
@@ -1490,32 +1708,8 @@ def build_owner_control_hub_card(
         ],
     })
 
-    # Hàng nút 2: Tác vụ điều hành và kiểm tra trạng thái
+    # Hàng nút 2: Tác vụ điều hành
     row2_actions: List[Dict[str, Any]] = [
-        {
-            "tag": "button",
-            "text": {
-                "tag": "plain_text",
-                "content": "Báo Cáo Ngày Gần Nhất",
-            },
-            "type": "default",
-            "value": {
-                "action": "view_master_digest",
-                "tenant_key": tenant_key,
-            },
-        },
-        {
-            "tag": "button",
-            "text": {
-                "tag": "plain_text",
-                "content": "Trạng Thái Vận Hành",
-            },
-            "type": "default",
-            "value": {
-                "action": "view_tenant_status",
-                "tenant_key": tenant_key,
-            },
-        },
         {
             "tag": "button",
             "text": {

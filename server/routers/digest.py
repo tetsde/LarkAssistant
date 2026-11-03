@@ -111,12 +111,6 @@ async def generate_master_digest_endpoint(
         "message": f"Đã tạo Master Daily Digest cho {record.total_groups} nhóm chat ({record.total_messages} tin nhắn).",
         "data": record.to_dict(),
     }
-    return {
-        "code": 0,
-        "message": f"Đã tạo Master Daily Digest cho {record.total_groups} nhóm chat ({record.total_messages} tin nhắn).",
-        "data": record.to_dict(),
-    }
-
 
 # ==============================================================================
 # SINGLE GROUP DIGEST ENDPOINTS (TỪNG NHÓM RIÊNG LẺ)

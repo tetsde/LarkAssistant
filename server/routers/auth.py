@@ -31,6 +31,26 @@ router = APIRouter(prefix="/auth/lark", tags=["auth"])
 class ExchangeCodeRequest(BaseModel):
     code: str
     redirect_uri: Optional[str] = None
+    tenant_key: Optional[str] = None
+
+
+def _oauth_error_page(status_code: int, title: str, message: str) -> HTMLResponse:
+    """Trang lỗi chung cho luồng ủy quyền: không âm thầm đổi App khi thiếu thông tin."""
+    safe_message = (message or "").replace("<", "&lt;").replace(">", "&gt;")
+    return HTMLResponse(
+        status_code=status_code,
+        content=f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8"><title>{title}</title>
+    <style>body {{ font-family: -apple-system, sans-serif; background: #0f172a; color: #fff; padding: 40px; text-align: center; }}</style>
+</head>
+<body>
+    <h1 style="color: #ef4444;">⚠️ {title}</h1>
+    <p style="color: #cbd5e1; margin: 20px auto; max-width: 640px;">{safe_message}</p>
+    <a href="/auth/lark/login" style="color: #818cf8;">Quay lại màn hình đăng nhập</a>
+</body></html>""",
+    )
 
 
 # =============================================================================
@@ -43,19 +63,61 @@ async def login_page(
     redirect: bool = Query(False, description="Nếu True sẽ tự động chuyển hướng sang Lark"),
     redirect_uri: Optional[str] = Query(None, description="Tùy chỉnh redirect_uri"),
     source: Optional[str] = Query(None, description="Nguồn gọi: wizard, popup..."),
+    tenant_key: Optional[str] = Query(None, description="Doanh nghiệp đang cần uỷ quyền (bắt buộc)"),
 ):
     """
-    Tạo link ủy quyền OAuth2 của Lark.
+    Tạo link ủy quyền OAuth2 của Lark CHO MỘT TENANT CỤ THỂ.
+
+    Bắt buộc `tenant_key`: URL ủy quyền và `state` phải nói rõ code sẽ được đổi bằng App
+    nào. Bản cũ sinh link bằng `settings.LARK_APP_ID` và state tự do, nên một doanh nghiệp
+    có thể bị gán token lấy từ App của doanh nghiệp khác.
     Có thể hiển thị trang giao diện bấm nút hoặc chuyển hướng trực tiếp.
     """
+    from database.db import get_current_tenant_key
+    from services.auth.oauth_state_service import oauth_state_service
+    from services.tenancy.tenant_resolver import tenant_resolver
+    from core.tenant_errors import TenantResolutionError
+
+    eff_tenant = (tenant_key or "").strip() or get_current_tenant_key()
+    if not eff_tenant:
+        return _oauth_error_page(
+            status_code=400,
+            title="Thiếu thông tin doanh nghiệp",
+            message=(
+                "/auth/lark/login cần `tenant_key` để biết ủy quyền này cho doanh nghiệp nào "
+                "và dùng App nào. Không còn mặc định App trong .env."
+            ),
+        )
+
+    try:
+        credentials = await tenant_resolver.resolve_credentials(eff_tenant)
+    except TenantResolutionError as err:
+        return _oauth_error_page(
+            status_code=err.http_status,
+            title="Không tìm thấy App của doanh nghiệp",
+            message=str(err),
+        )
+
     # Tự động suy luận redirect_uri từ domain hiện tại nếu người dùng không truyền vào
     effective_redirect_uri = redirect_uri or settings.LARK_OAUTH_REDIRECT_URI
     if not effective_redirect_uri:
-        base_url = str(request.base_url).rstrip("/")
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        base_url = f"{proto}://{host}".rstrip("/") if host else str(request.base_url).rstrip("/")
         effective_redirect_uri = f"{base_url}/auth/lark/callback"
 
-    state_val = f"wizard_{source}" if source == "wizard" else "hilark_oauth"
-    auth_url = token_service.get_authorize_url(redirect_uri=effective_redirect_uri, state=state_val)
+    # State do server sinh và lưu xuống `oauth_states` kèm (tenant_key, app_id).
+    state_val = await oauth_state_service.create(
+        tenant_key=eff_tenant,
+        app_id=credentials.app_id,
+        purpose="wizard" if source == "wizard" else "user_oauth",
+        redirect_uri=effective_redirect_uri,
+    )
+    auth_url = token_service.get_authorize_url(
+        redirect_uri=effective_redirect_uri,
+        state=state_val,
+        app_id=credentials.app_id,
+    )
 
     if redirect:
         return RedirectResponse(url=auth_url)
@@ -173,7 +235,7 @@ async def login_page(
         <div class="steps">
             <div class="step-item">
                 <div class="step-num">1</div>
-                <div>App ID hiện tại: <span class="code-box">{settings.LARK_APP_ID}</span></div>
+                <div>Ủy quyền cho tenant <span class="code-box">{eff_tenant}</span> — App ID: <span class="code-box">{credentials.app_id}</span></div>
             </div>
             <div class="step-item">
                 <div class="step-num">2</div>
@@ -237,15 +299,15 @@ async def oauth_callback(
     if not code:
         raise HTTPException(status_code=400, detail="Thiếu tham số `code` trong callback URL!")
 
-    # 1.5 Xử lý chuyển tiếp cho luồng One-Click Setup nếu state chứa prefix 'setup_' hoặc là task của setup
-    is_setup_source = bool(
-        state and (state.startswith("setup_") or "setup" in state)
-    )
+    # 1.5 Luồng One-Click Setup được nhận diện bằng ĐÚNG prefix 'setup_' (task_id do
+    # setup sinh ra). Không dùng điều kiện "'setup' in state": state do server phát hành
+    # là chuỗi ngẫu nhiên, còn chuỗi do người dùng gửi lên có thể cố ý chứa 'setup' để
+    # đưa request vào thẳng pipeline cài đặt.
+    is_setup_source = bool(state and state.startswith("setup_"))
     if is_setup_source:
         import asyncio
         from services.setup.one_click_setup_service import one_click_setup_service
-        eff_task_id = state.replace("setup_", "") if state.startswith("setup_") else state
-        claimed_task_id = await one_click_setup_service.claim_oauth_state(state) if state.startswith("setup_") else eff_task_id
+        claimed_task_id = await one_click_setup_service.claim_oauth_state(state)
         if not claimed_task_id:
             raise HTTPException(status_code=400, detail="OAuth state không hợp lệ hoặc đã được sử dụng.")
         eff_task_id = claimed_task_id
@@ -255,9 +317,64 @@ async def oauth_callback(
         )
         return RedirectResponse(url=f"/setup?task_id={eff_task_id}")
 
-    # 2. Tiến hành đổi code lấy cặp token
+    # 2. Tiến hành đổi code lấy cặp token — nhưng chỉ với App đã phát hành `state`.
+    from services.auth.oauth_state_service import OAuthStateError, oauth_state_service
+    from services.tenancy.tenant_resolver import tenant_resolver
+    from core.tenant_errors import TenantResolutionError
+
+    wants_json = format == "json" or (accept and "application/json" in accept)
+
     try:
-        result = await token_service.exchange_code_for_token(code=code)
+        state_doc = await oauth_state_service.consume(state)
+    except OAuthStateError as state_err:
+        logger.warning("Callback OAuth bị từ chối: %s", state_err)
+        if wants_json:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": state_err.error_code, "description": str(state_err)},
+            )
+        return _oauth_error_page(400, "Phiên ủy quyền không hợp lệ", str(state_err))
+
+    state_tenant = state_doc["tenant_key"]
+    state_app_id = state_doc["app_id"]
+    state_purpose = state_doc.get("purpose") or ""
+
+    try:
+        credentials = await tenant_resolver.resolve_credentials(state_tenant)
+    except TenantResolutionError as cred_err:
+        if wants_json:
+            return JSONResponse(
+                status_code=cred_err.http_status,
+                content={"success": False, "error": cred_err.error_code, "description": str(cred_err)},
+            )
+        return _oauth_error_page(cred_err.http_status, "App của tenant không còn hợp lệ", str(cred_err))
+
+    if credentials.app_id != state_app_id:
+        # State được phát hành cho App A nhưng tenant giờ đã trỏ sang App B: phải ủy quyền
+        # lại bằng App mới, không được đổi code của App B bằng link của App A.
+        return _oauth_error_page(
+            400,
+            "App đã thay đổi sau khi bắt đầu ủy quyền",
+            f"State phát hành cho App '{state_app_id}' nhưng tenant '{state_tenant}' hiện trỏ "
+            f"sang App '{credentials.app_id}'. Vui lòng ủy quyền lại.",
+        )
+
+    try:
+        result = await token_service.exchange_code_for_token(
+            code=code,
+            app_id=credentials.app_id,
+            app_secret=credentials.app_secret,
+            expected_tenant_key=state_tenant,
+        )
+    except TenantResolutionError as e:
+        logger.error("Lỗi tenant khi đổi token trong callback: %s", e, exc_info=True)
+        status = getattr(e, "http_status", 400)
+        if wants_json:
+            return JSONResponse(
+                status_code=status,
+                content={"success": False, "error": getattr(e, "error_code", "token_exchange_failed"), "description": str(e)},
+            )
+        return _oauth_error_page(status, "Đổi Token Thất Bại", str(e))
     except Exception as e:
         logger.error(f"Lỗi khi đổi token trong callback: {e}", exc_info=True)
         if format == "json" or (accept and "application/json" in accept):
@@ -289,8 +406,8 @@ async def oauth_callback(
     expires_at = result.get("expires_at_readable", "")
     refresh_expires_at = result.get("refresh_expires_at_readable", "")
 
-    # 2.5 Nếu request đến từ Screen Guide Wizard (state chứa 'wizard' hoặc param source=wizard)
-    is_wizard_source = bool((state and "wizard" in state) or request.query_params.get("source") == "wizard")
+    # 2.5 Nếu request đến từ Screen Guide Wizard (purpose của state, hoặc param source=wizard)
+    is_wizard_source = bool(state_purpose == "wizard" or request.query_params.get("source") == "wizard")
     if is_wizard_source:
         return HTMLResponse(
             content=f"""<!DOCTYPE html>
@@ -555,14 +672,40 @@ async def oauth_callback(
 async def exchange_code(payload: ExchangeCodeRequest):
     """
     Endpoint API đổi Authorization Code lấy Token bằng POST JSON.
-    Hữu ích khi test qua cURL, Postman hoặc frontend client riêng.
+
+    Phải nói rõ tenant (`tenant_key` trong body hoặc ContextVar của request): đổi code
+    bằng App mặc định trong .env là cách token bị gán nhầm cho doanh nghiệp khác.
     """
+    from database.db import get_current_tenant_key
+    from services.tenancy.tenant_resolver import tenant_resolver
+    from core.tenant_errors import TenantResolutionError, TokenUnavailable
+
+    eff_tenant = (payload.tenant_key or "").strip() or get_current_tenant_key()
+    if not eff_tenant:
+        raise HTTPException(
+            status_code=400,
+            detail="Thiếu `tenant_key`: /auth/lark/exchange cần biết code thuộc doanh nghiệp nào.",
+        )
+    try:
+        credentials = await tenant_resolver.resolve_credentials(eff_tenant)
+    except (TenantResolutionError, TokenUnavailable):
+        # Nhả lỗi có kiểu lên handler cấp app: HTTPException(detail=str(err)) giữ đúng
+        # mã trạng thái nhưng làm mất `error_code` và `tenant_key` trong body.
+        raise
+
     try:
         result = await token_service.exchange_code_for_token(
             code=payload.code,
             redirect_uri=payload.redirect_uri,
+            app_id=credentials.app_id,
+            app_secret=credentials.app_secret,
+            expected_tenant_key=eff_tenant,
         )
         return result
+    except (TenantResolutionError, TokenUnavailable):
+        # 409 (tenant chưa ready/thiếu config), 401 (cần uỷ quyền lại), 503 (Lark từ chối
+        # cấp token) — phân biệt rõ thay vì gộp tất cả vào 400.
+        raise
     except Exception as e:
         logger.error(f"Lỗi exchange code qua API: {e}")
         raise HTTPException(status_code=400, detail=str(e))

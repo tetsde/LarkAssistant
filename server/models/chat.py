@@ -14,6 +14,7 @@ class ChatRequest(BaseModel):
     responder_name: Optional[str] = Field(default=None, description="Tên người trả lời")
     role: Optional[str] = Field(default=None, description="Vai trò của người trả lời")
     reply_to_lark: bool = False
+    tenant_key: Optional[str] = Field(default=None, description="Mã tenant của doanh nghiệp (Multi-Tenant)")
 
 
 class UserChatRequest(BaseModel):
@@ -30,6 +31,7 @@ class UserChatRequest(BaseModel):
     sender_id: Optional[str] = Field(default=None, description="Lark open_id của người hỏi")
     reply_to_lark: bool = Field(default=False, description="Tự động gửi reply về Lark")
     retrieve_count: int = Field(default=5, description="Số lượng chunks truy xuất từ WeKnora")
+    tenant_key: Optional[str] = Field(default=None, description="Mã tenant của doanh nghiệp (Multi-Tenant)")
 
 
 class MemoryRequest(BaseModel):
@@ -65,6 +67,7 @@ class PendingDraft(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     status: str = Field(default="pending", description="Trạng thái: pending, sent, discarded, failed")
     approved_content: Optional[str] = Field(default=None, description="Nội dung thực tế sau khi duyệt/sửa")
+    bot_reply_message_id: Optional[str] = Field(default=None, description="Message ID của tin nhắn reply Bot gửi vào nhóm")
     tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
     last_error: Optional[str] = Field(default=None, description="Lỗi gần nhất nếu gửi thất bại")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
@@ -86,6 +89,7 @@ class PendingDraft(BaseModel):
             responder_name=document.get("responder_name"),
             status=document.get("status", "pending"),
             approved_content=document.get("approved_content"),
+            bot_reply_message_id=document.get("bot_reply_message_id"),
             tenant_key=document.get("tenant_key"),
             last_error=document.get("last_error"),
             created_at=document.get("created_at") or get_vietnam_now_iso(),

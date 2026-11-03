@@ -8,12 +8,38 @@ Code HiLark đã khởi động `lark_oapi.ws.Client` trong `bot_runner.py`, nê
 
 Sau đó chỉ cần bật tối thiểu `im.message.receive_v1`, restart container để WebSocket reconnect, rồi nhắn vào Bot.
 
-## Callback URLs (chỉ dùng khi chọn Webhook)
+## Callback URLs — Kiến trúc Định danh App ID (EDL-0072)
 
-- Event subscription: `POST https://<hilark-domain>/api/lark/events`
-- Interactive card action callback: `POST https://<hilark-domain>/api/lark/card-action`
+> **Bắt buộc dùng URL có `?app_id=` (hoặc path-based) cho mọi Custom App có bật Encryption Strategy.**
+> Nếu không, server phải fallback đoán mò theo `updated_at`, có thể thất bại khi nhiều App cùng tồn tại.
 
-Nếu chọn Webhook, dùng `/api/lark/events`; endpoint này đã xử lý URL verification, message events, lifecycle events và card action payload.
+### Dạng 1: Query Parameter (khuyến nghị mặc định)
+
+| Kênh | URL cấu hình trên Lark Console |
+|---|---|
+| Event Subscription (Request URL) | `https://<domain>/api/lark/events?app_id=cli_<APP_ID>` |
+| Card Action (Card Request URL) | `https://<domain>/api/lark/card-action?app_id=cli_<APP_ID>` |
+
+### Dạng 2: Path Parameter (cho proxy/firewall không cho phép query string)
+
+| Kênh | URL cấu hình trên Lark Console |
+|---|---|
+| Event Subscription (Request URL) | `https://<domain>/api/lark/events/cli_<APP_ID>` |
+| Card Action (Card Request URL) | `https://<domain>/api/lark/card-action/cli_<APP_ID>` |
+
+**Ví dụ thực tế (App `cli_aa63f447fc78de27`):**
+```
+Request URL:      https://hertz-liftoff-earphone.ngrok-free.dev/api/lark/events?app_id=cli_aa63f447fc78de27
+Card Request URL: https://hertz-liftoff-earphone.ngrok-free.dev/api/lark/card-action?app_id=cli_aa63f447fc78de27
+```
+
+### Lưu ý OAuth Redirect URL — KHÔNG thêm query param
+
+OAuth Redirect URL trong **Security Settings** phải để **sạch** (không có `?app_id=...`):
+```
+Redirect URL: https://<domain>/setup/callback
+```
+Ngữ cảnh tenant được truyền qua `state=setup_<task_id>` theo RFC 6749. Lark Console kiểm tra strict string matching trên Redirect URL.
 
 ## Events HiLark đang xử lý
 

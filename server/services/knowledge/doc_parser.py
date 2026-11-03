@@ -93,6 +93,25 @@ class DocParserService:
         from services.lark.runtime import get_current_lark_service
         return get_current_lark_service(lark_service)
 
+    def _get_lark_for_tenant(self, tenant_key: Optional[str] = None):
+        """
+        Trả về LarkService đúng tenant để tránh dùng sai bot token giữa các doanh nghiệp.
+        Nếu có tenant_key, tìm service đã đăng ký cho tenant đó.
+        Fallback về _lark (current context service) nếu không tìm thấy.
+        """
+        if self._lark_override is not None:
+            return self._lark_override
+        if tenant_key:
+            try:
+                from services.lark.runtime import get_lark_service_for_tenant
+                tenant_svc = get_lark_service_for_tenant(tenant_key)
+                if tenant_svc is not None:
+                    return tenant_svc
+            except Exception:
+                pass
+        # Fallback về current context service
+        return self._lark
+
     @property
     def _llm(self):
         if self._llm_override is not None:
@@ -289,6 +308,7 @@ class DocParserService:
         self,
         document_id: str,
         title: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> DocParseResult:
         """
         Phân giải tài liệu Lark DocX thành Markdown qua OpenAPI (0 token cost).
@@ -296,6 +316,7 @@ class DocParserService:
         Args:
             document_id: ID của tài liệu DocX.
             title: Tiêu đề gợi ý (nếu có).
+            tenant_key: Tenant key để xác định context (WS7 fix).
 
         Returns:
             DocParseResult chứa Markdown sạch.
@@ -304,7 +325,7 @@ class DocParserService:
         doc_name = title or f"Lark DocX ({document_id})"
 
         try:
-            content = await self._lark.aget_docx_raw_content(document_id)
+            content = await self._lark.aget_docx_raw_content(document_id, tenant_key=tenant_key)
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
             if content is None:
@@ -344,19 +365,21 @@ class DocParserService:
     async def parse_lark_wiki(
         self,
         wiki_token: str,
+        tenant_key: Optional[str] = None,
     ) -> DocParseResult:
         """
         Phân giải trang Lark Wiki: tra cứu node token rồi đọc nội dung nếu là DocX.
 
         Args:
             wiki_token: Token của trang Wiki.
+            tenant_key: Tenant key để xác định context (WS7 fix).
 
         Returns:
             DocParseResult chứa Markdown sạch.
         """
         start_time = time.perf_counter()
         try:
-            node_info = await self._lark.aresolve_wiki_token(wiki_token)
+            node_info = await self._lark.aresolve_wiki_token(wiki_token, tenant_key=tenant_key)
             if not node_info:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
                 return DocParseResult(
@@ -373,7 +396,7 @@ class DocParserService:
             title = node_info.get("title", "") or f"Lark Wiki ({wiki_token})"
 
             if obj_type == "docx":
-                result = await self.parse_lark_docx(document_id=obj_token, title=title)
+                result = await self.parse_lark_docx(document_id=obj_token, title=title, tenant_key=tenant_key)
                 result.source_type = "lark_wiki"
                 result.metadata["wiki_token"] = wiki_token
                 result.metadata["obj_token"] = obj_token
@@ -414,6 +437,7 @@ class DocParserService:
         file_key: str,
         file_name: str,
         resource_type: str = "file",
+        tenant_key: Optional[str] = None,
     ) -> DocParseResult:
         """
         Tải tệp đính kèm từ tin nhắn Lark IM và chuyển đổi sang Markdown bằng AnyDoc gRPC.
@@ -423,6 +447,7 @@ class DocParserService:
             file_key: Key tệp (file_key hoặc image_key).
             file_name: Tên tệp đầy đủ (ví dụ: 'Bien_Ban_Hop.docx').
             resource_type: 'file' hoặc 'image'.
+            tenant_key: Tenant key để định tuyến đúng Lark bot token của doanh nghiệp.
 
         Returns:
             DocParseResult chứa Markdown sạch từ microservice WeKnora-docreader.
@@ -447,8 +472,10 @@ class DocParserService:
             )
 
         # 2. Tải binary content từ Lark IM
+        # Sử dụng _get_lark_for_tenant để định tuyến đúng bot token của tenant gửi file
         logger.info(f"📥 [DOC PARSER] Đang tải tệp đính kèm: {file_name} (key: {file_key})...")
-        file_bytes = await self._lark.adownload_message_resource(
+        lark = self._get_lark_for_tenant(tenant_key)
+        file_bytes = await lark.adownload_message_resource(
             message_id=message_id,
             file_key=file_key,
             resource_type=resource_type,
@@ -550,6 +577,7 @@ class DocParserService:
         recursive: bool = True,
         max_depth: int = 3,
         current_depth: int = 0,
+        tenant_key: Optional[str] = None,
     ) -> List[DocParseResult]:
         """
         Phân giải toàn bộ tài liệu trong một thư mục Lark Drive.
@@ -565,6 +593,7 @@ class DocParserService:
             recursive: Cho phép đệ quy vào các thư mục con.
             max_depth: Độ sâu đệ quy tối đa (mặc định 3).
             current_depth: Độ sâu hiện tại (bắt đầu từ 0).
+            tenant_key: Định danh tenant để đảm bảo cô lập token (fail-closed).
 
         Returns:
             Danh sách DocParseResult cho tất cả tài liệu hợp lệ trong thư mục.
@@ -574,10 +603,11 @@ class DocParserService:
 
         logger.info(
             f"📁 [DOC PARSER FOLDER] Bắt đầu quét thư mục {folder_token} "
-            f"(depth={current_depth}/{max_depth}, recursive={recursive})..."
+            f"(depth={current_depth}/{max_depth}, recursive={recursive}, tenant={tenant_key})..."
         )
 
-        files = await self._lark.alist_drive_folder_files(folder_token)
+        list_kwargs = {"tenant_key": tenant_key} if tenant_key else {}
+        files = await self._lark.alist_drive_folder_files(folder_token, **list_kwargs)
         if not files:
             logger.info(f"ℹ️ [DOC PARSER FOLDER] Thư mục {folder_token} rỗng hoặc không thể truy cập.")
             return []
@@ -594,15 +624,15 @@ class DocParserService:
                 continue
 
             if ftype == "docx":
-                logger.info(f"📄 [FOLDER ITEM] Phân giải DocX: '{fname}' ({ftoken})")
-                doc_res = await self.parse_lark_docx(document_id=ftoken, title=fname)
+                logger.info(f"📄 [FOLDER ITEM] Phân giải DocX: '{fname}' ({ftoken}) [tenant={tenant_key}]")
+                doc_res = await self.parse_lark_docx(document_id=ftoken, title=fname, tenant_key=tenant_key)
                 doc_res.metadata["folder_token"] = folder_token
                 doc_res.metadata["url"] = furl
                 results.append(doc_res)
 
             elif ftype == "wiki":
-                logger.info(f"🌐 [FOLDER ITEM] Phân giải Wiki: '{fname}' ({ftoken})")
-                doc_res = await self.parse_lark_wiki(wiki_token=ftoken)
+                logger.info(f"🌐 [FOLDER ITEM] Phân giải Wiki: '{fname}' ({ftoken}) [tenant={tenant_key}]")
+                doc_res = await self.parse_lark_wiki(wiki_token=ftoken, tenant_key=tenant_key)
                 doc_res.metadata["folder_token"] = folder_token
                 doc_res.metadata["url"] = furl
                 results.append(doc_res)
@@ -615,6 +645,7 @@ class DocParserService:
                         recursive=True,
                         max_depth=max_depth,
                         current_depth=current_depth + 1,
+                        tenant_key=tenant_key,
                     )
                     results.extend(sub_results)
 
@@ -626,8 +657,8 @@ class DocParserService:
                     )
                     continue
 
-                logger.info(f"📥 [FOLDER ITEM] Tải tệp nhị phân Drive: '{fname}' ({ftoken})...")
-                file_bytes = await self._lark.adownload_drive_file(ftoken)
+                logger.info(f"📥 [FOLDER ITEM] Tải tệp nhị phân Drive: '{fname}' ({ftoken}) [tenant={tenant_key}]...")
+                file_bytes = await self._lark.adownload_drive_file(ftoken, tenant_key=tenant_key)
                 if not file_bytes:
                     logger.error(f"❌ [FOLDER ITEM] Không thể tải tệp '{fname}' ({ftoken}) từ Lark Drive.")
                     results.append(DocParseResult(
@@ -673,12 +704,13 @@ class DocParserService:
     # 5. BATCH / TEXT LINK PARSER CONVENIENCE
     # =========================================================================
 
-    async def parse_text_links(self, text: str) -> List[DocParseResult]:
+    async def parse_text_links(self, text: str, tenant_key: Optional[str] = None) -> List[DocParseResult]:
         """
         Quét và phân giải tất cả các tài liệu Lark DocX/Wiki/Folder tìm thấy trong văn bản.
 
         Args:
             text: Chuỗi văn bản chứa liên kết.
+            tenant_key: Định danh tenant để đảm bảo cô lập token (fail-closed).
 
         Returns:
             Danh sách kết quả DocParseResult cho từng liên kết tìm thấy.
@@ -690,13 +722,13 @@ class DocParserService:
         results: List[DocParseResult] = []
         for link in links:
             if link["type"] == "docx":
-                res = await self.parse_lark_docx(link["token"])
+                res = await self.parse_lark_docx(link["token"], tenant_key=tenant_key)
                 results.append(res)
             elif link["type"] == "wiki":
-                res = await self.parse_lark_wiki(link["token"])
+                res = await self.parse_lark_wiki(link["token"], tenant_key=tenant_key)
                 results.append(res)
             elif link["type"] == "folder":
-                folder_docs = await self.parse_lark_folder(link["token"])
+                folder_docs = await self.parse_lark_folder(link["token"], tenant_key=tenant_key)
                 results.extend(folder_docs)
         return results
 

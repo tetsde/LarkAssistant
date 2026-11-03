@@ -32,6 +32,7 @@ class UserSettingsRecord(BaseModel):
     llm_timeout: float = Field(default=60.0, description="Thời gian chờ tối đa (giây)")
     digest_schedule_time: str = Field(default="18:00", description="Khung giờ nhận Daily Digest (HH:MM)")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL cho draft và digest")
+    policy_sync_interval_seconds: int = Field(default=3600, description="Chu kỳ quét định kỳ chính sách doanh nghiệp (giây)")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)
 

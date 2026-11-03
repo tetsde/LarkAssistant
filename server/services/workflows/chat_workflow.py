@@ -70,10 +70,14 @@ GLOBAL_LLM_SEMAPHORE = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_CHAT_
 
 
 def _sync_runtime_admin_open_id(open_id: str, lark_svc: Any = None) -> None:
-    """Đồng bộ ngay tức thì Open ID vừa tìm được vào settings và singleton LarkService."""
+    """
+    Đồng bộ open_id vừa tìm được vào runtime service của ĐÚNG tenant.
+
+    Không ghi ngược vào `settings.LARK_USER_OPEN_ID`: settings là biến toàn cục của process
+    một worker, nên một request của tenant B sẽ đổi danh tính lãnh đạo mà tenant A đọc sau đó.
+    """
     if not open_id or open_id == "ou_admin_fallback":
         return
-    settings.LARK_USER_OPEN_ID = open_id
     if lark_svc:
         try:
             lark_svc.known_user_open_id = open_id
@@ -90,16 +94,19 @@ async def resolve_effective_owner_open_id(
     sender_open_id: Optional[str] = None,
 ) -> str:
     """
-    Xác định open_id của chủ nhân/admin linh hoạt qua nhiều nguồn:
-      1. lark_service.owner_open_id hoặc lark_service.known_user_open_id
-      2. settings.LARK_USER_OPEN_ID
-      3. Tra cứu từ MongoDB tenants collection (admin_open_id) theo tenant_key
-      4. Tra cứu từ MongoDB user_settings (bản ghi cấu hình từ Onboarding Screen Guide)
-      5. Tra cứu từ MongoDB system_config (lark_admin_config hoặc lark_base_config.provisioned_by)
-      6. Tra cứu từ MongoDB auth_tokens (primary_user_token)
-      7. Tra cứu từ danh sách admins trong chat_scope_record
-      8. Fallback sang sender_open_id nếu bắt đầu bằng ou_
-      9. Fallback an toàn 'ou_admin_fallback' thay vì gây crash pipeline
+    Xác định open_id của lãnh đạo/doanh nghiệp đang xử lý, CHỈ dùng nguồn thuộc về tenant
+    của request (Giai đoạn 2 của kế hoạch Tenant Resolution & Token Fix):
+      1. Runtime App của tenant: user token -> owner_open_id -> known_user_open_id
+      2. `tenants.admin_open_id` của đúng tenant_key
+      3. `user_settings` có gắn đúng tenant_key
+      4. `system_config.lark_admin_config` / `lark_base_config` khi document khai tenant_key
+      5. Danh sách admins trong chat_scope_record (theo nhóm)
+      6. sender_open_id nếu bắt đầu bằng ou_
+      7. Fallback an toàn 'ou_admin_fallback' thay vì gây crash pipeline
+
+    Không còn các nguồn toàn cục: `settings.LARK_USER_OPEN_ID` (`.env`), "tenant bất kỳ"
+    và `auth_tokens.primary_user_token`. Ba nguồn đó khiến lãnh đạo doanh nghiệp A nhận
+    bản nháp chứa dữ liệu của doanh nghiệp B.
     """
     # 1. Với tenant-scoped runtime, phải lấy open_id từ user token của đúng
     # Custom App trước. open_id của Lark có thể khác giữa các App; dùng
@@ -131,77 +138,63 @@ async def resolve_effective_owner_open_id(
             except Exception:
                 pass
 
-    # 2. settings.LARK_USER_OPEN_ID
-    if getattr(settings, "LARK_USER_OPEN_ID", None) and settings.LARK_USER_OPEN_ID.strip():
-        resolved = settings.LARK_USER_OPEN_ID.strip()
-        if lark_svc and hasattr(lark_svc, "known_user_open_id"):
-            lark_svc.known_user_open_id = resolved
-        return resolved
-
-    # 3. Tra cứu tenants collection
+    # 2. Tra cứu tenants collection — chỉ theo ĐÚNG tenant của request
     eff_tenant = tenant_key or get_current_tenant_key()
-    try:
-        from database.db import get_tenants_collection
-        t_coll = get_tenants_collection()
-        if eff_tenant:
+    if eff_tenant:
+        try:
+            from database.db import get_tenants_collection
+            t_coll = get_tenants_collection()
             tdoc = await t_coll.find_one({"tenant_key": eff_tenant})
             if tdoc and tdoc.get("admin_open_id") and str(tdoc["admin_open_id"]).strip():
                 resolved = str(tdoc["admin_open_id"]).strip()
                 _sync_runtime_admin_open_id(resolved, lark_svc)
                 return resolved
-        any_t = await t_coll.find_one({"admin_open_id": {"$exists": True, "$ne": ""}})
-        if any_t and any_t.get("admin_open_id") and str(any_t["admin_open_id"]).strip():
-            resolved = str(any_t["admin_open_id"]).strip()
-            _sync_runtime_admin_open_id(resolved, lark_svc)
-            return resolved
-    except Exception as e:
-        logger.debug(f"Không thể tra cứu admin_open_id từ tenants: {e}")
+        except Exception as e:
+            logger.debug(f"Không thể tra cứu admin_open_id từ tenants: {e}")
 
-    # 4. Tra cứu user_settings collection (được lưu từ Screen Guide Onboarding)
-    try:
-        from database.db import get_user_settings_collection
-        us_coll = get_user_settings_collection()
-        us_doc = await us_coll.find_one(
-            {"open_id": {"$exists": True, "$ne": ""}},
-            sort=[("updated_at", -1)],
-        )
-        if us_doc and us_doc.get("open_id") and str(us_doc["open_id"]).strip():
-            resolved = str(us_doc["open_id"]).strip()
-            _sync_runtime_admin_open_id(resolved, lark_svc)
-            return resolved
-    except Exception as e:
-        logger.debug(f"Không thể tra cứu open_id từ user_settings: {e}")
+        # 3. user_settings: chỉ nhận bản ghi gắn đúng tenant (bản ghi không có tenant_key
+        #    hoặc của tenant khác không được dùng — open_id là danh tính theo App).
+        try:
+            from database.db import get_user_settings_collection
+            us_coll = get_user_settings_collection()
+            us_doc = await us_coll.find_one(
+                {"tenant_key": eff_tenant, "open_id": {"$exists": True, "$ne": ""}},
+                sort=[("updated_at", -1)],
+            )
+            if us_doc and us_doc.get("open_id") and str(us_doc["open_id"]).strip():
+                resolved = str(us_doc["open_id"]).strip()
+                _sync_runtime_admin_open_id(resolved, lark_svc)
+                return resolved
+        except Exception as e:
+            logger.debug(f"Không thể tra cứu open_id từ user_settings: {e}")
 
-    # 5. Tra cứu system_config
-    try:
-        from database.db import get_system_config_collection
-        sc_coll = get_system_config_collection()
-        admin_cfg = await sc_coll.find_one({"config_key": "lark_admin_config"})
-        if admin_cfg and admin_cfg.get("admin_open_id") and str(admin_cfg["admin_open_id"]).strip():
-            resolved = str(admin_cfg["admin_open_id"]).strip()
-            _sync_runtime_admin_open_id(resolved, lark_svc)
-            return resolved
-        base_cfg = await sc_coll.find_one({"config_key": "lark_base_config"})
-        if base_cfg and base_cfg.get("provisioned_by") and str(base_cfg["provisioned_by"]).strip():
-            resolved = str(base_cfg["provisioned_by"]).strip()
-            _sync_runtime_admin_open_id(resolved, lark_svc)
-            return resolved
-    except Exception as e:
-        logger.debug(f"Không thể tra cứu từ system_config: {e}")
+        # 4. system_config: chỉ tin document tự khai nhận tenant_key của nó.
+        try:
+            from database.db import get_system_config_collection
+            sc_coll = get_system_config_collection()
+            admin_cfg = await sc_coll.find_one(
+                {"config_key": "lark_admin_config", "tenant_key": eff_tenant}
+            )
+            if admin_cfg and admin_cfg.get("admin_open_id") and str(admin_cfg["admin_open_id"]).strip():
+                resolved = str(admin_cfg["admin_open_id"]).strip()
+                _sync_runtime_admin_open_id(resolved, lark_svc)
+                return resolved
+            base_cfg = await sc_coll.find_one(
+                {"config_key": "lark_base_config", "tenant_key": eff_tenant}
+            )
+            if base_cfg and base_cfg.get("provisioned_by") and str(base_cfg["provisioned_by"]).strip():
+                resolved = str(base_cfg["provisioned_by"]).strip()
+                _sync_runtime_admin_open_id(resolved, lark_svc)
+                return resolved
+        except Exception as e:
+            logger.debug(f"Không thể tra cứu từ system_config: {e}")
 
-    # 6. Tra cứu auth_tokens
-    try:
-        from database.db import get_auth_collection
-        auth_coll = get_auth_collection()
-        auth_doc = await auth_coll.find_one({"_id": "primary_user_token"})
-        if auth_doc and auth_doc.get("open_id") and str(auth_doc["open_id"]).strip():
-            resolved = str(auth_doc["open_id"]).strip()
-            _sync_runtime_admin_open_id(resolved, lark_svc)
-            return resolved
-    except Exception as e:
-        logger.debug(f"Không thể tra cứu từ auth_tokens: {e}")
+    # Ba nguồn cũ đã bị bỏ vì chúng không thuộc về tenant nào cả: `settings.LARK_USER_OPEN_ID`
+    # (`.env`), "tenant bất kỳ" (`find_one({admin_open_id: {$exists: true}})`) và
+    # `auth_tokens.primary_user_token`. Ai ghi sau cùng thắng, nên bản nháp của doanh nghiệp
+    # A có thể được gửi cho lãnh đạo của doanh nghiệp B.
 
-    # 7. Chat Scope admins
+    # 5. Chat Scope admins
     if chat_scope_record and getattr(chat_scope_record, "admins", None):
         admins = chat_scope_record.admins
         if isinstance(admins, list):
@@ -211,11 +204,11 @@ async def resolve_effective_owner_open_id(
                     _sync_runtime_admin_open_id(resolved, lark_svc)
                     return resolved
 
-    # 8. Sender nếu bắt đầu bằng ou_
+    # 6. Sender nếu bắt đầu bằng ou_
     if sender_open_id and isinstance(sender_open_id, str) and sender_open_id.strip().startswith("ou_"):
         return sender_open_id.strip()
 
-    # 9. Fallback an toàn
+    # 7. Fallback an toàn
     return "ou_admin_fallback"
 
 
@@ -371,6 +364,7 @@ async def process_memory_extraction(
         asserted_by=asserted_by,
         existing_entities=existing_entities,
         existing_facts=existing_facts,
+        tenant_key=eff_tenant,
     )
 
     # Phân loại quyền lực tri thức:
@@ -520,6 +514,7 @@ async def process_document_to_claims(
         asserted_by=asserted_by,
         existing_entities=existing_entities,
         existing_facts=existing_facts,
+        tenant_key=eff_tenant,
     )
 
     # Đính kèm metadata nguồn tài liệu vào từng fact & phân loại quyền hạn:
@@ -988,27 +983,34 @@ async def process_chat_pipeline(
                 weknora_tenant_id = tenant_cfg.get("weknora_tenant_id")
 
         # 1. Kho dự án chuyên biệt của nhóm chat (chứa tài liệu dự án theo phân quyền)
+        #    Không rơi về `settings.WEKNORA_DATASET_ID` nữa: dataset mặc định trong .env
+        #    thuộc về một doanh nghiệp cụ thể, dùng cho tenant khác sẽ trả lời bằng dữ
+        #        liệu của công ty khác.
         project_dataset_id = (
             (scope_record.dataset_id if scope_record and scope_record.dataset_id else None)
             or (tenant_cfg.get("weknora_default_dataset_id") if tenant_cfg else None)
-            or settings.WEKNORA_DATASET_ID
             or None
         )
 
         # 2. Kho Chính Sách & Quy Định Toàn Công Ty (Sổ tay nhân viên, Code of Conduct, Policies...)
         policy_dataset_id = (
-            (tenant_cfg.get("weknora_policy_dataset_id") if tenant_cfg else None)
-            or settings.WEKNORA_POLICY_DATASET_ID
-            or None
+            (tenant_cfg.get("weknora_policy_dataset_id") if tenant_cfg else None) or None
         )
 
         # 3. Kho Wiki / Digest Hội thoại (nếu có cấu hình)
         wiki_dataset_id = (
             (scope_record.wiki_dataset_id if (scope_record and scope_record.wiki_dataset_id) else None)
             or (tenant_cfg.get("weknora_wiki_dataset_id") if tenant_cfg else None)
-            or settings.WEKNORA_WIKI_DATASET_ID
             or None
         )
+
+        if eff_tenant and not (project_dataset_id or policy_dataset_id):
+            logger.warning(
+                "⚠️ Tenant '%s' chưa có dataset WeKnora trong collection 'tenants' "
+                "(weknora_default_dataset_id / weknora_policy_dataset_id) - truy xuất chỉ "
+                "dựa trên phạm vi nhóm chat, không mượn kho của .env.",
+                eff_tenant,
+            )
 
         # Tập hợp các kho tri thức quy chế / chính sách toàn công ty (Policy KB luôn là cốt lõi)
         global_policy_kbs = [kb for kb in [policy_dataset_id, wiki_dataset_id] if kb]
@@ -1017,6 +1019,24 @@ async def process_chat_pipeline(
         target_knowledge_ids = (
             scope_record.knowledge_ids if (scope_record and scope_record.knowledge_ids) else None
         )
+
+        # ── [CHUẨN BỊ PHẠM VI TÀI LIỆU CỦA NHÓM (CHAT SCOPE ALLOWLIST)] ──
+        # Nhóm chat chỉ được phép nhìn thấy tài liệu được cấu hình cho chính nhóm đó trên Lark Base!
+        allowed_doc_names = set()
+        if scope_record:
+            if hasattr(scope_record, "get_document_names"):
+                for dn in scope_record.get_document_names():
+                    if dn and str(dn).strip():
+                        allowed_doc_names.add(str(dn).strip().lower())
+            if scope_record.documents:
+                for d in scope_record.documents:
+                    if isinstance(d, dict) and d.get("name"):
+                        allowed_doc_names.add(str(d["name"]).strip().lower())
+                    elif isinstance(d, str) and d.strip():
+                        allowed_doc_names.add(d.strip().lower())
+
+        allowed_kids = set(str(kid).strip() for kid in (target_knowledge_ids or []) if str(kid).strip())
+        has_group_docs = bool(allowed_kids or allowed_doc_names)
 
         # Context-Driven Query Expansion cho câu hỏi dự án
         retrieval_query = clean_query
@@ -1051,20 +1071,18 @@ async def process_chat_pipeline(
             logger.info(
                 f"📁 [RAG Routing] Định tuyến đơn kho -> Project Scoped KB ({project_dataset_id}) | Confidence: {jev_domain_conf:.2f}"
             )
-            chunks = await _weknora.retrieve(
-                query=retrieval_query,
-                knowledge_base_ids=[project_dataset_id],
-                knowledge_ids=target_knowledge_ids,
-                match_count=retrieve_count,
-                tenant_id=weknora_tenant_id,
-            )
-            # Fallback an toàn: Nếu tìm theo target_knowledge_ids trả về 0 chunks (do stale ID), quét dataset và để Strict Isolation lọc theo tên file
-            if not chunks and target_knowledge_ids:
-                logger.info(f"🔄 [RAG Fallback] Retrieve theo target_knowledge_ids trả về 0 -> Fallback quét project dataset {project_dataset_id}...")
+            # CHỐT CHẶN BẢO MẬT: Nếu nhóm chưa được gán tài liệu dự án nào, tuyệt đối không quét kho dùng chung!
+            if not has_group_docs:
+                logger.info(
+                    f"🔒 [RAG Isolation] Nhóm '{scope_record.chat_name if scope_record else chat_id}' "
+                    f"không có tài liệu dự án nào trong Base -> Bỏ qua truy vấn kho dự án dùng chung để chống lộ chéo."
+                )
+                chunks = []
+            else:
                 chunks = await _weknora.retrieve(
                     query=retrieval_query,
                     knowledge_base_ids=[project_dataset_id],
-                    knowledge_ids=None,
+                    knowledge_ids=target_knowledge_ids,
                     match_count=retrieve_count,
                     tenant_id=weknora_tenant_id,
                 )
@@ -1074,35 +1092,35 @@ async def process_chat_pipeline(
                 logger.info(
                     f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Policy KBs: {global_policy_kbs})"
                 )
-                tasks = [
-                    _weknora.retrieve(
-                        query=retrieval_query,
-                        knowledge_base_ids=[project_dataset_id],
-                        knowledge_ids=target_knowledge_ids,
-                        match_count=retrieve_count,
-                        tenant_id=weknora_tenant_id,
-                    ),
+                tasks = []
+                # Chỉ truy vấn kho dự án nếu nhóm có tài liệu dự án được cấu hình!
+                if has_group_docs:
+                    tasks.append(
+                        _weknora.retrieve(
+                            query=retrieval_query,
+                            knowledge_base_ids=[project_dataset_id],
+                            knowledge_ids=target_knowledge_ids,
+                            match_count=retrieve_count,
+                            tenant_id=weknora_tenant_id,
+                        )
+                    )
+                else:
+                    async def _empty_proj():
+                        return []
+                    tasks.append(_empty_proj())
+
+                tasks.append(
                     _weknora.retrieve(
                         query=clean_query,
                         knowledge_base_ids=global_policy_kbs,
                         knowledge_ids=None,
                         match_count=retrieve_count,
                         tenant_id=weknora_tenant_id,
-                    ),
-                ]
+                    )
+                )
+
                 res_proj, res_policy = await asyncio.gather(*tasks, return_exceptions=True)
                 chunks_proj = res_proj if isinstance(res_proj, list) else []
-                # Fallback kho dự án nếu target_knowledge_ids bị 0 chunks
-                if not chunks_proj and target_knowledge_ids:
-                    logger.info(f"🔄 [RAG Fallback Hybrid] Kho dự án trả về 0 với target_knowledge_ids -> Quét project dataset...")
-                    fb_res = await _weknora.retrieve(
-                        query=retrieval_query,
-                        knowledge_base_ids=[project_dataset_id],
-                        knowledge_ids=None,
-                        match_count=retrieve_count,
-                        tenant_id=weknora_tenant_id,
-                    )
-                    chunks_proj = fb_res if isinstance(fb_res, list) else []
                 chunks_policy = res_policy if isinstance(res_policy, list) else []
 
                 # Hợp nhất và lọc trùng chunks theo id/content, sắp xếp theo score cao nhất
@@ -1115,21 +1133,16 @@ async def process_chat_pipeline(
                         merged_chunks.append(c)
                 chunks = merged_chunks[:retrieve_count]
             elif project_dataset_id:
-                chunks = await _weknora.retrieve(
-                    query=retrieval_query,
-                    knowledge_base_ids=[project_dataset_id],
-                    knowledge_ids=target_knowledge_ids,
-                    match_count=retrieve_count,
-                    tenant_id=weknora_tenant_id,
-                )
-                if not chunks and target_knowledge_ids:
+                if has_group_docs:
                     chunks = await _weknora.retrieve(
                         query=retrieval_query,
                         knowledge_base_ids=[project_dataset_id],
-                        knowledge_ids=None,
+                        knowledge_ids=target_knowledge_ids,
                         match_count=retrieve_count,
                         tenant_id=weknora_tenant_id,
                     )
+                else:
+                    chunks = []
             elif global_policy_kbs:
                 chunks = await _weknora.retrieve(
                     query=clean_query,
@@ -1142,22 +1155,12 @@ async def process_chat_pipeline(
         logger.warning(f"Lỗi WeKnora retrieve: {e}")
 
     # ── [CHỐT CHẶN BẢO MẬT: STRICT DOCUMENT SCOPE & DATA ISOLATION] ──
-    # Nhóm chat chỉ được phép nhìn thấy tài liệu được cấu hình cho chính nhóm đó trên Lark Base!
-    # Lọc bỏ 100% các chunks từ tài liệu khác / dự án khác lọt vào từ dataset dùng chung.
-    allowed_doc_names = set()
-    if scope_record:
-        if hasattr(scope_record, "get_document_names"):
-            for dn in scope_record.get_document_names():
-                if dn and str(dn).strip():
-                    allowed_doc_names.add(str(dn).strip().lower())
-        if scope_record.documents:
-            for d in scope_record.documents:
-                if isinstance(d, dict) and d.get("name"):
-                    allowed_doc_names.add(str(d["name"]).strip().lower())
-                elif isinstance(d, str) and d.strip():
-                    allowed_doc_names.add(d.strip().lower())
-
-    allowed_kids = set(str(kid).strip() for kid in (target_knowledge_ids or []) if str(kid).strip())
+    # Tập hợp các Knowledge Base ID thuộc chính sách / wiki của ĐÚNG tenant đang hỏi.
+    policy_kb_ids = {
+        str(k).strip()
+        for k in ([policy_dataset_id, wiki_dataset_id] + (global_policy_kbs or []))
+        if k and str(k).strip()
+    }
 
     # Chuẩn hóa chunks cho ContextComposer và Rule Engine
     normalized_chunks = []
@@ -1168,44 +1171,53 @@ async def process_chat_pipeline(
             or "Tài liệu hệ thống"
         )
         chunk_kid = str(c.get("knowledge_id") or "").strip()
-        kb_id = str(c.get("knowledge_base_id") or "")
-        is_policy_doc = (
-            kb_id == str(settings.WEKNORA_POLICY_DATASET_ID)
-            or any(
+        kb_id = str(c.get("knowledge_base_id") or "").strip()
+        
+        # Tài liệu chính sách phải thuộc đúng Knowledge Base chính sách/wiki của tenant
+        if kb_id and policy_kb_ids:
+            is_policy_doc = (kb_id in policy_kb_ids)
+        else:
+            is_policy_doc = any(
                 kw in doc_name.lower()
-                for kw in ["so_tay", "chinh_sach", "quy_che", "quy_tac", "employee_handbook", "code_of_conduct", "policy", "handbook"]
-            )
-        )
+                for kw in ["so_tay", "chinh_sach", "quy_che", "quy_tac", "employee_handbook", "code_of_conduct"]
+            ) and (kb_id != str(project_dataset_id).strip() if project_dataset_id else True)
 
         # STRICT ISOLATION FILTER:
-        # Nếu đây là tài liệu dự án và nhóm có cấu hình tài liệu cụ thể:
-        if not is_policy_doc and (allowed_kids or allowed_doc_names):
-            if chunk_kid and allowed_kids:
-                kid_match = chunk_kid in allowed_kids
-                name_match = any(
-                    (ad in doc_name.lower() or doc_name.lower() in ad)
-                    for ad in allowed_doc_names
-                ) if allowed_doc_names else False
-
-                if not kid_match and not name_match:
-                    cid = c.get("id") or c.get("chunk_id") or "unknown"
-                    logger.warning(
-                        f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' (kid={chunk_kid}) "
-                        f"bị loại bỏ vì không thuộc phạm vi tài liệu được cấu hình của nhóm '{scope_record.chat_name if scope_record else chat_id}'."
-                    )
-                    continue
-            elif allowed_doc_names and not chunk_kid:
-                name_match = any(
-                    (ad in doc_name.lower() or doc_name.lower() in ad)
-                    for ad in allowed_doc_names
+        # Với mọi tài liệu KHÔNG phải là chính sách công ty (tài liệu dự án/nhóm):
+        if not is_policy_doc:
+            # 1. Nếu nhóm này KHÔNG được cấu hình tài liệu dự án nào trong Base -> LOẠI BỎ 100%
+            if not has_group_docs:
+                cid = c.get("id") or c.get("chunk_id") or "unknown"
+                logger.warning(
+                    f"🚫 [DOCUMENT ISOLATION DROP] Nhóm '{scope_record.chat_name if scope_record else chat_id}' "
+                    f"không có tài liệu dự án nào trong Base. Loại bỏ chunk '{cid}' từ '{doc_name}' để chống lộ chéo."
                 )
-                if not name_match:
-                    cid = c.get("id") or c.get("chunk_id") or "unknown"
-                    logger.warning(
-                        f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' "
-                        f"bị loại bỏ vì không khớp danh mục tài liệu của nhóm."
-                    )
-                    continue
+                continue
+
+            # 2. Nếu nhóm có tài liệu dự án cụ thể -> kiểm tra knowledge_id và tên file chặt chẽ
+            kid_match = (chunk_kid in allowed_kids) if (chunk_kid and allowed_kids) else False
+            name_match = False
+            if allowed_doc_names:
+                clean_chunk_name = doc_name.strip().lower()
+                clean_chunk_base = clean_chunk_name.rsplit(".", 1)[0]
+                for ad in allowed_doc_names:
+                    clean_ad = ad.strip().lower()
+                    clean_ad_base = clean_ad.rsplit(".", 1)[0]
+                    if (
+                        clean_chunk_name == clean_ad
+                        or clean_chunk_base == clean_ad_base
+                        or (len(clean_ad_base) >= 5 and clean_ad_base in clean_chunk_base)
+                    ):
+                        name_match = True
+                        break
+
+            if not kid_match and not name_match:
+                cid = c.get("id") or c.get("chunk_id") or "unknown"
+                logger.warning(
+                    f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' (kid={chunk_kid}) "
+                    f"bị loại bỏ vì không thuộc phạm vi tài liệu được cấu hình của nhóm '{scope_record.chat_name if scope_record else chat_id}'."
+                )
+                continue
 
         normalized_chunks.append({
             "content": c.get("content", ""),
@@ -1330,7 +1342,11 @@ async def process_chat_pipeline(
     effective_client = None
     try:
         from services.user_settings_service import user_settings_service
-        effective_client = await user_settings_service.resolve_effective_llm_client(user_id=sender, chat_id=chat_id)
+        effective_client = await user_settings_service.resolve_effective_llm_client(
+            user_id=sender,
+            chat_id=chat_id,
+            tenant_key=eff_tenant,
+        )
     except Exception as key_err:
         logger.debug(f"Không thể resolve BYOK client: {key_err}")
 
@@ -1399,6 +1415,7 @@ async def process_chat_pipeline(
                 reason=reason_text,
                 is_confidential=is_confidential_group,
                 security_level=sec_lvl,
+                tenant_key=eff_tenant,
             )
 
             try:

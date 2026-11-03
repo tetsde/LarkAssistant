@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from pymongo import ReturnDocument
 
 from core.config import settings
-from database.db import get_setup_sessions_collection, get_tenants_collection, get_system_config_collection
+from database.db import get_setup_sessions_collection, get_system_config_collection
 from models.memory import get_vietnam_now_iso
 from services.auth_service import token_service
 from services.user_settings_service import user_settings_service
@@ -276,39 +276,60 @@ class OneClickSetupService:
                 app_record = await lark_app_service.get_registration(app_registration_id)
                 if not app_record:
                     raise RuntimeError("Không tìm thấy Custom App registration của phiên setup.")
+            if not app_record:
+                # Không đổi code bằng App trong .env: code này thuộc App mà người dùng
+                # vừa nhập credential trên wizard.
+                raise RuntimeError(
+                    "Phiên setup chưa có Custom App registration (app_registration_id trống) — "
+                    "không có app_id/app_secret để đổi authorization code."
+                )
 
             token_res = await token_service.exchange_code_for_token(
                 code=code,
-                app_id=app_record.get("app_id") if app_record else None,
-                app_secret=app_record.get("app_secret") if app_record else None,
+                app_id=app_record.get("app_id"),
+                app_secret=app_record.get("app_secret"),
             )
             if not token_res.get("access_token") or not token_res.get("refresh_token"):
                 raise RuntimeError("OAuth user chưa trả về đủ access_token và refresh_token; không thể hoàn tất setup.")
-            admin_open_id = token_res.get("open_id") or getattr(settings, "LARK_USER_OPEN_ID", "") or ""
-            admin_name = token_res.get("user_name") or getattr(settings, "LARK_USER_NAME", "") or "Quản trị viên"
-            tenant_key = token_res.get("tenant_key") or getattr(settings, "LARK_TENANT_KEY", "") or (f"tenant_{admin_open_id[:8]}" if admin_open_id else "tenant_default")
-            if app_record:
-                from services.lark_app_service import lark_app_service
-                await lark_app_service.link_tenant(app_registration_id, tenant_key, admin_open_id)
+            # Danh tính doanh nghiệp phải do Lark trả về. Trước đây thiếu tenant thì hệ
+            # thống tự đặt `tenant_{open_id[:8]}` hoặc `tenant_default`, tạo ra một tenant
+            # giả không tương ứng doanh nghiệp nào và che mất lỗi cấu hình App.
+            admin_open_id = token_res.get("open_id") or ""
+            admin_name = token_res.get("user_name") or "Quản trị viên"
+            tenant_key = token_res.get("tenant_key") or ""
+            if not admin_open_id or not tenant_key:
+                raise RuntimeError(
+                    "Lark không trả về open_id/tenant_key sau khi ủy quyền — App chưa được "
+                    "kích hoạt đúng doanh nghiệp. Không tự sinh tenant_key giả."
+                )
+            from services.lark_app_service import lark_app_service
+            await lark_app_service.link_tenant(app_registration_id, tenant_key, admin_open_id)
+            # Ghi tenant_key vào task để except block biết tenant nào cần đánh dấu hỏng.
+            task["tenant_key"] = tenant_key
             logger.info(f"✔ [ONE-CLICK SETUP] Task '{task_id}': Token exchanged. Admin: {admin_name} ({admin_open_id}), Tenant: {tenant_key}")
 
             # Lưu hồ sơ Tenant vào MongoDB Atlas
-            tenants_col = get_tenants_collection()
-            tenant_record = {
-                "tenant_key": tenant_key,
-                "app_id": (app_record or {}).get("app_id") or getattr(settings, "LARK_APP_ID", ""),
+            # Dry-run (WEKNORA_PROVISION_DRY_RUN) chỉ dành cho dev: dataset_id nó sinh ra là
+            # dữ liệu giả, ghi xuống `tenants` sẽ khiến tenant 'ready' nhưng trỏ vào kho không
+            # tồn tại.
+            dry_run = bool(getattr(settings, "WEKNORA_PROVISION_DRY_RUN", False))
+            from services.tenancy.tenant_state import tenant_state
+
+            tenant_fields = {
+                "app_id": (app_record or {}).get("app_id") or "",
                 # Chỉ chuyển sang ready sau khi cả Base và WeKnora hoàn tất.
-                "status": "provisioning",
                 "admin_open_id": admin_open_id,
                 "admin_name": admin_name,
                 "installed_at": get_vietnam_now_iso(),
-                "updated_at": get_vietnam_now_iso(),
             }
-            await tenants_col.update_one(
-                {"tenant_key": tenant_key},
-                {"$set": tenant_record, "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
-                upsert=True,
-            )
+            if dry_run:
+                logger.warning(
+                    "⚠️ [ONE-CLICK SETUP] WEKNORA_PROVISION_DRY_RUN=True — bỏ qua ghi "
+                    "collection 'tenants' cho '%s' (status=provisioning). Setup chỉ mô phỏng.",
+                    tenant_key,
+                )
+            else:
+                await tenant_state.transition(tenant_key, "provisioning", **tenant_fields)
 
             # Lưu đồng bộ vào user_settings & runtime LarkService
             try:
@@ -341,15 +362,22 @@ class OneClickSetupService:
             )
 
             # Bot đã được khai báo sẵn trong HiLark App trên Lark Developer Platform
-            app_id = (app_record or {}).get("app_id") or getattr(settings, "LARK_APP_ID", "")
-            app_secret = (app_record or {}).get("app_secret") or getattr(settings, "LARK_APP_SECRET", "")
+            app_id = (app_record or {}).get("app_id") or ""
+            app_secret = (app_record or {}).get("app_secret") or ""
             if not app_id or not app_secret:
-                raise RuntimeError("Thiếu App ID/App Secret sau bước xác thực App credential.")
+                raise RuntimeError(
+                    "Thiếu App ID/App Secret sau bước xác thực App credential. "
+                    "Đảm bảo tenant đã đăng ký Custom App trong setup wizard. "
+                    "Không fallback .env trong multi-tenant mode."
+                )
 
             tenant_token_ready = False
             if getattr(settings, "IS_ISV_MODE", False):
-                from services.auth.isv_token_service import isv_token_service
-                tenant_token = await isv_token_service.get_tenant_access_token(tenant_key)
+                from services.auth.tenant_token_manager import tenant_token_manager
+                tenant_token = await tenant_token_manager.get_token(
+                    tenant_key=tenant_key,
+                    token_type="bot"
+                )
                 tenant_token_ready = bool(tenant_token)
                 if not tenant_token_ready:
                     raise RuntimeError("Không lấy được tenant access token cho doanh nghiệp.")
@@ -431,9 +459,13 @@ class OneClickSetupService:
 
             bitable_url = getattr(base_result, "app_url", "") if base_result else ""
             if not bitable_url:
-                domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
-                app_tok = getattr(settings, "LARK_BASE_APP_TOKEN", "")
-                bitable_url = f"{domain}/base/{app_tok}" if app_tok else ""
+                # Không dựng URL từ `settings.LARK_BASE_APP_TOKEN`: đó là Base của doanh
+                # nghiệp khác. Bàn giao thiếu URL thì Admin tự mở Base từ bước kế tiếp.
+                logger.warning(
+                    "⚠️ [ONE-CLICK SETUP] Provision Base không trả về app_url cho tenant '%s' "
+                    "— bỏ qua link Base trong thẻ bàn giao thay vì mượn LARK_BASE_APP_TOKEN.",
+                    tenant_key,
+                )
 
             weknora_url = getattr(settings, "WEKNORA_WEB_URL", "http://localhost/login")
 
@@ -527,11 +559,16 @@ class OneClickSetupService:
             # -------------------------------------------------------------
             # BƯỚC 7: Ready
             # -------------------------------------------------------------
-            await tenants_col.update_one(
-                {"tenant_key": tenant_key},
-                {"$set": {"status": "ready", "ready_at": get_vietnam_now_iso()}},
-                upsert=True,
-            )
+            if dry_run:
+                logger.warning(
+                    "⚠️ [ONE-CLICK SETUP] Dry-run đang bật — tenant '%s' KHÔNG được chuyển "
+                    "sang 'ready' vì tài nguyên WeKnora chỉ là dữ liệu giả.",
+                    tenant_key,
+                )
+            else:
+                # Điểm hẹn duy nhất để tenant bắt đầu được phục vụ; helper này cũng báo
+                # resolver + token broker bỏ cấu hình/token cũ giữ từ lúc provisioning.
+                await tenant_state.mark_ready(tenant_key)
 
             self._update_step(
                 task_id,
@@ -579,6 +616,16 @@ class OneClickSetupService:
                 status="failed",
                 detail=f"Lỗi xảy ra tại bước này: {str(e)}",
             )
+            # Setup hỏng phải để lại dấu vết trên tenant: trạng thái `provisioning_failed`
+            # là điều kiện để UI hiện nút "Thử lại" và để resolver từ chối phục vụ.
+            try:
+                failed_tenant = task.get("tenant_key") or (task.get("tenant_info") or {}).get("tenant_key")
+                if failed_tenant and not bool(getattr(settings, "WEKNORA_PROVISION_DRY_RUN", False)):
+                    from services.tenancy.tenant_state import tenant_state as _tenant_state
+
+                    await _tenant_state.mark_provisioning_failed(str(failed_tenant), str(e))
+            except Exception as state_err:
+                logger.warning("Không ghi được provisioning_failed cho phiên setup: %s", state_err)
             task["status"] = "failed"
             task["error"] = str(e)
             task["updated_at"] = get_vietnam_now_iso()

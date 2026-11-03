@@ -88,7 +88,7 @@ class LarkMessengerMixin:
         # Tự động nhận diện nếu người gọi truyền vào card dictionary hoặc card JSON
         if isinstance(text, dict):
             return await self.send_bot_card_to_owner(text, target_open_id=target_open_id, tenant_key=tenant_key)
-        if isinstance(text, str) and text.strip().startswith("{") and '"elements"' in text:
+        if isinstance(text, str) and text.strip().startswith("{") and any(k in text for k in ('"elements"', '"body"', '"schema"')):
             return await self.send_bot_card_to_owner(text, target_open_id=target_open_id, tenant_key=tenant_key)
 
         owner_open_id = target_open_id or self.owner_open_id
@@ -117,6 +117,8 @@ class LarkMessengerMixin:
             if not response.success():
                 logger.error(f"[LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
                 return {"success": False, "code": response.code, "msg": response.msg}
+            if response.data and getattr(response.data, "message_id", None):
+                self._record_sent_message_id(getattr(response.data, "message_id"))
             logger.info(f"[LARK BOT DM] Đã gửi tin nhắn tới chủ nhân ({owner_open_id}) thành công")
             return {"success": True, "data": response.data}
         except Exception as e:
@@ -182,6 +184,8 @@ class LarkMessengerMixin:
                 return {"success": False, "code": response.code, "msg": response.msg}
 
             mid = getattr(response.data, "message_id", None) if response.data else None
+            if mid:
+                self._record_sent_message_id(mid)
             logger.info(f"[LARK BOT DM CARD] Đã gửi thẻ tương tác tới chủ nhân ({owner_open_id}) thành công, message_id={mid}")
             return {"success": True, "data": response.data, "message_id": mid}
         except Exception as e:
@@ -275,6 +279,19 @@ class LarkMessengerMixin:
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         return opt, content_json, None
 
+    def _resolve_msg_tenant(self, tenant_key: Optional[str] = None) -> Optional[str]:
+        """
+        Xác định tenant cho thao tác gửi tin: tham số -> ContextVar của request ->
+        danh tính của instance.
+
+        Không còn đọc `getattr(self, "tenant_key")` trước ContextVar: singleton
+        `lark_service` mang tenant của App đầu tiên/.env, nên nếu thuộc tính instance
+        thắng thì tin nhắn của tenant B được gửi bằng danh tính tenant A.
+        """
+        from database.db import get_current_tenant_key
+
+        return tenant_key or get_current_tenant_key() or getattr(self, "tenant_key", None)
+
     async def _prepare_user_msg_payload_async(
         self,
         target_id: str,
@@ -286,16 +303,24 @@ class LarkMessengerMixin:
         if not target_id or not text:
             return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
 
-        # ✅ TỰ ĐỘNG REFRESH TOKEN NẾU HẾT HẠN
+        # ✅ TỰ ĐỘNG REFRESH TOKEN NẾU HẾT HẠN (WS7: qua TenantTokenManager)
         try:
-            from services.auth.token_service import token_service
-            eff_tenant = tenant_key or getattr(self, "tenant_key", None)
-            instance_app_id = getattr(self, "app_id", None)
-            target_app_id = None if (eff_tenant and instance_app_id == getattr(settings, "LARK_APP_ID", "")) else instance_app_id
-            valid_token = await token_service.get_valid_user_token(
+            from services.auth.tenant_token_manager import tenant_token_manager
+            eff_tenant = self._resolve_msg_tenant(tenant_key)
+            
+            if not eff_tenant:
+                logger.warning("⚠️ Không có tenant_key, không thể lấy token qua TenantTokenManager")
+                return None, None, {
+                    "success": False,
+                    "error": "missing_tenant_key",
+                    "msg": "Thiếu tenant_key để xác thực token",
+                }
+            
+            valid_token = await tenant_token_manager.get_token(
                 tenant_key=eff_tenant,
-                app_id=target_app_id,
+                token_type="user"
             )
+            
             if not valid_token:
                 logger.warning("⚠️ [TOKEN AUTO-REFRESH FAILED] User token không hợp lệ")
                 return None, None, {
@@ -311,7 +336,7 @@ class LarkMessengerMixin:
         # Cập nhật RAM instance và trực tiếp tạo RequestOption từ valid_token
         self.user_access_token = valid_token
         opt_builder = lark.RequestOption.builder().user_access_token(valid_token)
-        eff_tenant = tenant_key or getattr(self, "tenant_key", None)
+        eff_tenant = self._resolve_msg_tenant(tenant_key)
         if eff_tenant:
             opt_builder.tenant_key(eff_tenant)
         opt = opt_builder.build()
@@ -335,6 +360,13 @@ class LarkMessengerMixin:
         # Giới hạn kích thước tối đa (FIFO)
         while len(self._sent_message_ids) > max_size:
             self._sent_message_ids.popitem(last=False)
+
+        # Đồng bộ vào bộ đệm dùng chung toàn server để Dispatcher của mọi runtime đều nhận diện được
+        try:
+            from services.lark.dispatcher import record_sent_message_id_global
+            record_sent_message_id_global(message_id, ttl_seconds=ttl_seconds, max_size=max_size * 2)
+        except Exception:
+            pass
 
     def _handle_im_response(self, response: Any, action_desc: str) -> Dict[str, Any]:
         """Xử lý response từ Lark IM, ghi nhận cache message_id chống loop và log lỗi."""
@@ -504,9 +536,11 @@ class LarkMessengerMixin:
         self,
         message_id: str,
         as_user: Optional[bool] = None,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Thu hồi (Delete/Recall) tin nhắn trên Lark (async).
+        Hỗ trợ tự động làm mới User Access Token và hỗ trợ đa tenant.
         Nếu as_user=True: thu hồi với User Access Token.
         Nếu as_user=False: thu hồi với Tenant/Bot Access Token.
         Nếu as_user=None: tự động thử với User Access Token (nếu có), nếu lỗi/không có thì thử với Tenant Token.
@@ -514,13 +548,39 @@ class LarkMessengerMixin:
         if not message_id:
             return {"success": False, "error": "message_id không được rỗng"}
 
+        eff_tenant = self._resolve_msg_tenant(tenant_key)
         request = DeleteMessageRequest.builder().message_id(message_id).build()
 
         async def _do_delete(opt: Optional[lark.RequestOption]):
             return await self.client.im.v1.message.adelete(request, option=opt)
 
+        async def _get_fresh_user_opt() -> Optional[lark.RequestOption]:
+            try:
+                from services.auth.tenant_token_manager import tenant_token_manager
+                
+                if not eff_tenant:
+                    return None
+                
+                valid_token = await tenant_token_manager.get_token(
+                    tenant_key=eff_tenant,
+                    token_type="user"
+                )
+                
+                if valid_token:
+                    builder = lark.RequestOption.builder().user_access_token(valid_token)
+                    if eff_tenant:
+                        builder.tenant_key(eff_tenant)
+                    return builder.build()
+            except Exception as e:
+                logger.debug(f"Không thể lấy fresh user token để recall: {e}")
+            if self.user_access_token:
+                return self._get_request_option(as_user=True, tenant_key=eff_tenant)
+            return None
+
+        bot_opt = self._get_request_option(as_user=False, tenant_key=eff_tenant)
+
         if as_user is True:
-            opt = self._get_request_option(as_user=True)
+            opt = await _get_fresh_user_opt()
             try:
                 response = await _do_delete(opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
@@ -530,30 +590,28 @@ class LarkMessengerMixin:
 
         elif as_user is False:
             try:
-                response = await _do_delete(None)
+                response = await _do_delete(bot_opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as bot")
             except Exception as e:
                 logger.error(f"Lỗi khi thu hồi tin nhắn {message_id} as bot: {e}", exc_info=True)
                 return {"success": False, "error": str(e)}
 
         else:
-            opt = None
-            try:
-                token_check = self.check_user_access_token()
-                if token_check.is_valid:
-                    opt = self._get_request_option(as_user=True)
-            except Exception:
-                opt = None
+            # Ưu tiên thử User token trước (do tin nhắn gửi dạng as_user)
+            user_opt = await _get_fresh_user_opt()
+            if user_opt:
+                try:
+                    response = await _do_delete(user_opt)
+                    if response.success():
+                        return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as user")
+                    logger.info(f"Thu hồi tin nhắn {message_id} bằng User token không thành công (code {response.code}), thử bằng Bot token...")
+                except Exception as ex:
+                    logger.debug(f"Thử thu hồi {message_id} bằng user token gặp lỗi: {ex}")
 
+            # Thử bằng Bot token
             try:
-                response = await _do_delete(opt)
-                if response.success():
-                    return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
-                if opt is not None:
-                    fallback_resp = await _do_delete(None)
-                    if fallback_resp.success():
-                        return self._handle_im_response(fallback_resp, f"thu hồi tin nhắn {message_id} as bot fallback")
-                return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
+                response = await _do_delete(bot_opt)
+                return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as bot")
             except Exception as e:
                 logger.error(f"Exception khi thu hồi tin nhắn {message_id}: {e}", exc_info=True)
                 return {"success": False, "error": str(e)}
@@ -656,34 +714,73 @@ class LarkMessengerMixin:
         app_specific_validated = False
         app_record = None
         app_header = payload.get("header", {}) if isinstance(payload, dict) else {}
-        inbound_app_id = app_header.get("app_id", "") if isinstance(app_header, dict) else ""
+        raw_query_app = None
+        if hasattr(request, "query_params") and hasattr(request.query_params, "get"):
+            val = request.query_params.get("app_id")
+            if isinstance(val, str) and val.strip():
+                raw_query_app = val.strip()
 
-        # Encrypted Lark events do not expose header.app_id until after
-        # decryption. With multiple Custom Apps, resolve the sender by trying
-        # each registered App's own encrypt/verification key. Never fall back
-        # to the legacy singleton for an encrypted payload.
-        if isinstance(payload, dict) and payload.get("encrypt") and not inbound_app_id:
+        raw_header_app = (app_header.get("app_id", "") if isinstance(app_header, dict) else "")
+        if not isinstance(raw_header_app, str) or not raw_header_app.strip():
+            raw_header_app = ""
+        else:
+            raw_header_app = raw_header_app.strip()
+
+        inbound_app_id = raw_query_app or raw_header_app
+
+        # Xử lý sự kiện mã hóa (Encrypted Event / Challenge)
+        if isinstance(payload, dict) and payload.get("encrypt"):
             try:
                 from services.lark_app_service import lark_app_service
-                from services.lark.runtime import get_or_create_lark_service
+                from services.lark.runtime import (
+                    get_or_create_lark_service,
+                    reset_current_lark_service,
+                    set_current_lark_service,
+                )
 
                 encrypted_raw_req = RawRequest()
                 encrypted_raw_req.uri = request.url.path
                 encrypted_raw_req.body = body_bytes
                 encrypted_raw_req.headers = _lark_raw_headers(request)
+
+                # 1. Nếu Request URL có chỉ định đích danh ?app_id=cli_xxx:
+                # Dùng chính xác bộ key của App đó giải mã trực tiếp, không đoán mò!
+                if inbound_app_id:
+                    target_app = await lark_app_service.get_by_app_id(inbound_app_id)
+                    if target_app and target_app.get("encrypt_key"):
+                        target_service = await get_or_create_lark_service(target_app)
+                        ctx_token = set_current_lark_service(target_service)
+                        try:
+                            target_resp = target_service.event_dispatcher.do(encrypted_raw_req)
+                            return Response(
+                                content=target_resp.content,
+                                status_code=target_resp.status_code,
+                                media_type=getattr(target_resp, "content_type", None) or "application/json",
+                            )
+                        finally:
+                            reset_current_lark_service(ctx_token)
+
+                # 2. Nếu Request URL không có ?app_id: Ưu tiên App vừa cấu hình/cập nhật gần nhất
                 registrations = await lark_app_service.list_registrations()
+                registrations.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
                 for candidate in registrations:
                     if not candidate.get("encrypt_key"):
                         continue
                     candidate_service = await get_or_create_lark_service(candidate)
-                    from services.lark.runtime import reset_current_lark_service, set_current_lark_service
                     candidate_context_token = set_current_lark_service(candidate_service)
                     try:
                         candidate_response = candidate_service.event_dispatcher.do(encrypted_raw_req)
-                        return Response(
-                            content=candidate_response.content,
-                            status_code=candidate_response.status_code,
-                            media_type=getattr(candidate_response, "content_type", None) or "application/json",
+                        if candidate_response.status_code == 200:
+                            return Response(
+                                content=candidate_response.content,
+                                status_code=200,
+                                media_type=getattr(candidate_response, "content_type", None) or "application/json",
+                            )
+                        logger.debug(
+                            "Candidate Custom App %s failed event dispatch (status %s): %s",
+                            candidate.get("app_id"),
+                            candidate_response.status_code,
+                            candidate_response.content,
                         )
                     except Exception as candidate_error:
                         logger.debug(
@@ -799,16 +896,29 @@ class LarkMessengerMixin:
         if is_card_action:
             from services.lark.handlers.card_action_handler import handle_card_action, parse_card_action_payload
             open_id, message_id, action_val = parse_card_action_payload(payload)
-            # Card callback chuẩn đôi khi không có header.app_id. Card payload
-            # vẫn mang tenant_key, dùng nó để resolve đúng Custom App runtime.
-            if not app_record and action_val.get("tenant_key"):
+
+            # Card callback chuẩn đôi khi không có header.app_id hoặc tenant_key bị rỗng.
+            # Tự động truy vấn tenant_key từ admin_open_id nếu cần.
+            card_tenant = action_val.get("tenant_key")
+            if not card_tenant and open_id:
+                try:
+                    from database.db import get_tenants_collection
+                    t_col = get_tenants_collection()
+                    found_t = await t_col.find_one({"admin_open_id": open_id})
+                    if found_t and found_t.get("tenant_key"):
+                        card_tenant = found_t["tenant_key"]
+                        action_val["tenant_key"] = card_tenant
+                except Exception:
+                    pass
+
+            if not app_record and card_tenant:
                 try:
                     from services.lark_app_service import lark_app_service
-                    app_record = await lark_app_service.get_by_tenant_key(action_val["tenant_key"])
+                    app_record = await lark_app_service.get_by_tenant_key(card_tenant)
                 except Exception as resolve_err:
                     logger.warning(
                         "Không resolve được Custom App cho card tenant=%s: %s",
-                        action_val.get("tenant_key"),
+                        card_tenant,
                         resolve_err,
                     )
             runtime_context_token = None
@@ -833,7 +943,13 @@ class LarkMessengerMixin:
                         "content": toast_msg,
                     }
                 if updated_card:
-                    resp_data["card"] = updated_card
+                    if isinstance(updated_card, dict) and "data" in updated_card and "type" in updated_card:
+                        resp_data["card"] = updated_card
+                    else:
+                        resp_data["card"] = {
+                            "type": "raw",
+                            "data": updated_card,
+                        }
                 return Response(
                     content=json.dumps(resp_data, ensure_ascii=False),
                     media_type="application/json; charset=utf-8",

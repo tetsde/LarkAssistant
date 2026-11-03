@@ -26,6 +26,9 @@ from lark_oapi.api.authen.v1 import GetUserInfoRequest
 
 from core.config import settings
 from models.lark import LarkConfig
+from services.auth.tenant_token_manager import token_broker
+from core.tenant_errors import TenantContextMissing, TokenUnavailable
+from core import token_loop
 
 logger = logging.getLogger("hilark.lark")
 logger.setLevel(logging.INFO)
@@ -78,8 +81,8 @@ class LarkClientMixin:
                 pass
 
             self.config = LarkConfig(
-                app_id=app_id or settings.LARK_APP_ID or "",
-                app_secret=app_secret or settings.LARK_APP_SECRET or "",
+                app_id=app_id or "",
+                app_secret=app_secret or "",
                 verification_token=verification_token or settings.LARK_VERIFICATION_TOKEN or "",
                 encrypt_key=encrypt_key or settings.LARK_ENCRYPT_KEY or "",
                 domain=domain or settings.LARK_DOMAIN or lark.LARK_DOMAIN,
@@ -105,7 +108,7 @@ class LarkClientMixin:
             .build()
         )
 
-        # Cache thông tin của User hiện tại (Tên, open_id đọc từ .env hoặc settings)
+        # Cache thông tin của User hiện tại (open_id đọc từ .env hoặc settings)
         self.known_user_open_id = (
             getattr(self.config, "user_open_id", "")
             or settings.LARK_USER_OPEN_ID
@@ -282,20 +285,73 @@ class LarkClientMixin:
             raise ValueError("Chưa cấu hình `access_token_user` trong .env! Hệ thống chỉ được phép gửi bằng danh tính người dùng.")
         return lark.RequestOption.builder().user_access_token(self.user_access_token).build()
 
+    def _effective_tenant(self, tenant_key: Optional[str] = None) -> str:
+        """
+        tenant_key theo thứ tự: tham số gọi -> ContextVar của request -> danh tính
+        của instance.
+
+        ContextVar phải đứng trước `self.tenant_key`: singleton `lark_service` mang
+        tenant của .env/tenant đầu tiên, nên nếu ưu tiên thuộc tính instance thì một
+        request của tenant B sẽ bị gửi bằng danh tính tenant A. Thuộc tính instance chỉ
+        còn là fallback hợp lệ cho luồng WebSocket đã tạo service riêng theo App
+        (`runtime.get_or_create_lark_service`).
+        """
+        from database.db import get_current_tenant_key
+        eff = tenant_key or get_current_tenant_key() or getattr(self, "tenant_key", None)
+        if not eff:
+            raise TenantContextMissing(
+                "LarkClient không xác định được tenant để lấy token "
+                "(tham số, ContextVar request và thuộc tính instance đều trống)."
+            )
+        return eff
+
+    def _token_via_broker(self, tenant_key: str, kind: str) -> str:
+        """
+        Gọi broker từ code sync, kể cả khi thread hiện tại đang có event loop.
+
+        Thread phụ chỉ chờ một `concurrent.futures.Future` của token loop; nó không tạo
+        event loop riêng nữa, nên không còn tình huống lock của broker bị chạm từ hai loop.
+        """
+        if token_loop.is_async_caller():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(
+                    token_broker.get_token_sync, tenant_key, kind
+                ).result(timeout=20.0)
+        return token_broker.get_token_sync(tenant_key, kind)
+
+    def _build_user_option(self, token: str, tenant_key: Optional[str]) -> lark.RequestOption:
+        builder = lark.RequestOption.builder().user_access_token(token)
+        if tenant_key:
+            builder.tenant_key(tenant_key)
+        return builder.build()
+
     def _get_request_option(
         self,
         as_user: bool = True,
         tenant_key: Optional[str] = None,
     ) -> Optional[lark.RequestOption]:
-        """Tạo RequestOption mang User Token nếu as_user=True và token khả dụng, hoặc mang tenant_key trong ISV mode."""
-        if as_user and self.user_access_token:
-            builder = lark.RequestOption.builder().user_access_token(self.user_access_token)
-            if tenant_key:
-                builder.tenant_key(tenant_key)
-            return builder.build()
+        """Tạo RequestOption mang danh tính User (user token) hoặc Bot (tenant token)."""
+        if as_user:
+            eff_tenant = self._effective_tenant(tenant_key)
+            valid_token = self._token_via_broker(eff_tenant, "user")
+            if not valid_token:
+                raise TokenUnavailable(
+                    f"Broker trả về user token rỗng cho tenant '{eff_tenant}'.",
+                    tenant_key=eff_tenant,
+                    kind="user",
+                )
+            self.user_access_token = valid_token
+            return self._build_user_option(valid_token, tenant_key)
+
         if tenant_key:
-            from services.auth.isv_token_service import isv_token_service
-            return isv_token_service.build_request_option(tenant_key=tenant_key)
+            if getattr(settings, "IS_ISV_MODE", False):
+                from services.auth.isv_token_service import isv_token_service
+                return isv_token_service.build_request_option(tenant_key=tenant_key)
+            # Custom App: gửi bằng danh tính Bot của đúng App thuộc tenant này.
+            bot_token = self._token_via_broker(tenant_key, "bot")
+            builder = lark.RequestOption.builder().tenant_access_token(bot_token)
+            return builder.tenant_key(tenant_key).build()
         return None
 
     # -------------------------------------------------------------------------
@@ -415,12 +471,13 @@ class LarkClientMixin:
             logger.error(f"❌ [LARK IM] Exception khi tải tài nguyên {file_key}: {e}", exc_info=True)
             return None
 
-    async def aget_docx_raw_content(self, document_id: str) -> Optional[str]:
+    async def aget_docx_raw_content(self, document_id: str, tenant_key: Optional[str] = None) -> Optional[str]:
         """
         Lấy nội dung Markdown nguyên bản của tài liệu Lark DocX qua OpenAPI (async, 0 token cost).
 
         Args:
             document_id: ID của tài liệu DocX (document_id hoặc obj_token).
+            tenant_key: Tenant key để xác định context (WS7 fix).
 
         Returns:
             Chuỗi Markdown thuần nếu thành công, None nếu thất bại.
@@ -429,7 +486,7 @@ class LarkClientMixin:
             return None
 
         from lark_oapi.api.docx.v1 import RawContentDocumentRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         req = RawContentDocumentRequest.builder().document_id(document_id).build()
         try:
             resp = await self.client.docx.v1.document.araw_content(req, opt)
@@ -485,12 +542,13 @@ class LarkClientMixin:
             logger.error(f"❌ [LARK DOCX] Exception khi lấy raw content document {document_id}: {e}", exc_info=True)
             return None
 
-    async def aresolve_wiki_token(self, wiki_token: str) -> Optional[Dict[str, str]]:
+    async def aresolve_wiki_token(self, wiki_token: str, tenant_key: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
         Giải mã wiki node token thành obj_token và obj_type (ví dụ: docx, sheet, bitable).
 
         Args:
             wiki_token: Token của trang Wiki.
+            tenant_key: Tenant key để xác định context (WS7 fix).
 
         Returns:
             Dict {"obj_token": str, "obj_type": str, "title": str} nếu thành công, None nếu thất bại.
@@ -499,7 +557,7 @@ class LarkClientMixin:
             return None
 
         from lark_oapi.api.wiki.v2 import GetNodeSpaceRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         req = GetNodeSpaceRequest.builder().token(wiki_token).build()
         try:
             resp = await self.client.wiki.v2.space.aget_node(req, opt)
@@ -570,6 +628,7 @@ class LarkClientMixin:
         folder_token: str,
         page_size: int = 50,
         max_files: int = 200,
+        tenant_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Liệt kê danh sách các tệp và thư mục con trong một thư mục Lark Drive (async).
@@ -578,6 +637,7 @@ class LarkClientMixin:
             folder_token: Token của thư mục Lark Drive (e.g. 'fldcnXXXXXXXX').
             page_size: Số lượng tệp mỗi trang (mặc định 50).
             max_files: Giới hạn tối đa số tệp thu thập để tránh bùng nổ tài nguyên.
+            tenant_key: Định danh tenant để đảm bảo cô lập token (fail-closed).
 
         Returns:
             Danh sách dict: [{"token": str, "name": str, "type": str, "url": str, "parent_token": str}]
@@ -586,7 +646,7 @@ class LarkClientMixin:
             return []
 
         from lark_oapi.api.drive.v1 import ListFileRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         files: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
         has_more = True
@@ -603,7 +663,8 @@ class LarkClientMixin:
                     logger.warning(
                         f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
                     )
-                    resp = await self.client.drive.v1.file.alist(req)
+                    bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                    resp = await self.client.drive.v1.file.alist(req, bot_opt)
 
                 if not resp.success():
                     logger.error(
@@ -638,13 +699,14 @@ class LarkClientMixin:
         folder_token: str,
         page_size: int = 50,
         max_files: int = 200,
+        tenant_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Phiên bản đồng bộ của alist_drive_folder_files."""
         if not folder_token:
             return []
 
         from lark_oapi.api.drive.v1 import ListFileRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         files: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
         has_more = True
@@ -661,7 +723,8 @@ class LarkClientMixin:
                     logger.warning(
                         f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
                     )
-                    resp = self.client.drive.v1.file.list(req)
+                    bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                    resp = self.client.drive.v1.file.list(req, bot_opt)
 
                 if not resp.success():
                     logger.error(
@@ -691,12 +754,13 @@ class LarkClientMixin:
             logger.error(f"❌ [LARK DRIVE] Exception khi liệt kê tệp trong thư mục {folder_token}: {e}", exc_info=True)
             return files
 
-    async def adownload_drive_file(self, file_token: str) -> Optional[bytes]:
+    async def adownload_drive_file(self, file_token: str, tenant_key: Optional[str] = None) -> Optional[bytes]:
         """
         Tải nội dung nhị phân của tệp từ Lark Drive qua OpenAPI (async).
 
         Args:
             file_token: Token của tệp trên Drive.
+            tenant_key: Định danh tenant để đảm bảo cô lập token (fail-closed).
 
         Returns:
             bytes nếu thành công, None nếu thất bại.
@@ -705,7 +769,7 @@ class LarkClientMixin:
             return None
 
         from lark_oapi.api.drive.v1 import DownloadFileRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         req = DownloadFileRequest.builder().file_token(file_token).build()
 
         try:
@@ -714,7 +778,8 @@ class LarkClientMixin:
                 logger.warning(
                     f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
                 )
-                resp = await self.client.drive.v1.file.adownload(req)
+                bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                resp = await self.client.drive.v1.file.adownload(req, bot_opt)
 
             if not resp.success():
                 logger.error(
@@ -732,13 +797,13 @@ class LarkClientMixin:
             logger.error(f"❌ [LARK DRIVE] Exception khi tải tệp {file_token}: {e}", exc_info=True)
             return None
 
-    def download_drive_file(self, file_token: str) -> Optional[bytes]:
+    def download_drive_file(self, file_token: str, tenant_key: Optional[str] = None) -> Optional[bytes]:
         """Phiên bản đồng bộ của adownload_drive_file."""
         if not file_token:
             return None
 
         from lark_oapi.api.drive.v1 import DownloadFileRequest
-        opt = self._get_request_option(as_user=True)
+        opt = self._get_request_option(as_user=True, tenant_key=tenant_key)
         req = DownloadFileRequest.builder().file_token(file_token).build()
 
         try:
@@ -747,7 +812,8 @@ class LarkClientMixin:
                 logger.warning(
                     f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
                 )
-                resp = self.client.drive.v1.file.download(req)
+                bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
+                resp = self.client.drive.v1.file.download(req, bot_opt)
 
             if not resp.success():
                 logger.error(

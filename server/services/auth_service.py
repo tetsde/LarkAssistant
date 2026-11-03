@@ -4,7 +4,8 @@ Unified Auth & Access Control Service Module
 Vị trí: server/services/auth_service.py
 
 Gom nhóm toàn bộ các dịch vụ xác thực, token và phân quyền truy cập:
-  - Lark User Token Lifecycle & Token Refresh Daemon (token_service, LarkTokenService)
+  - Lark User Token Lifecycle (token_service, LarkTokenService) + sweeper giữ hạn token
+    của từng tenant `ready` (start_tenant_token_sweeper).
   - Chat Scopes & Data Isolation Gatekeeper (scope_service, ScopeService, ChatScopeRecord)
 """
 
@@ -19,8 +20,8 @@ from services.auth.token_service import (
     format_remaining_seconds,
     LarkTokenService,
     token_service,
-    start_token_refresh_loop,
 )
+from services.auth.tenant_refresh_sweeper import start_tenant_token_sweeper
 from services.knowledge.chat_scopes import (
     ScopeService,
     scope_service,
@@ -39,7 +40,7 @@ __all__ = [
     "format_remaining_seconds",
     "LarkTokenService",
     "token_service",
-    "start_token_refresh_loop",
+    "start_tenant_token_sweeper",
     "get_auth_collection",
     "httpx",
     # Scope / Permissions

@@ -15,12 +15,16 @@ Chịu trách nhiệm:
 from __future__ import annotations
 
 import logging
-import inspect
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from core.config import settings
-from database.db import get_tenants_collection
 from models.memory import get_vietnam_now_iso
+from services.tenancy.tenant_state import (
+    INACTIVE,
+    PROVISIONING,
+    READY,
+    tenant_state,
+    InvalidTenantTransition,
+)
 
 logger = logging.getLogger("hilark.tenant_lifecycle")
 logger.setLevel(logging.INFO)
@@ -45,6 +49,14 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
     if not event_type or event_type not in ("app_status_change", "app_uninstalled", "open_app"):
         return False
 
+    if not tenant_key:
+        logger.error(
+            "[TENANT LIFECYCLE] Sự kiện '%s' không có tenant_key — bỏ qua, không ghi nhận "
+            "trạng thái cho một doanh nghiệp vô danh.",
+            event_type,
+        )
+        return False
+
     # Xác định trạng thái chuẩn hóa
     raw_status = event.get("status", "")
     if event_type == "app_uninstalled":
@@ -58,7 +70,18 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
     else:
         normalized_status = raw_status or "active"
 
-    app_id = event.get("app_id") or header.get("app_id") or getattr(settings, "LARK_APP_ID", "")
+    # app_id PHẢI đến từ chính sự kiện. Trước đây thiếu app_id thì handler mượn
+    # `settings.LARK_APP_ID` và ghi vào tenant, tức là tenant B bị gắn với App của
+    # một doanh nghiệp khác ngay trong bảng `tenants`.
+    app_id = event.get("app_id") or header.get("app_id") or ""
+    if not app_id:
+        logger.error(
+            "[TENANT LIFECYCLE] Sự kiện '%s' không có app_id trong payload/header — bỏ qua "
+            "thay vì gán tenant '%s' cho App mặc định trong .env.",
+            event_type,
+            tenant_key,
+        )
+        return False
 
     # Trích xuất operator_id (admin thực hiện cài đặt/mở app)
     operator_id = ""
@@ -84,35 +107,46 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
         record["admin_open_id"] = operator_id
 
     try:
-        col = get_tenants_collection()
-        existing = None
-        if tenant_key:
-            finder = getattr(col, "find_one", None)
-            if finder:
-                found = finder({"tenant_key": tenant_key})
-                existing = await found if inspect.isawaitable(found) else found
-        if normalized_status == "active" and isinstance(existing, dict) and existing.get("status") in {"ready", "provisioning"}:
+        # Đọc trạng thái hiện tại qua đúng một cửa: `tenant_state` là nơi duy nhất hiểu
+        # schema của document `tenants` cho vòng đời này.
+        existing = await tenant_state.get_status(tenant_key)
+        current_status = existing.get("status") if isinstance(existing, dict) else None
+
+        if normalized_status == "active" and current_status in {READY, PROVISIONING}:
             logger.info(
                 "[TENANT LIFECYCLE] Bỏ qua provisioning lặp cho tenant '%s' (status=%s)",
                 tenant_key,
-                existing.get("status"),
+                current_status,
             )
             return True
-        # Với active tenant, chỉ ghi một lần sau khi provision xong để tránh trạng thái
-        # active giả và giữ event handler idempotent. Các trạng thái khác ghi ngay.
+
+        # Với tenant đã bật, chỉ ghi một lần sau khi provision xong để tránh trạng thái
+        # active giả và giữ event handler idempotent. Các trạng thái khác ghi ngay,
+        # và MỌI lần ghi đều đi qua tenant_state (kèm invalidate cache).
         if normalized_status != "active":
-            await col.update_one(
-                {"tenant_key": tenant_key},
-                {"$set": record, "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
-                upsert=True,
+            if normalized_status == "uninstalled":
+                await tenant_state.mark_uninstalled(tenant_key, raw_event_type=event_type, app_id=app_id)
+            elif normalized_status == INACTIVE:
+                await tenant_state.mark_inactive(tenant_key, raw_event_type=event_type, app_id=app_id)
+            else:
+                await tenant_state.transition(
+                    tenant_key, normalized_status, raw_event_type=event_type, app_id=app_id
+                )
+            logger.info(
+                f"✔ [TENANT LIFECYCLE] Doanh nghiệp '{tenant_key}' đã ghi nhận trạng thái: "
+                f"'{normalized_status}' (Sự kiện: {event_type})"
             )
-        logger.info(
-            f"✔ [TENANT LIFECYCLE] Doanh nghiệp '{tenant_key}' đã ghi nhận trạng thái: "
-            f"'{normalized_status}' (Sự kiện: {event_type})"
-        )
+            return True
 
         # Tự động cấp phát không gian WeKnora & Lark Base khi doanh nghiệp kích hoạt app (EDL-0020)
         if normalized_status == "active" and tenant_key:
+            await tenant_state.transition(
+                tenant_key,
+                PROVISIONING,
+                app_id=app_id,
+                admin_open_id=operator_id or None,
+                raw_event_type=event_type,
+            )
             try:
                 from services.knowledge.weknora_provision_service import weknora_provision_service
                 tenant_cfg = await weknora_provision_service.provision_tenant_weknora(
@@ -131,13 +165,19 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                     tenant_cfg.get("weknora_tenant_id") if isinstance(tenant_cfg, dict)
                     else getattr(tenant_cfg, "weknora_tenant_id", None)
                 )
-                ready_status = "ready" if isinstance(provisioned_tenant_id, (str, int)) and provisioned_tenant_id else "active"
-                await col.update_one(
-                    {"tenant_key": tenant_key},
-                    {"$set": {**record, "status": ready_status, "ready_at": get_vietnam_now_iso() if ready_status == "ready" else None},
-                     "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
-                    upsert=True,
-                )
+                if provisioned_tenant_id:
+                    # Cùng một điểm hẹn ready cho cả setup wizard lẫn App Store:
+                    # tenant_state.mark_ready luôn invalidate resolver + token broker.
+                    await tenant_state.mark_ready(
+                        tenant_key,
+                        app_id=app_id,
+                        raw_event_type=event_type,
+                        admin_open_id=operator_id or None,
+                    )
+                else:
+                    await tenant_state.transition(
+                        tenant_key, "active", app_id=app_id, raw_event_type=event_type
+                    )
 
                 # Gửi Thẻ tương tác Chào mừng & Bàn giao tài nguyên cho Admin (EDL-0021)
                 if operator_id and tenant_cfg:
@@ -165,15 +205,14 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                         logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi thông điệp bàn giao WeKnora (text fallback) tới Admin ({operator_id})")
             except Exception as prov_err:
                 logger.error(f"Lỗi khi tự động cấp phát tài nguyên cho tenant {tenant_key}: {prov_err}", exc_info=True)
-                await col.update_one(
-                    {"tenant_key": tenant_key},
-                    {"$set": {**record, "status": "provisioning_failed", "provisioning_error": str(prov_err), "updated_at": get_vietnam_now_iso()},
-                     "$setOnInsert": {"created_at": get_vietnam_now_iso()}},
-                    upsert=True,
-                )
+                await tenant_state.mark_provisioning_failed(tenant_key, str(prov_err))
                 return False
 
         return True
+    except InvalidTenantTransition as trans_err:
+        # Hai luồng đang tự viết status sai thứ tự — ghi log rõ ràng, không âm thầm ghi đè.
+        logger.error("[TENANT LIFECYCLE] %s", trans_err)
+        return False
     except Exception as e:
         logger.error(f"Lỗi khi lưu trạng thái tenant lifecycle: {e}", exc_info=True)
         return False

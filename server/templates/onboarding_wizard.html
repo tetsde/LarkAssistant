@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HiLark — Hướng Dẫn Cài Đặt Trợ Lý AI</title>
+    <title>HiLark — Thiết Lập Trợ Lý AI Doanh Nghiệp</title>
     <style>
         :root {
             --bg-page: #F5F6F8;
@@ -25,139 +25,68 @@
             --danger: #DC2626;
             --danger-light: #FEF2F2;
             --danger-border: #FECACA;
+            --warn: #B45309;
+            --warn-light: #FFFBEB;
+            --warn-border: #FDE68A;
             --radius-sm: 8px;
             --radius-md: 12px;
             --radius-lg: 16px;
             --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
             --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
         }
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
+            -webkit-font-smoothing: antialiased;
         }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
-            -webkit-font-smoothing: antialiased;
             background-color: var(--bg-page);
             color: var(--text-primary);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 20px;
-            overflow-x: hidden;
+            padding: 24px 16px;
         }
+
         .wizard-container {
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius-lg);
             width: 100%;
-            max-width: 540px;
+            max-width: 560px;
             box-shadow: var(--shadow-card);
             position: relative;
             overflow: hidden;
+            padding: 32px 32px 28px;
         }
-        /* Initializing Screen Overlay */
-        .init-screen {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: var(--bg-page);
+
+        /* Brand Header */
+        .brand-header {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+
+        .logo-mark {
+            width: 48px;
+            height: 48px;
+            margin: 0 auto 12px;
+            background: var(--accent);
+            border-radius: var(--radius-md);
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 9999;
-            transition: opacity 0.3s ease, visibility 0.3s ease;
-        }
-        .init-screen.hidden {
-            opacity: 0;
-            visibility: hidden;
-            pointer-events: none;
-        }
-        .init-box {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 32px 36px;
-            text-align: center;
-            box-shadow: var(--shadow-card);
-            max-width: 360px;
-            width: 90%;
-        }
-        .init-spinner {
-            width: 28px;
-            height: 28px;
-            border: 2.5px solid var(--border);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.7s linear infinite;
-            margin: 0 auto 16px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .init-title {
-            font-size: 15px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 6px;
-        }
-        .init-desc {
-            font-size: 12.5px;
-            color: var(--text-secondary);
-            line-height: 1.4;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
         }
 
-        /* Stepper Header */
-        .stepper-header {
-            padding: 20px 28px 16px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .step-label {
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-secondary);
-        }
-        .step-dots {
-            display: flex;
-            gap: 6px;
-        }
-        .dot {
+        .logo-mark svg {
             width: 24px;
-            height: 4px;
-            border-radius: 999px;
-            background: var(--surface-tertiary);
-            transition: all 0.25s ease;
-        }
-        .dot.active {
-            background: var(--accent);
-            width: 36px;
-        }
-        .dot.completed {
-            background: var(--success);
-        }
-
-        /* Carousel Slides */
-        .slider-wrapper {
-            position: relative;
-            width: 100%;
-        }
-        .slide {
-            display: none;
-            padding: 26px 28px;
-            animation: fadeIn 0.25s ease-out forwards;
-        }
-        .slide.active {
-            display: block;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(6px); }
-            to { opacity: 1; transform: translateY(0); }
+            height: 24px;
+            fill: #FFFFFF;
         }
 
         h2 {
@@ -167,6 +96,7 @@
             margin-bottom: 6px;
             letter-spacing: -0.015em;
         }
+
         p.desc {
             color: var(--text-secondary);
             font-size: 13.5px;
@@ -174,7 +104,7 @@
             margin-bottom: 20px;
         }
 
-        /* Feature Cards (Screen 1) */
+        /* Feature Cards (Landing View) */
         .feature-box {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -185,45 +115,916 @@
             flex-direction: column;
             gap: 4px;
             transition: border-color 0.15s ease;
+            text-align: left;
         }
+
         .feature-box:hover {
             border-color: var(--border-hover);
         }
+
+        .credential-panel {
+            margin-top: 4px;
+            padding: 18px;
+            background: oklch(98.5% 0.012 250);
+            border: 1px solid var(--accent-border);
+            border-radius: var(--radius-md);
+            text-align: left;
+        }
+
+        .credential-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 6px;
+        }
+
+        .credential-title {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .credential-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .credential-help {
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.5;
+            margin-bottom: 14px;
+        }
+
+        .credential-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .credential-error {
+            min-height: 18px;
+            margin-top: 10px;
+            color: var(--danger);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .flow-note {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .flow-note-item {
+            padding: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 11px;
+            line-height: 1.4;
+            text-align: left;
+        }
+
+        .flow-note-item strong {
+            display: block;
+            color: var(--text-primary);
+            font-size: 11.5px;
+            margin-bottom: 3px;
+        }
+
+        .btn-primary:disabled {
+            cursor: wait;
+            opacity: .58;
+            box-shadow: none;
+        }
+
+        @media (max-width: 520px) {
+            .wizard-container { padding: 26px 18px 22px; }
+            .credential-grid, .flow-note { grid-template-columns: 1fr; }
+            .credential-heading { display: block; }
+            .credential-kicker { display: block; margin-bottom: 6px; }
+        }
+
         .feat-title {
             font-size: 13.5px;
             font-weight: 600;
             color: var(--text-primary);
         }
+
         .feat-desc {
             font-size: 12.5px;
             color: var(--text-secondary);
             line-height: 1.4;
         }
 
-        /* Option Cards (Screen 2) */
+        .actions {
+            margin-top: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .btn-primary {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent);
+            color: #FFFFFF;
+            padding: 12px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.15s, box-shadow 0.15s;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+        }
+
+        .btn-secondary {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            color: var(--text-primary);
+            padding: 11px 18px;
+            border-radius: 10px;
+            font-size: 13.5px;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+
+        .btn-secondary:hover {
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }
+
+        .btn-secondary:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        /* ============ GUIDE SLIDER ============ */
+        .guide-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+            gap: 10px;
+        }
+
+        .guide-counter {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: var(--text-secondary);
+        }
+
+        .guide-skip {
+            background: none;
+            border: none;
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 2px 0;
+        }
+
+        .guide-skip:hover { text-decoration: underline; }
+
+        .guide-bar {
+            height: 4px;
+            background: var(--surface-tertiary);
+            border-radius: 999px;
+            overflow: hidden;
+            margin-bottom: 18px;
+        }
+
+        .guide-bar-fill {
+            height: 100%;
+            width: 0;
+            background: var(--accent);
+            border-radius: 999px;
+            transition: width .25s ease;
+        }
+
+        .slide {
+            display: none;
+            text-align: left;
+        }
+
+        .slide.active {
+            display: block;
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+
+        .slide-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .slide-title {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            margin-bottom: 4px;
+        }
+
+        .slide-lead {
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-bottom: 14px;
+        }
+
+        .url-box {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--accent-light);
+            border: 1px solid var(--accent-border);
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            margin-bottom: 14px;
+        }
+
+        .url-box-label {
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .url-box a, .url-box .url-text {
+            flex: 1;
+            min-width: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            color: var(--text-primary);
+            text-decoration: none;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .url-box a:hover { color: var(--accent); text-decoration: underline; }
+
+        .mini-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 5px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            text-decoration: none;
+            white-space: nowrap;
+            flex-shrink: 0;
+            transition: all .15s;
+        }
+
+        .mini-btn:hover {
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }
+
+        .mini-btn.copied {
+            background: var(--success-light);
+            border-color: var(--success-border);
+            color: var(--success);
+        }
+
+        .substeps {
+            list-style: none;
+            counter-reset: sub;
+            margin-bottom: 4px;
+        }
+
+        .substeps li {
+            counter-increment: sub;
+            position: relative;
+            padding: 0 0 10px 30px;
+            font-size: 12.5px;
+            line-height: 1.5;
+            color: var(--text-primary);
+        }
+
+        .substeps li::before {
+            content: counter(sub);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--surface-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .substeps b { font-weight: 600; }
+
+        code.inline {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11.5px;
+            background: var(--surface-tertiary);
+            border: 1px solid var(--border);
+            padding: 1px 6px;
+            border-radius: 5px;
+            color: #0369A1;
+        }
+
+        .callout {
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            margin-top: 6px;
+            border: 1px solid var(--accent-border);
+            background: var(--accent-light);
+            color: #1E3A8A;
+        }
+
+        .callout.warn {
+            background: var(--warn-light);
+            border-color: var(--warn-border);
+            color: var(--warn);
+        }
+
+        .callout.success {
+            background: #ECFDF5;
+            border-color: #A7F3D0;
+            color: #065F46;
+        }
+
+        .callout strong { font-weight: 700; }
+
+        .scope-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+
+        .scope-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .scope-head .t {
+            font-size: 12.5px;
+            font-weight: 700;
+        }
+
+        .scope-head .t small {
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        .chip-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 10.5px;
+            background: var(--surface-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 3px 7px;
+            border-radius: 6px;
+        }
+
+        .json-box {
+            position: relative;
+            background: #0F172A;
+            color: #E2E8F0;
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.55;
+            max-height: 150px;
+            overflow: auto;
+            white-space: pre;
+            margin-bottom: 8px;
+        }
+
+        .event-group {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .event-group-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 9px 12px;
+            background: var(--surface-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .event-group-head .t {
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .event-row {
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--surface-tertiary);
+        }
+
+        .event-row:last-child { border-bottom: none; }
+
+        .event-code-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 3px;
+        }
+
+        .event-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #0369A1;
+            word-break: break-all;
+        }
+
+        .event-name {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .event-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.45;
+        }
+
+        .event-meta .sc {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 10.5px;
+            color: var(--text-primary);
+        }
+
+        .tag {
+            font-size: 9.5px;
+            font-weight: 800;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            background: var(--surface-tertiary);
+            flex-shrink: 0;
+        }
+
+        .tag.cb {
+            background: var(--accent-light);
+            border-color: var(--accent-border);
+            color: var(--accent);
+        }
+
+        .tag.isv {
+            background: var(--warn-light);
+            border-color: var(--warn-border);
+            color: var(--warn);
+        }
+
+        .guide-nav {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .guide-nav button { flex: 1; }
+
+        .dots {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin-top: 14px;
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--border-hover);
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .dot.active {
+            width: 18px;
+            border-radius: 999px;
+            background: var(--accent);
+        }
+
+        .dot.done { background: var(--success); }
+
+        /* Progress View & Steps */
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 14px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .progress-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .status-pill {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .status-pill.processing {
+            background: var(--accent-light);
+            color: var(--accent);
+            border: 1px solid var(--accent-border);
+        }
+
+        .status-pill.ready {
+            background: var(--success-light);
+            color: var(--success);
+            border: 1px solid var(--success-border);
+        }
+
+        .status-pill.failed {
+            background: var(--danger-light);
+            color: var(--danger);
+            border: 1px solid var(--danger-border);
+        }
+
+        .steps-container {
+            position: relative;
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        .step-row {
+            display: flex;
+            align-items: flex-start;
+            position: relative;
+            padding-bottom: 20px;
+        }
+
+        .step-row:last-child {
+            padding-bottom: 0;
+        }
+
+        .step-line {
+            position: absolute;
+            left: 14px;
+            top: 30px;
+            bottom: 0;
+            width: 2px;
+            background: var(--surface-tertiary);
+            z-index: 1;
+            transition: background 0.25s ease;
+        }
+
+        .step-row:last-child .step-line {
+            display: none;
+        }
+
+        .step-row.completed .step-line {
+            background: var(--success);
+        }
+
+        .step-icon-wrap {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: var(--surface);
+            border: 1.5px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 14px;
+            flex-shrink: 0;
+            z-index: 2;
+            transition: all 0.2s ease;
+            color: var(--text-tertiary);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .step-row.completed .step-icon-wrap {
+            background: var(--success);
+            border-color: var(--success);
+            color: #FFFFFF;
+        }
+
+        .step-row.processing .step-icon-wrap {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #FFFFFF;
+        }
+
+        .step-row.failed .step-icon-wrap {
+            background: var(--danger);
+            border-color: var(--danger);
+            color: #FFFFFF;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            border-top-color: #FFFFFF;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .step-content {
+            flex: 1;
+            padding-top: 4px;
+        }
+
+        .step-title {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .step-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .step-detail {
+            font-size: 11.5px;
+            color: var(--accent);
+            margin-top: 4px;
+            font-weight: 500;
+        }
+
+        .step-row.failed .step-detail {
+            color: var(--danger);
+        }
+
+        /* Ready Panel (Admin Card Style) */
+        .ready-panel {
+            display: none;
+            background: var(--success-light);
+            border: 1px solid var(--success-border);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            text-align: left;
+            margin-top: 8px;
+            margin-bottom: 16px;
+        }
+
+        .ready-panel.active {
+            display: block;
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+
+        .ready-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--success);
+            margin-bottom: 4px;
+        }
+
+        .ready-desc {
+            font-size: 12.5px;
+            color: #166534;
+            margin-bottom: 16px;
+            line-height: 1.4;
+        }
+
+        .ready-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .info-cell {
+            background: var(--surface);
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--success-border);
+        }
+
+        .info-cell-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 600;
+        }
+
+        .info-cell-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ready-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .ready-buttons a {
+            flex: 1;
+        }
+
+        /* Progressive Customization Panel */
+        .custom-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-top: 16px;
+            overflow: hidden;
+            transition: border-color 0.15s ease;
+        }
+
+        .custom-panel:hover {
+            border-color: var(--border-hover);
+        }
+
+        .custom-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 18px;
+            cursor: pointer;
+            user-select: none;
+            background: var(--surface);
+            transition: background 0.15s;
+        }
+
+        .custom-header:hover {
+            background: var(--surface-secondary);
+        }
+
+        .custom-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-align: left;
+        }
+
+        .custom-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: var(--radius-sm);
+            background: var(--accent-light);
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .custom-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .custom-title {
+            font-size: 13.5px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .custom-subtitle {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 1px;
+        }
+
+        .custom-chevron {
+            width: 20px;
+            height: 20px;
+            color: var(--text-secondary);
+            transition: transform 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .custom-chevron.open {
+            transform: rotate(180deg);
+        }
+
+        .custom-body {
+            padding: 20px 20px 24px;
+            border-top: 1px solid var(--border);
+            background: var(--surface-secondary);
+            text-align: left;
+        }
+
+        .form-section {
+            margin-bottom: 22px;
+        }
+
+        .form-section:last-of-type {
+            margin-bottom: 16px;
+        }
+
+        .section-heading {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        /* Option Cards (From Onboarding Slide 2) */
         .option-card {
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
-            padding: 14px 16px;
-            margin-bottom: 10px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
             cursor: pointer;
             transition: all 0.15s ease;
             display: flex;
             align-items: flex-start;
-            gap: 12px;
+            gap: 10px;
             background: var(--surface);
         }
+
         .option-card:hover {
             background: var(--surface-secondary);
             border-color: var(--border-hover);
         }
+
         .option-card.selected {
             background: var(--accent-light);
             border-color: var(--accent);
         }
+
         .radio-circle {
-            width: 18px;
-            height: 18px;
+            width: 16px;
+            height: 16px;
             border-radius: 50%;
             border: 1.5px solid var(--border-hover);
             margin-top: 1px;
@@ -234,23 +1035,27 @@
             background: var(--surface);
             transition: all 0.15s ease;
         }
+
         .option-card.selected .radio-circle {
             border-color: var(--accent);
         }
+
         .option-card.selected .radio-circle::after {
             content: '';
-            width: 8px;
-            height: 8px;
+            width: 7px;
+            height: 7px;
             border-radius: 50%;
             background: var(--accent);
         }
-        .input-group {
-            margin-top: 14px;
-            background: var(--surface-secondary);
+
+        .form-group-box {
+            margin-top: 12px;
+            background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
             padding: 16px;
         }
+
         .input-label {
             font-size: 11px;
             color: var(--text-secondary);
@@ -260,33 +1065,56 @@
             display: block;
             margin-bottom: 6px;
         }
-        .input-wrapper {
-            display: flex;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-            transition: border-color 0.15s, box-shadow 0.15s;
-        }
-        .input-wrapper:focus-within {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-        }
+
         .form-input {
             width: 100%;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             padding: 9px 12px;
             color: var(--text-primary);
             font-size: 13px;
             outline: none;
             transition: border-color 0.15s, box-shadow 0.15s;
         }
+
         .form-input:focus {
             border-color: var(--accent);
             box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         }
+
+        select.custom-select {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 9px 12px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            cursor: pointer;
+        }
+
+        select.custom-select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .input-wrapper {
+            display: flex;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .input-wrapper:focus-within {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
         .key-input {
             flex: 1;
             background: transparent;
@@ -297,9 +1125,17 @@
             font-size: 13px;
             outline: none;
         }
-        .key-input::placeholder, .form-input::placeholder {
-            color: var(--text-tertiary);
+
+        .btn-input-action {
+            background: transparent;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 0 12px;
         }
+
         .form-grid-2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -307,1210 +1143,1506 @@
             margin-bottom: 10px;
         }
 
-        .feedback-badge {
+        .test-feedback {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
             font-size: 12px;
-            padding: 5px 10px;
-            border-radius: 6px;
-            margin-top: 8px;
             font-weight: 500;
+            padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            margin-left: 10px;
         }
-        .badge-success {
+
+        .test-feedback.success {
             background: var(--success-light);
             color: var(--success);
             border: 1px solid var(--success-border);
         }
-        .badge-danger {
+
+        .test-feedback.error {
             background: var(--danger-light);
             color: var(--danger);
             border: 1px solid var(--danger-border);
         }
 
-        /* Select dropdown */
-        select.custom-select {
-            width: 100%;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 9px 12px;
-            border-radius: 8px;
-            font-size: 13px;
-            outline: none;
-            transition: border-color 0.15s, box-shadow 0.15s;
-            cursor: pointer;
-        }
-        select.custom-select:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-        }
         .setting-card {
-            margin-top: 14px;
-            padding: 14px 16px;
+            margin-top: 10px;
+            padding: 12px 14px;
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
             transition: border-color 0.15s ease;
         }
+
         .setting-card:hover {
             border-color: var(--border-hover);
         }
 
-        /* Admin & OAuth Cards (Screen 4) */
+        .setting-label-flex {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            cursor: pointer;
+        }
+
+        .setting-label-flex input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+            margin-top: 2px;
+            cursor: pointer;
+        }
+
+        /* Handover Box (WeKnora Credentials) */
         .admin-card {
-            padding: 16px;
+            padding: 14px 16px;
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
-            margin-bottom: 12px;
-            text-align: left;
-        }
-        .admin-card-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 4px;
-        }
-        .admin-card-title {
-            font-weight: 600;
-            font-size: 13.5px;
-            color: var(--text-primary);
-        }
-        .status-pill {
-            font-size: 11px;
-            padding: 2px 8px;
-            border-radius: 999px;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-        }
-        .status-pill.inactive {
-            background: var(--surface-tertiary);
-            color: var(--text-secondary);
-        }
-        .status-pill.connected {
-            background: var(--success-light);
-            color: var(--success);
-            border: 1px solid var(--success-border);
-        }
-        .status-pill.unlinked {
-            background: var(--danger-light);
-            color: var(--danger);
-            border: 1px solid var(--danger-border);
-        }
-        .admin-card-desc {
-            font-size: 12.5px;
-            color: var(--text-secondary);
-            line-height: 1.4;
-            margin-bottom: 12px;
-        }
-        .admin-actions {
-            display: flex;
-            gap: 8px;
-            align-items: center;
+            margin-top: 8px;
         }
 
-        /* Buttons & Footer */
-        .wizard-footer {
-            padding: 16px 28px 20px;
-            border-top: 1px solid var(--border);
-            background: var(--surface-secondary);
+        .cred-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 6px 0;
+            font-size: 12.5px;
+            border-bottom: 1px solid var(--surface-tertiary);
         }
-        .btn {
-            padding: 9px 18px;
-            border-radius: 9px;
-            font-weight: 600;
-            font-size: 13.5px;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            border: 1px solid transparent;
+
+        .cred-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .cred-label {
+            color: var(--text-secondary);
+            font-size: 11.5px;
+        }
+
+        .cred-value.link {
+            color: var(--accent);
             text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            line-height: 1.2;
-        }
-        .btn-prev {
-            background: var(--surface);
-            border-color: var(--border);
-            color: var(--text-secondary);
-        }
-        .btn-prev:hover {
-            background: var(--surface-secondary);
-            color: var(--text-primary);
-            border-color: var(--border-hover);
-        }
-        .btn-next {
-            background: var(--accent);
-            color: #FFFFFF;
-            box-shadow: var(--shadow-sm);
-        }
-        .btn-next:hover {
-            background: var(--accent-hover);
-        }
-        .btn-next:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-        .btn-secondary {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            font-size: 12.5px;
-            padding: 7px 14px;
-        }
-        .btn-secondary:hover {
-            background: var(--surface-secondary);
-            border-color: var(--border-hover);
-        }
-        .btn-primary-action {
-            background: var(--accent);
-            color: #FFFFFF;
-            font-size: 12.5px;
-            padding: 7px 14px;
-        }
-        .btn-primary-action:hover {
-            background: var(--accent-hover);
+            font-weight: 500;
         }
 
-        @media (max-width: 580px) {
-            body { padding: 10px; }
-            .wizard-container { border-radius: 12px; }
-            .slide { padding: 20px 18px; }
-            .stepper-header, .wizard-footer { padding: 14px 18px; }
-            .form-grid-2 { grid-template-columns: 1fr; }
+        .cred-value.code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            color: #0369A1;
+            background: #E0F2FE;
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-size: 11.5px;
+        }
+
+        .save-actions {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .save-feedback {
+            font-size: 12.5px;
+            text-align: center;
+            min-height: 18px;
+            font-weight: 600;
+        }
+
+        .save-feedback.success {
+            color: var(--success);
+        }
+
+        .save-feedback.error {
+            color: var(--danger);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.25s ease-out forwards;
         }
     </style>
 </head>
 <body>
-    <!-- Initializing Screen Overlay -->
-    <div id="initScreen" class="init-screen">
-        <div class="init-box">
-            <div class="init-spinner"></div>
-            <div class="init-title">Đang khởi tạo cấu hình</div>
-            <div class="init-desc">Nạp dữ liệu workspace và kiểm tra trạng thái dịch vụ...</div>
+
+<div class="wizard-container">
+    <!-- BRAND HEADER -->
+    <div class="brand-header">
+        <div class="logo-mark">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+        </div>
+        <h2 id="mainHeading">HiLark Enterprise</h2>
+        <p class="desc" id="mainSubtitle">Cài một lần, cấp quyền đúng lớp, vận hành an toàn theo tenant.</p>
+    </div>
+
+    <!-- 1. LANDING VIEW: GUIDE SLIDER (khi chưa có task_id) -->
+    <div id="landingView">
+
+        <div class="guide-top">
+            <span class="guide-counter" id="guideCounter">Giới thiệu</span>
+            <button type="button" class="guide-skip" id="guideSkip" onclick="goToSlide(3)">Đã có key? Đến bước nhập key →</button>
+        </div>
+        <div class="guide-bar"><div class="guide-bar-fill" id="guideBarFill"></div></div>
+
+        <!-- SLIDE 0 · Giới thiệu -->
+        <section class="slide active" data-title="Giới thiệu">
+            <div class="feature-box">
+                <div class="feat-title">Kết nối App của doanh nghiệp</div>
+                <div class="feat-desc">Nhập App ID và App Secret để HiLark xác thực ứng dụng trước khi mở luồng ủy quyền.</div>
+            </div>
+
+            <div class="feature-box">
+                <div class="feat-title">Cấp phát theo tenant</div>
+                <div class="feat-desc">Tenant access token được dùng để tạo Base, cấu hình dữ liệu và khởi tạo không gian WeKnora riêng.</div>
+            </div>
+
+            <div class="feature-box">
+                <div class="feat-title">OAuth user là bắt buộc</div>
+                <div class="feat-desc">Admin tiếp tục cấp quyền user để HiLark nhận access token, refresh token và gửi đúng hành động dưới danh nghĩa người dùng.</div>
+            </div>
+
+            <div class="flow-note" aria-label="Các lớp quyền của luồng setup">
+                <div class="flow-note-item"><strong>App credential</strong>Xác thực ứng dụng HiLark.</div>
+                <div class="flow-note-item"><strong>Tenant token</strong>Tạo Base và gọi API trong doanh nghiệp.</div>
+                <div class="flow-note-item"><strong>User OAuth</strong>Gửi hành động dưới danh nghĩa Admin.</div>
+            </div>
+
+            <div class="callout" style="margin-top: 14px;">
+                <strong>Trước khi cài đặt</strong>, bạn cần tạo một Custom App trên Lark và lấy 4 khóa: App ID, App Secret, Verification Token, Encrypt Key. Hướng dẫn gồm 6 bước ngắn ở các trang tiếp theo (~5 phút).
+            </div>
+        </section>
+
+        <!-- SLIDE 1 · Tạo Custom App -->
+        <section class="slide" data-title="Tạo Custom App">
+            <div class="slide-kicker">Bước 1 / 6</div>
+            <div class="slide-title">Tạo Custom App trên Lark Developer</div>
+            <p class="slide-lead">Mỗi doanh nghiệp dùng một ứng dụng riêng để HiLark hoạt động độc lập trong tenant của bạn.</p>
+
+            <div class="url-box">
+                <span class="url-box-label">Console</span>
+                <a href="https://open.larksuite.com/app" target="_blank" rel="noopener">https://open.larksuite.com/app</a>
+                <a class="mini-btn" href="https://open.larksuite.com/app" target="_blank" rel="noopener">Mở ↗</a>
+            </div>
+
+            <ol class="substeps">
+                <li>Đăng nhập bằng tài khoản <b>Admin</b> hoặc tài khoản có quyền phát triển ứng dụng của doanh nghiệp.</li>
+                <li>Nhấn <b>Create custom app</b> (Tạo ứng dụng tùy chỉnh).</li>
+                <li>Đặt tên là <code class="inline">HiLark</code>, nhập mô tả ngắn và chọn biểu tượng bất kỳ.</li>
+                <li>Nhấn <b>Create</b> để vào trang quản lý ứng dụng.</li>
+            </ol>
+
+            <div class="callout warn">
+                Nếu doanh nghiệp dùng Feishu (Trung Quốc), truy cập <code class="inline">open.feishu.cn/app</code> thay cho địa chỉ trên.
+            </div>
+        </section>
+
+        <!-- SLIDE 2 · Bật Bot -->
+        <section class="slide" data-title="Bật Bot">
+            <div class="slide-kicker">Bước 2 / 6</div>
+            <div class="slide-title">Bật tính năng Bot</div>
+            <p class="slide-lead">HiLark cần năng lực Bot để nhận tin nhắn, gửi thẻ duyệt và chào Admin sau khi cài đặt.</p>
+
+            <ol class="substeps">
+                <li>Trong menu bên trái, chọn <b>Add features</b> (Thêm tính năng).</li>
+                <li>Tại thẻ <b>Bot</b>, nhấn <b>Add</b>.</li>
+                <li>Vào <b>Bot</b> trong menu trái, bật các tùy chọn cho phép Bot nhận tin nhắn nhóm và tin nhắn riêng (DM).</li>
+            </ol>
+
+            <div class="callout">
+                Bật Bot sẽ tự động kích hoạt sự kiện <code class="inline">card.action.trigger</code> dùng cho thẻ duyệt bản nháp / duyệt tri thức.
+            </div>
+        </section>
+
+        <!-- SLIDE 3 · Lấy khóa & Kết nối -->
+        <section class="slide" data-title="Lấy khóa & Kết nối">
+            <div class="slide-kicker">Bước 3 / 6</div>
+            <div class="slide-title">Lấy 4 khóa &amp; Kết nối với HiLark</div>
+            <p class="slide-lead">Lấy App ID, App Secret, Verification Token và Encrypt Key từ Lark để HiLark xác thực và sẵn sàng giải mã webhook.</p>
+
+            <ol class="substeps">
+                <li>Vào <b>Credentials &amp; Basic Info</b> ở menu bên trái: sao chép <b>App ID</b> (bắt đầu bằng <code class="inline">cli_</code>) và <b>App Secret</b>.</li>
+                <li>Vào <b>Events &amp; Callbacks</b> → tab <b>Encryption Strategy</b>: sao chép <b>Verification Token</b> và <b>Encrypt Key</b> (nhấn <i>Generate</i> nếu đang để trống).</li>
+                <li>Nhập 4 khóa vào bảng bên dưới và nhấn <b>Xác thực &amp; Lưu khóa vào HiLark</b>.</li>
+            </ol>
+
+            <div class="callout" style="margin-bottom: 12px;">
+                <strong>💡 Tại sao cần lưu khóa trước?</strong> Khi cấu hình Request URL ở bước tiếp theo, Lark sẽ gửi gói tin kiểm tra challenge mã hóa bằng Encrypt Key. HiLark cần biết Encrypt Key trước để giải mã thành công ngay lập tức.
+            </div>
+
+            <div class="credential-panel" style="margin-top: 0;">
+                <div class="credential-grid">
+                    <div>
+                        <label class="input-label" for="setupAppId">App ID</label>
+                        <input id="setupAppId" class="form-input" autocomplete="off" placeholder="cli_xxxxxxxxxxxxxxxx">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupAppSecret">App Secret</label>
+                        <input id="setupAppSecret" class="form-input" type="password" autocomplete="off" placeholder="Nhập App Secret">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupVerificationToken">Verification Token</label>
+                        <input id="setupVerificationToken" class="form-input" type="password" autocomplete="off" placeholder="Encryption Strategy → Verification Token">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupEncryptKey">Encrypt Key</label>
+                        <input id="setupEncryptKey" class="form-input" type="password" autocomplete="off" placeholder="Encryption Strategy → Encrypt Key">
+                    </div>
+                </div>
+                <div class="credential-error" id="credentialFeedback" aria-live="polite"></div>
+                <div id="connectSuccessBox" class="callout success" style="display: none; margin-top: 10px;">
+                    <strong>✔ Đã kết nối App thành công!</strong> HiLark đã lưu Encrypt Key và sẵn sàng tiếp nhận &amp; giải mã sự kiện. Hãy nhấn <b>Tiếp theo →</b> để cấu hình quyền và sự kiện.
+                </div>
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button type="button" class="btn-primary" id="btnConnectApp" onclick="connectApp()" style="flex: 1;">
+                        Xác thực &amp; Lưu khóa vào HiLark
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- SLIDE 4 · Scopes -->
+        <section class="slide" data-title="Cấp quyền (Scopes)">
+            <div class="slide-kicker">Bước 4 / 6</div>
+            <div class="slide-title">Thêm quyền (Scopes)</div>
+            <p class="slide-lead">Cần cấp hai nhóm quyền: <b>tenant</b> (Bot gọi API) và <b>user</b> (hành động dưới danh nghĩa người dùng).</p>
+
+            <ol class="substeps">
+                <li>Vào <b>Permissions &amp; Scopes</b> (Quyền &amp; phạm vi).</li>
+                <li>Nhấn <b>Batch import/export scopes</b> (Nhập/xuất hàng loạt).</li>
+                <li>Dán nguyên khối JSON bên dưới → <b>Next</b> → <b>Add scopes</b>.</li>
+            </ol>
+
+            <div class="json-box" id="scopesJsonBox"></div>
+            <div style="display:flex; gap:8px; margin-bottom: 12px;">
+                <button type="button" class="mini-btn" data-copy-id="scopes-all" style="flex:1; padding:8px;">Sao chép JSON đầy đủ</button>
+            </div>
+
+            <div class="scope-block">
+                <div class="scope-head">
+                    <span class="t">Tenant <small id="tenantCount"></small></span>
+                    <button type="button" class="mini-btn" data-copy-id="scopes-tenant">Sao chép</button>
+                </div>
+                <div class="chip-wrap" id="tenantChips"></div>
+            </div>
+
+            <div class="scope-block">
+                <div class="scope-head">
+                    <span class="t">User <small id="userCount"></small></span>
+                    <button type="button" class="mini-btn" data-copy-id="scopes-user">Sao chép</button>
+                </div>
+                <div class="chip-wrap" id="userChips"></div>
+            </div>
+
+            <div class="callout warn">
+                Quyền <code class="inline">offline_access</code> (user) là bắt buộc để HiLark nhận <b>refresh token</b>. Thiếu quyền này, phiên OAuth sẽ hết hạn và Bot không tự gia hạn được.
+            </div>
+        </section>
+
+        <!-- SLIDE 5 · Events -->
+        <section class="slide" data-title="Sự kiện (Events)">
+            <div class="slide-kicker">Bước 5 / 6</div>
+            <div class="slide-title">Cấu hình Request URL &amp; Đăng ký sự kiện</div>
+            <p class="slide-lead">HiLark nhận tin nhắn, thẻ tương tác và thay đổi dữ liệu qua Event Subscriptions.</p>
+
+            <div class="callout success" style="margin-bottom: 12px;">
+                <strong>✔ Sẵn sàng xác thực:</strong> Do bạn đã lưu Encrypt Key vào HiLark ở Bước 3, khi bạn dán Request URL và nhấn <b>Save</b>, HiLark sẽ tự động giải mã và phản hồi challenge thành công ngay lập tức!
+            </div>
+
+            <ol class="substeps">
+                <li>Tab <b>Event configuration</b> → chọn phương thức <b>Send notifications to developer's server</b> và dán <b>Request URL</b> bên dưới → Nhấn <b>Save</b>.</li>
+                <li>Nhấn <b>Add Events</b>, tìm và thêm từng sự kiện trong danh sách (sao chép mã nhanh bằng nút bên cạnh).</li>
+                <li>Tab <b>Callback configuration</b>: chọn cùng phương thức và dán cùng Request URL, thêm <code class="inline">card.action.trigger</code>.</li>
+            </ol>
+
+            <div class="url-box">
+                <span class="url-box-label">Request URL</span>
+                <span class="url-text" id="webhookUrlText"></span>
+                <button type="button" class="mini-btn" data-copy-id="webhook-url">Sao chép</button>
+            </div>
+
+            <div id="eventGroups"></div>
+
+            <div class="callout warn">
+                Mỗi sự kiện cần có quyền đi kèm — bạn đã import ở Bước 4. Sự kiện <code class="inline">app_ticket</code> chỉ dành cho ISV/Store App, <b>không cần</b> với Custom App.
+            </div>
+        </section>
+
+        <!-- SLIDE 6 · Redirect + Publish -->
+        <section class="slide" data-title="Redirect & Phát hành">
+            <div class="slide-kicker">Bước 6 / 6</div>
+            <div class="slide-title">Khai báo Redirect URL &amp; phát hành</div>
+            <p class="slide-lead">OAuth user cần Redirect URL hợp lệ, và ứng dụng phải được phát hành thì quyền mới có hiệu lực.</p>
+
+            <ol class="substeps">
+                <li>Vào <b>Security Settings</b> (Cài đặt bảo mật) → mục <b>Redirect URLs</b> → thêm địa chỉ bên dưới.</li>
+                <li>Vào <b>Version Management &amp; Release</b> → <b>Create a version</b>, điền số phiên bản (vd. <code class="inline">1.0.0</code>) và ghi chú cập nhật.</li>
+                <li>Nhấn <b>Save</b> → <b>Publish</b>. Với doanh nghiệp của bạn, Admin có thể tự duyệt trong <b>Lark Admin Console</b>.</li>
+                <li>Sau mỗi lần thêm/sửa scope hoặc event, cần <b>tạo phiên bản mới và phát hành lại</b>.</li>
+            </ol>
+
+            <div class="url-box">
+                <span class="url-box-label">Redirect</span>
+                <span class="url-text" id="redirectUrlText"></span>
+                <button type="button" class="mini-btn" data-copy-id="redirect-url">Sao chép</button>
+            </div>
+
+            <div class="callout">
+                Xong rồi! Sang trang cuối để hoàn tất cài đặt và cấp quyền OAuth cho HiLark.
+            </div>
+        </section>
+
+        <!-- SLIDE 7 · Hoàn tất Cài đặt & Cấp quyền -->
+        <section class="slide" data-title="Cài đặt & Cấp quyền">
+            <div class="slide-kicker">Hoàn tất cài đặt</div>
+            <div class="slide-title">Kích hoạt HiLark cho Doanh nghiệp</div>
+            <p class="slide-lead">Ứng dụng đã được kết nối và phát hành trên Lark. Nhấn nút bên dưới để cấp quyền OAuth user và kích hoạt toàn bộ hệ thống.</p>
+
+            <div id="installReadyBox" class="callout success" style="display: none; margin-bottom: 16px;">
+                <strong>✔ Sẵn sàng cài đặt cho App:</strong> <span id="readyAppId" style="font-family: ui-monospace, monospace; font-weight: 700;"></span>
+            </div>
+
+            <div id="installMissingBox" class="callout warn" style="display: block; margin-bottom: 16px;">
+                <strong>Chưa lưu khóa App:</strong> Bạn chưa lưu khóa App ở Bước 3. Hãy nhấn nút bên dưới để nhập và lưu khóa trước khi tiếp tục:
+                <div style="margin-top: 8px;">
+                    <button type="button" class="mini-btn" onclick="goToSlide(3)" style="padding: 6px 12px;">Đến Bước 3 lưu khóa App →</button>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button type="button" class="btn-primary" id="btnInstall" onclick="beginSetup()">
+                    Cài đặt HiLark cho Doanh nghiệp · cấp quyền user (OAuth)
+                </button>
+            </div>
+        </section>
+
+        <!-- GUIDE NAV -->
+        <div class="guide-nav" id="guideNav">
+            <button type="button" class="btn-secondary" id="btnPrev" onclick="prevSlide()">← Quay lại</button>
+            <button type="button" class="btn-primary" id="btnNext" onclick="nextSlide()">Bắt đầu hướng dẫn →</button>
+        </div>
+        <div class="dots" id="guideDots" aria-label="Điều hướng các trang hướng dẫn"></div>
+    </div>
+
+    <!-- 2. PROGRESS VIEW (Khi đang thực hiện 7 bước) -->
+    <div id="progressView" style="display: none;">
+        <div class="progress-header">
+            <span class="progress-title" id="progressStatusText">Đang thiết lập hệ thống...</span>
+            <span class="status-pill processing" id="progressBadge">Đang xử lý</span>
+        </div>
+
+        <div class="steps-container" id="stepsList">
+            <!-- Sẽ được điền động qua JavaScript -->
+        </div>
+
+        <!-- READY PANEL (ADMIN CARD) -->
+        <div class="ready-panel fade-in" id="readyPanel">
+            <div class="ready-title">Hệ Thống Sẵn Sàng Vận Hành</div>
+            <p class="ready-desc">Toàn bộ hạ tầng trợ lý AI đã được thiết lập thành công. Bot đã gửi lời chào tới hộp thư của Quản trị viên.</p>
+
+            <div class="ready-info-grid">
+                <div class="info-cell">
+                    <div class="info-cell-label">Doanh nghiệp</div>
+                    <div class="info-cell-value" id="valTenantKey">—</div>
+                </div>
+                <div class="info-cell">
+                    <div class="info-cell-label">Quản trị viên</div>
+                    <div class="info-cell-value" id="valAdminName">—</div>
+                </div>
+            </div>
+
+            <div class="ready-buttons">
+                <a href="#" id="linkOpenBot" target="_blank" class="btn-primary">
+                    Mở Chat Với HiLark
+                </a>
+                <a href="#" id="linkOpenBase" target="_blank" class="btn-secondary">
+                    Lark Base Quản Trị
+                </a>
+            </div>
         </div>
     </div>
 
-    <div class="wizard-container">
-        <!-- Stepper Bar -->
-        <div class="stepper-header">
-            <span class="step-label" id="stepIndicator">BƯỚC 1 / 4: KẾT NỐI LARK BOT &amp; HẠ TẦNG</span>
-            <div class="step-dots">
-                <div class="dot active" id="dot1"></div>
-                <div class="dot" id="dot2"></div>
-                <div class="dot" id="dot3"></div>
-                <div class="dot" id="dot4"></div>
+    <!-- 3. PROGRESSIVE CUSTOMIZATION PANEL (BẢNG CẤU HÌNH TRỢ LÝ) -->
+    <div class="custom-panel fade-in" id="customPanel" style="display: none;">
+        <div class="custom-header" onclick="toggleCustomSection()">
+                <div class="custom-header-left">
+                    <div class="custom-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="custom-title">Tùy Chỉnh Nâng Cao (Tùy chọn)</div>
+                        <div class="custom-subtitle">Bộ não AI, khóa riêng (BYOK), giờ nhận báo cáo &amp; kiểm duyệt</div>
+                    </div>
+                </div>
+                <div class="custom-chevron" id="customChevron">
+                    <svg viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                    </svg>
+                </div>
             </div>
-        </div>
 
-        <div class="slider-wrapper">
-            <!-- SLIDE 1: BOT SETUP & INFRASTRUCTURE (Adaptive Dual-Mode) -->
-            <div class="slide active" id="slide1">
-                <!-- ISV Mode Container -->
-                <div id="isvWorkspaceContainer" style="display: none;">
-                    <div style="display: inline-flex; align-items: center; gap: 6px; background: var(--accent-light); border: 1px solid var(--accent-border); border-radius: 999px; padding: 4px 12px; margin-bottom: 12px;">
-                        <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent);"></span>
-                        <span style="font-size: 11.5px; font-weight: 600; color: var(--accent); letter-spacing: 0.02em;">LARK STORE APP &bull; ISV MULTI-TENANT</span>
-                    </div>
-                    <h2>Không Gian Doanh Nghiệp &amp; Bàn Giao</h2>
-                    <p class="desc">Chào mừng {{effective_user_name}} đến với HiLark. Không gian làm việc của doanh nghiệp đã được kích hoạt tự động với đầy đủ hạ tầng tri thức và điều hành:</p>
+            <div class="custom-body" id="customBody" style="display: none;">
+                <!-- KHỐI 1: BỘ NÃO AI & BYOK (TỪ ONBOARDING SLIDE 2) -->
+                <div class="form-section">
+                    <div class="section-heading">Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</div>
 
-                    <!-- ISV Tenant Details Card -->
-                    <div class="admin-card" style="margin-bottom: 12px;">
-                        <div class="admin-card-header">
-                            <div class="admin-card-title">Mã Định Danh Doanh Nghiệp (Tenant)</div>
-                            <span class="status-pill connected">Đã kích hoạt</span>
-                        </div>
-                        <div style="display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--text-primary); margin-top: 6px;">
-                            <span style="color: var(--text-secondary);">Tenant Key:</span>
-                            <code style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; background: var(--surface-tertiary); padding: 3px 8px; border-radius: 6px; color: var(--text-primary);">{{effective_tenant_key}}</code>
-                        </div>
-                        <div style="font-size: 11.5px; color: var(--text-secondary); margin-top: 6px; line-height: 1.4;">
-                            Mọi dữ liệu tài liệu, nhật ký công việc và cấu hình được mã hóa và cô lập hoàn toàn cho tổ chức của bạn.
+                    <div class="option-card selected" id="optSystemKey" onclick="setByokMode(false)">
+                        <div class="radio-circle"></div>
+                        <div>
+                            <div class="feat-title">Hạn mức mặc định của hệ thống</div>
+                            <div class="feat-desc">Sử dụng Google Gemini đã tích hợp sẵn. Doanh nghiệp không cần cấu hình thêm.</div>
                         </div>
                     </div>
 
-                    <!-- Lark Base Provisioned Info Card -->
-                    <div class="admin-card" style="margin-bottom: 12px;">
-                        <div class="admin-card-header">
-                            <div class="admin-card-title">Lark Base Quản Trị Doanh Nghiệp</div>
-                            <span id="isvBaseStatusBadge" class="status-pill connected">Đã cấp phát</span>
-                        </div>
-                        <div class="admin-card-desc">
-                            Trung tâm điều hành danh mục 3 dự án (Atlas, Pulse, Sentinel) và chính sách công ty.
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px;">
-                            <a id="isvLinkOpenBase" href="#" target="_blank" class="btn btn-primary-action" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
-                                Mở Lark Base Quản Trị ↗
-                            </a>
+                    <div class="option-card" id="optByok" onclick="setByokMode(true)">
+                        <div class="radio-circle"></div>
+                        <div>
+                            <div class="feat-title">Tự cấu hình khóa riêng (BYOK)</div>
+                            <div class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</div>
                         </div>
                     </div>
 
-                    <!-- WeKnora Knowledge Base Card -->
-                    <div class="admin-card" id="isvWeknoraCard" style="margin-bottom: 12px;">
-                        <div class="admin-card-header">
-                            <div class="admin-card-title">Kho Tri Thức WeKnora Doanh Nghiệp</div>
-                            <span class="status-pill connected">Đã sẵn sàng</span>
+                    <!-- BYOK Form Fields -->
+                    <div class="form-group-box" id="byokInputGroup" style="display: none;">
+                        <label class="input-label">Nhà cung cấp (Provider):</label>
+                        <select id="llmProviderSelect" class="custom-select" onchange="onProviderSelect()" style="margin-bottom: 12px;">
+                            <option value="google">Google (Gemini)</option>
+                            <option value="openai">ChatGPT (OpenAI)</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="custom">Tùy chỉnh (Khác / OpenAI-Compatible)</option>
+                        </select>
+
+                        <label class="input-label">Khóa API (API Key):</label>
+                        <div class="input-wrapper" style="margin-bottom: 12px;">
+                            <input type="password" id="geminiKeyInput" class="key-input" placeholder="Nhập API Key">
+                            <button type="button" class="btn-input-action" id="btnToggleKey" onclick="toggleKeyVisibility()">Hiện</button>
                         </div>
-                        <div class="admin-card-desc">
-                            Không gian lưu trữ Policy &amp; Wiki Daily Digests riêng biệt cho doanh nghiệp.
-                        </div>
-                        <div style="background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-top: 8px; font-size: 12.5px; line-height: 1.6;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                <span style="color: var(--text-secondary);">Cổng quản trị:</span>
-                                <a id="isvWeknoraLoginLink" href="#" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Mở WeKnora ↗</a>
+
+                        <div class="form-grid-2">
+                            <div>
+                                <label class="input-label">Tên mô hình (Model):</label>
+                                <input type="text" id="llmModelInput" class="form-input" placeholder="gemini-2.0-flash">
                             </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                <span style="color: var(--text-secondary);">Tài khoản Admin:</span>
-                                <code id="isvWeknoraUsername" style="font-family: ui-monospace, monospace; font-weight: 600; color: var(--text-primary); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;">admin</code>
+                            <div>
+                                <label class="input-label">Thời gian chờ (Timeout - giây):</label>
+                                <input type="number" id="llmTimeoutInput" class="form-input" min="5" max="300" value="60">
                             </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                                <span style="color: var(--text-secondary);">Mật khẩu khởi tạo:</span>
-                                <code id="isvWeknoraPassword" style="font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;">(đang tải)</code>
-                            </div>
-                            <div id="isvWeknoraDatasetsInfo" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px;"></div>
                         </div>
-                    </div>
-                </div>
 
-                <!-- Custom App Mode Container (Existing Single-Tenant) -->
-                <div id="customAppWorkspaceContainer">
-                <h2>Kết Nối Lark Bot &amp; Hạ Tầng Điều Hành</h2>
-                <p class="desc">Chào mừng {{effective_user_name}} đến với HiLark. Thiết lập danh tính trợ lý AI trên Lark Developer và cấu hình cổng giao tiếp cho doanh nghiệp.</p>
-                
-                <!-- Lark Bot Credentials Form Card -->
-                <div class="admin-card" style="margin-bottom: 14px;">
-                    <div class="admin-card-header">
-                        <div class="admin-card-title">Thông Tin Xác Thực Lark Bot</div>
-                        <span id="botStatusBadge" class="status-pill connected">Đã kết nối tự động</span>
-                    </div>
+                        <label class="input-label">Base URL (Tùy chọn):</label>
+                        <input type="text" id="llmBaseUrlInput" class="form-input" placeholder="https://generativelanguage.googleapis.com" style="margin-bottom: 12px;">
 
-                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5;">
-                        Ứng dụng HiLark đã được xác thực an toàn qua <strong>Tenant Access Token</strong> từ Lark Open Platform. Mặc định hệ thống tự kết nối với Bot hiện hành của bạn.
-                    </div>
-
-                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; margin-top: 10px; background: var(--surface-secondary); padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border);">
-                        <span style="color: var(--text-secondary);">Cổng giao tiếp thời gian thực:</span>
-                        <span id="botWsStatusText" style="font-weight: 600; color: var(--success);">Lark WebSocket (Active)</span>
-                    </div>
-
-                    <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
-                        <button type="button" class="btn btn-secondary" onclick="toggleCustomBotCredentials()" style="font-size: 11.5px; padding: 5px 12px; border-radius: var(--radius-sm);">
-                            <span id="botToggleBtnText">Đổi sang Bot / Tài khoản khác ▾</span>
-                        </button>
-                    </div>
-
-                    <div id="customBotCredentialsContent" style="display: none; margin-top: 12px; padding: 12px; background: var(--surface-secondary); border-radius: var(--radius-sm); border: 1px solid var(--border);">
-                        <div style="font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">
-                            Nhập App ID &amp; App Secret của Bot mới:
-                        </div>
-                        <div class="input-group" style="margin-bottom: 10px;">
-                            <label class="input-label" style="font-size: 11.5px;">App ID mới (cli_xxx):</label>
-                            <input type="text" id="inputNewAppId" placeholder="cli_a1b2c3d4e5f6..." class="text-input" style="font-size: 12.5px; font-family: ui-monospace, monospace;">
-                        </div>
-                        <div class="input-group" style="margin-bottom: 10px;">
-                            <label class="input-label" style="font-size: 11.5px;">App Secret mới:</label>
-                            <input type="password" id="inputNewAppSecret" placeholder="Nhập App Secret mới..." class="text-input" style="font-size: 12.5px; font-family: ui-monospace, monospace;">
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <button type="button" id="btnSaveNewBot" onclick="saveNewBotCredentials()" class="btn btn-primary" style="font-size: 12px; padding: 6px 14px;">
-                                Kết nối Bot mới
-                            </button>
-                            <span id="botSwitchStatus" style="font-size: 12px;"></span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Collapsible Advanced Infrastructure (MongoDB URL) -->
-                <div class="guide-collapsible">
-                    <div class="guide-header" onclick="toggleAdvancedMongo()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-weight: 600; color: var(--text-primary);">
                         <div style="display: flex; align-items: center; gap: 8px;">
-                            <span>Cấu hình Hạ tầng Nâng cao (MongoDB Tùy Chọn)</span>
-                        </div>
-                        <span id="mongoToggleText" style="font-size: 12px; color: var(--text-secondary); font-weight: 500;">Tùy chọn ▾</span>
-                    </div>
-                    <div id="mongoAdvancedContent" style="display: none; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); font-size: 12.5px;">
-                        <label style="display: block; font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 5px;">
-                            URI Kết Nối MongoDB Tùy Chọn (Custom Connection String)
-                        </label>
-                        <input 
-                            type="text" 
-                            id="inputMongoUrl" 
-                            placeholder="mongodb://localhost:27017 hoặc mongodb+srv://..." 
-                            class="text-input"
-                            style="width: 100%; font-family: ui-monospace, monospace; font-size: 12.5px; margin-bottom: 6px;"
-                        />
-                        <div style="font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; margin-bottom: 10px;">
-                            Mặc định để trống hệ thống sẽ sử dụng cơ sở dữ liệu MongoDB nội bộ. Chỉ điền nếu doanh nghiệp cần lưu trữ dữ liệu sang cụm MongoDB Atlas hoặc Server riêng.
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <button type="button" id="btnTestMongo" onclick="testMongoConnection()" class="btn btn-secondary" style="font-size: 12px;">
-                                Kiểm tra MongoDB
+                            <button type="button" id="btnTestKey" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;" onclick="testApiKeyLive()">
+                                Kiểm tra kết nối
                             </button>
-                            <span id="mongoTestStatus" style="font-size: 12px;"></span>
+                            <span id="testFeedback"></span>
                         </div>
                     </div>
                 </div>
-                </div>
-            </div>
 
-            <!-- SLIDE 2: AI ENGINE & MULTI-PROVIDER BYOK -->
-            <div class="slide" id="slide2">
-                <h2>Cấu Hình Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</h2>
-                <p class="desc">Chọn nguồn tài nguyên và cấu hình thông số kết nối mô hình trí tuệ nhân tạo:</p>
+                <!-- KHỐI 2: DAILY DIGEST & HITL (TỪ ONBOARDING SLIDE 3) -->
+                <div class="form-section">
+                    <div class="section-heading">Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</div>
 
-                <div class="option-card selected" id="optSystemKey" onclick="selectApiKeyMode(false)">
-                    <div class="radio-circle"></div>
-                    <div>
-                        <div class="feat-title">Hạn mức mặc định của hệ thống</div>
-                        <div class="feat-desc">Sử dụng cụm mô hình mặc định do tổ chức cung cấp sẵn. Không cần cấu hình thêm.</div>
+                    <label class="input-label" for="digestTimeSelect">Khung giờ nhận báo cáo tổng hợp:</label>
+                    <input id="digestTimeSelect" class="custom-select" type="time" value="18:00" step="60" aria-describedby="digestTimeHelp">
+                    <div id="digestTimeHelp" class="input-hint">Bạn có thể chọn bất kỳ giờ nào trong ngày. Mặc định: 18:00.</div>
+
+                    <div class="setting-card">
+                        <label class="setting-label-flex">
+                            <input type="checkbox" id="hitlCheckbox" checked>
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
+                                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
+                            </div>
+                        </label>
                     </div>
                 </div>
 
-                <div class="option-card" id="optByok" onclick="selectApiKeyMode(true)">
-                    <div class="radio-circle"></div>
-                    <div>
-                        <div class="feat-title">Tự cấu hình khóa riêng (BYOK)</div>
-                        <div class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</div>
-                    </div>
-                </div>
+                <!-- KHỐI 3: ĐỒNG BỘ CHÍNH SÁCH DOANH NGHIỆP & NHẬT KÝ (POLICY SYNC & LOGS) -->
+                <div class="form-section">
+                    <div class="section-heading">Đồng Bộ Chính Sách &amp; Quy Định Công Ty</div>
 
-                <div class="input-group" id="byokInputGroup" style="display: none;">
-                    <label class="input-label">Nhà cung cấp (Provider):</label>
-                    <select id="llmProviderSelect" class="custom-select" onchange="onProviderChange()" style="margin-bottom: 12px;">
-                        <option value="google">Google (Gemini)</option>
-                        <option value="openai">ChatGPT (OpenAI)</option>
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="custom">Tùy chỉnh (Khác / OpenAI-Compatible)</option>
+                    <label class="input-label" for="policySyncIntervalSelect">Chu kỳ quét &amp; đồng bộ định kỳ:</label>
+                    <select id="policySyncIntervalSelect" class="custom-select" style="margin-bottom: 6px;">
+                        <option value="1800">30 phút (Giai đoạn thử nghiệm)</option>
+                        <option value="3600" selected>1 giờ (Mặc định khuyến nghị)</option>
+                        <option value="10800">3 giờ</option>
+                        <option value="21600">6 giờ</option>
+                        <option value="43200">12 giờ</option>
+                        <option value="86400">24 giờ (1 ngày)</option>
                     </select>
-
-                    <label class="input-label">Khóa API (API Key):</label>
-                    <div class="input-wrapper" style="margin-bottom: 12px;">
-                        <input type="password" id="geminiKeyInput" class="key-input" placeholder="Nhập API Key">
+                    <div class="input-hint" style="margin-bottom: 14px;">
+                        Hệ thống luôn tự động đồng bộ tức thì (Real-time) mỗi khi có bản ghi mới trên Lark Base. Chu kỳ quét định kỳ là chốt chặn an toàn đảm bảo không sót tài liệu.
                     </div>
 
-                    <div class="form-grid-2">
-                        <div>
-                            <label class="input-label">Tên mô hình (Model):</label>
-                            <input type="text" id="llmModelInput" class="form-input" placeholder="gemini-2.0-flash">
+                    <div class="admin-card" style="margin-bottom: 12px; padding: 12px 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="status-dot success" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+                                <span style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Nhật ký đồng bộ Base ➔ WeKnora</span>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <button type="button" class="btn-secondary" id="btnPolicySyncNow" onclick="triggerPolicySyncLive()" style="padding: 5px 10px; font-size: 12px;">
+                                    🔄 Đồng bộ ngay
+                                </button>
+                                <button type="button" class="btn-secondary" id="btnRefreshPolicyLogs" onclick="loadPolicyStatusAndLogs()" style="padding: 5px 10px; font-size: 12px;">
+                                    Làm mới
+                                </button>
+                            </div>
                         </div>
-                        <div>
-                            <label class="input-label">Thời gian chờ (Timeout - giây):</label>
-                            <input type="number" id="llmTimeoutInput" class="form-input" min="5" max="300" value="60">
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px;">
+                            <div>Bảng Base: <code id="lblPolicyTable" style="color: var(--accent); font-size: 11px;">—</code></div>
+                            <div>Lần sync gần nhất: <span id="lblPolicyLastSync" style="font-weight: 600; color: var(--text-primary);">Chưa có</span></div>
                         </div>
-                    </div>
 
-                    <label class="input-label">Base URL (Tùy chọn):</label>
-                    <input type="text" id="llmBaseUrlInput" class="form-input" placeholder="https://generativelanguage.googleapis.com" style="margin-bottom: 12px;">
-
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <button type="button" id="btnTestKey" class="btn btn-secondary" onclick="testKeyLive()">Kiểm tra kết nối</button>
-                        <span id="testFeedback"></span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- SLIDE 3: DAILY DIGEST & HITL -->
-            <div class="slide" id="slide3">
-                <h2>Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</h2>
-                <p class="desc">Thiết lập thời gian nhận bản tóm tắt Master Daily Digest gửi riêng vào tin nhắn của bạn:</p>
-
-                <label for="digestTimeSelect" style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Khung giờ nhận báo cáo tổng hợp:</label>
-                <input id="digestTimeSelect" class="custom-select" type="time" value="18:00" step="60" aria-describedby="digestTimeHelp" style="margin-top: 6px;">
-                <div id="digestTimeHelp" style="margin-top: 6px; font-size: 12px; color: var(--text-secondary);">Bạn có thể chọn bất kỳ giờ nào trong ngày. Mặc định: 18:00.</div>
-
-                <div class="setting-card">
-                    <label style="display: flex; align-items: flex-start; gap: 12px; cursor: pointer;">
-                        <input type="checkbox" id="hitlCheckbox" checked style="width: 17px; height: 17px; accent-color: var(--accent); margin-top: 2px;">
-                        <div>
-                            <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
-                            <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
+                        <div style="background: #090d16; border-radius: 6px; border: 1px solid #1e293b; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #94a3b8; max-height: 150px; overflow-y: auto;" id="policyLogContainer">
+                            <div id="policyLogConsole" style="line-height: 1.6; white-space: pre-wrap;">[Hệ thống] Đang tải nhật ký đồng bộ chính sách...</div>
                         </div>
-                    </label>
-                </div>
-                <div id="saveFeedbackSlide3" style="text-align: center; margin-top: 10px;"></div>
-            </div>
-
-            <!-- SLIDE 4: OAUTH & COMPLETE -->
-            <div class="slide" id="slide4">
-                <h2>Quản Trị Base &amp; Ủy Quyền Đại Diện</h2>
-                <p class="desc">Bước cuối cùng để Bot có thể thay mặt bạn trả lời câu hỏi và đọc tài liệu dự án:</p>
-
-                <!-- Lark Base Status & Auto-Provision Box -->
-                <div class="admin-card">
-                    <div class="admin-card-header">
-                        <div class="admin-card-title">Lark Base Quản Trị Doanh Nghiệp</div>
-                        <span id="baseStatusBadge" class="status-pill inactive">Chưa kích hoạt</span>
-                    </div>
-                    <div class="admin-card-desc">
-                        Trung tâm điều hành danh mục 3 dự án (Atlas, Pulse, Sentinel) và chính sách công ty.
-                    </div>
-                    <div id="baseActionContainer" class="admin-actions">
-                        <button type="button" id="btnProvisionBase" onclick="provisionLarkBase()" class="btn btn-secondary">
-                            Khởi tạo Base tự động
-                        </button>
-                        <a id="linkOpenBase" href="#" target="_blank" class="btn btn-secondary" style="display: none; color: var(--accent);">
-                            Mở Lark Base
-                        </a>
-                    </div>
-                    <div id="baseFeedback" style="font-size: 12.5px; margin-top: 8px;"></div>
-                </div>
-
-                <!-- Lark OAuth Authorization In-Place Box -->
-                <div class="admin-card">
-                    <div class="admin-card-header">
-                        <div class="admin-card-title">Ủy Quyền Tài Khoản Lark Đại Diện</div>
-                        <span id="authStatusBadge" class="status-pill unlinked">
-                            Đang kiểm tra...
-                        </span>
-                    </div>
-                    <div id="authAccountInfo" style="font-size: 13px; color: var(--text-primary); margin-bottom: 3px;">
-                        Kiểm tra kết nối tài khoản Lark...
-                    </div>
-                    <div id="authExpiryInfo" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-                        Token được mã hóa và tự động làm mới trong cơ sở dữ liệu.
-                    </div>
-                    <div class="admin-actions">
-                        <button type="button" id="btnConnectLark" onclick="startLarkOAuthFlow()" class="btn btn-primary-action">
-                            Ủy quyền tài khoản Lark
-                        </button>
-                        <span id="authSpinner" style="display: none; font-size: 12px; color: var(--accent);">Đang mở cửa sổ ủy quyền...</span>
                     </div>
                 </div>
 
-                <!-- WeKnora Knowledge Base Card (Solution B) -->
-                <div class="admin-card" id="weknoraCard" style="display: none;">
-                    <div class="admin-card-header">
-                        <div class="admin-card-title">Kho Tri Thức WeKnora Doanh Nghiệp</div>
-                        <span id="weknoraStatusBadge" class="status-pill connected">Đã sẵn sàng</span>
-                    </div>
-                    <div class="admin-card-desc">
-                        Không gian lưu trữ Policy &amp; Wiki Daily Digests riêng biệt cho doanh nghiệp.
-                    </div>
-                    <div style="background: var(--surface-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.6;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                            <span style="color: var(--text-secondary);">Cổng quản trị:</span>
-                            <a id="weknoraLoginLink" href="#" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Mở WeKnora ↗</a>
+                <!-- KHỐI 4: THÔNG TIN WEKNORA WEB VAULT -->
+                <div class="form-section" id="weknoraCredentialsSection" style="display: none;">
+                    <div class="section-heading">Không Gian Tri Thức WeKnora (Web Vault)</div>
+                    <div class="admin-card">
+                        <div class="cred-row">
+                            <span class="cred-label">Đường dẫn:</span>
+                            <a href="#" id="weknoraWebLink" target="_blank" class="cred-value link">—</a>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                            <span style="color: var(--text-secondary);">Tài khoản Admin:</span>
-                            <code id="weknoraUsername" style="font-family: -apple-system-ui-monospace, monospace; font-weight: 600; color: var(--text-primary); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;"></code>
+                        <div class="cred-row">
+                            <span class="cred-label">Tài khoản Admin:</span>
+                            <span id="weknoraUsername" class="cred-value code">—</span>
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                            <span style="color: var(--text-secondary);">Mật khẩu khởi tạo:</span>
-                            <code id="weknoraPassword" style="font-family: -apple-system-ui-monospace, monospace; font-weight: 600; color: var(--accent); background: var(--surface-tertiary); padding: 2px 6px; border-radius: 4px;"></code>
+                        <div class="cred-row">
+                            <span class="cred-label">Mật khẩu ban đầu:</span>
+                            <span id="weknoraPassword" class="cred-value code">—</span>
                         </div>
-                        <div id="weknoraDatasetsInfo" style="font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px;"></div>
                     </div>
                 </div>
 
-                <div id="saveFeedback" style="text-align: center; margin-top: 10px;"></div>
+                <!-- NÚT LƯU THAY ĐỔI -->
+                <div class="save-actions">
+                    <button type="button" class="btn-primary" id="btnSaveCustom" onclick="saveCustomSettings()">
+                        Lưu Thay Đổi Cấu Hình
+                    </button>
+                    <div id="saveFeedback" class="save-feedback"></div>
+                </div>
             </div>
         </div>
 
-        <!-- Footer Navigation -->
-        <div class="wizard-footer">
-            <button type="button" class="btn btn-prev" id="btnPrev" onclick="navigateStep(-1)" style="display: none;">Quay lại</button>
-            <div style="flex: 1;"></div>
-            <button type="button" class="btn btn-next" id="btnNext" onclick="navigateStep(1)">Bắt đầu thiết lập</button>
-        </div>
-    </div>
+</div>
 
-    <script>
-        const userOpenId = "{{effective_open_id}}";
-        const userName = "{{effective_user_name}}";
-        const tenantKey = "{{effective_tenant_key}}";
-        const isIsvMode = Boolean(tenantKey && tenantKey.trim());
-        let totalSteps = isIsvMode ? 3 : 4;
-        let currentStep = 1;
-        let isByok = false;
+<script>
+    const INITIAL_TASK_ID = "{{TASK_ID}}";
+    const INITIAL_VIEW = "{{INITIAL_VIEW}}";
+    const SERVER_TENANT_KEY = "{{TENANT_KEY}}";
+    const SERVER_OPEN_ID = "{{OPEN_ID}}";
 
-        const stepTitles = isIsvMode ? [
-            "BƯỚC 1 / 3: KHÔNG GIAN DOANH NGHIỆP & BÀN GIAO",
-            "BƯỚC 2 / 3: CẤU HÌNH AI & BYOK",
-            "BƯỚC 3 / 3: LỊCH BÁO CÁO & DUYỆT AN TOÀN"
-        ] : [
-            "BƯỚC 1 / 4: KẾT NỐI LARK BOT & HẠ TẦNG",
-            "BƯỚC 2 / 4: CẤU HÌNH AI & BYOK",
-            "BƯỚC 3 / 4: DAILY DIGEST & HITL",
-            "BƯỚC 4 / 4: HOÀN TẤT & LƯU"
-        ];
+    let currentTaskId = INITIAL_TASK_ID;
+    let pollTimer = null;
+    let isByokEnabled = false;
+    let currentAdminOpenId = SERVER_OPEN_ID || "";
+    let currentTenantKey = SERVER_TENANT_KEY || "";
 
-        const providerDefaults = {
-            google: {
-                model: "gemini-2.0-flash",
-                baseUrl: "https://generativelanguage.googleapis.com"
-            },
-            openai: {
-                model: "gpt-4o-mini",
-                baseUrl: "https://api.openai.com/v1"
-            },
-            anthropic: {
-                model: "claude-3-5-sonnet-20241022",
-                baseUrl: "https://api.anthropic.com/v1"
-            },
-            custom: {
-                model: "deepseek-chat",
-                baseUrl: "https://api.deepseek.com/v1"
+    /* ================== GUIDE CONFIG ==================
+       Request URL cho Event & Callback trong HiLark là /api/lark/events.
+       Redirect URL cho OAuth user là /setup/callback. */
+    const WEBHOOK_PATH  = "/api/lark/events";
+    const REDIRECT_PATH = "/setup/callback";
+    const WEBHOOK_URL  = window.location.origin + WEBHOOK_PATH;
+    const REDIRECT_URL = window.location.origin + REDIRECT_PATH;
+
+    const SCOPES = {
+        tenant: [
+            "im:message:send_as_bot",
+            "im:chat",
+            "im:chat:readonly",
+            "im:message",
+            "im:message.group_msg",
+            "im:message.group_at_msg",
+            "bitable:app",
+            "contact:user.base:readonly",
+            "wiki:node:read",
+            "wiki:wiki:readonly",
+            "docx:document:readonly",
+            "drive:drive:readonly"
+        ],
+        user: [
+            "offline_access",
+            "im:message.send_as_user",
+            "im:chat",
+            "im:chat:readonly",
+            "im:message",
+            "bitable:app",
+            "contact:user.base:readonly",
+            "wiki:node:read",
+            "wiki:wiki:readonly",
+            "docx:document:readonly",
+            "drive:drive:readonly"
+        ]
+    };
+
+    const EVENT_GROUPS = [
+        {
+            title: "1. Chat & Bot (bắt buộc cốt lõi)",
+            events: [
+                { code: "im.message.receive_v1", name: "Receive messages · Nhận tin nhắn", scope: "im:message, im:message.group_at_msg, im:message:send_as_bot", purpose: "Nhận tin nhắn chat từ nhóm và tin nhắn riêng (DM)." },
+                { code: "card.action.trigger", name: "Card action trigger · Tương tác thẻ", scope: "Tự động có khi bật Bot", purpose: "Nhận sự kiện bấm nút duyệt bản nháp, duyệt tri thức trên Thẻ.", tag: "cb", tagText: "Callback" },
+                { code: "im.chat.member.bot.added_v1", name: "Bot added to group chat", scope: "im:chat hoặc im:chat:readonly", purpose: "Biết khi Bot được thêm vào nhóm mới để bắt đầu giám sát." },
+                { code: "im.chat.member.bot.deleted_v1", name: "Bot removed from group chat", scope: "im:chat hoặc im:chat:readonly", purpose: "Biết khi Bot bị xóa khỏi nhóm để dừng giám sát." }
+            ]
+        },
+        {
+            title: "2. Thu hồi & Cảm xúc",
+            events: [
+                { code: "im.message.recalled_v1", name: "Message recalled · Thu hồi tin nhắn", scope: "im:message hoặc im:message:readonly", purpose: "Đồng bộ xóa/đánh dấu tin nhắn bị thu hồi khỏi bộ nhớ đệm." },
+                { code: "im.message.reaction.created_v1", name: "Message reaction created · Thả cảm xúc", scope: "im:message hoặc im:message:readonly", purpose: "Bắt cảm xúc người dùng (like, thả tim) với tin nhắn trả lời." }
+            ]
+        },
+        {
+            title: "3. Lark Base / Bitable (đồng bộ tri thức)",
+            events: [
+                { code: "drive.file.bitable_record_changed_v1", name: "Bitable record changed", scope: "bitable:app", purpose: "Đồng bộ dữ liệu khi có bản ghi mới hoặc sửa đổi trong Base." },
+                { code: "drive.file.bitable_field_changed_v1", name: "Bitable field changed", scope: "bitable:app", purpose: "Cập nhật cấu trúc bảng khi admin đổi tên/thêm cột." },
+                { code: "drive.file.edit_v1", name: "File edited in Drive", scope: "drive:drive:readonly", purpose: "Lắng nghe khi tài liệu hoặc tệp được chỉnh sửa." }
+            ]
+        },
+        {
+            title: "4. Vòng đời doanh nghiệp (Lifecycle)",
+            events: [
+                { code: "app_status_change", name: "App status change", scope: "Custom App / Store App", purpose: "Biết khi app được kích hoạt hoặc tạm dừng." },
+                { code: "app_uninstalled", name: "App uninstalled", scope: "Custom App / Store App", purpose: "Tự động dọn dẹp kết nối khi doanh nghiệp gỡ app." },
+                { code: "open_app", name: "App first opened", scope: "Custom App / Store App", purpose: "Kích hoạt màn hình chào mừng (Onboarding)." },
+                { code: "app_ticket", name: "App ticket update", scope: "Chỉ ISV / Store App", purpose: "Nhận ticket cấp phép token của Lark Marketplace. Không cần với Custom App.", tag: "isv", tagText: "Chỉ ISV" }
+            ]
+        }
+    ];
+
+    /* Kho nội dung cho nút "Sao chép" */
+    const COPY_STORE = {
+        "scopes-all": () => JSON.stringify({ scopes: SCOPES }, null, 2),
+        "scopes-tenant": () => SCOPES.tenant.join("\n"),
+        "scopes-user": () => SCOPES.user.join("\n"),
+        "webhook-url": () => {
+            const curAppId = window.__hilarkAppId || document.getElementById("setupAppId")?.value?.trim() || "";
+            return curAppId ? `${WEBHOOK_URL}?app_id=${encodeURIComponent(curAppId)}` : WEBHOOK_URL;
+        },
+        "redirect-url": () => REDIRECT_URL
+    };
+
+    /* ================== GUIDE SLIDER ================== */
+    let slides = [];
+    let currentSlide = 0;
+    let SLIDE_COUNT = 0;
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function renderGuideContent() {
+        document.getElementById("scopesJsonBox").textContent = COPY_STORE["scopes-all"]();
+        document.getElementById("tenantCount").textContent = `· ${SCOPES.tenant.length} quyền`;
+        document.getElementById("userCount").textContent = `· ${SCOPES.user.length} quyền`;
+        document.getElementById("tenantChips").innerHTML = SCOPES.tenant.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join("");
+        document.getElementById("userChips").innerHTML = SCOPES.user.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join("");
+        document.getElementById("webhookUrlText").textContent = WEBHOOK_URL;
+        document.getElementById("redirectUrlText").textContent = REDIRECT_URL;
+
+        const wrap = document.getElementById("eventGroups");
+        wrap.innerHTML = EVENT_GROUPS.map((g, gi) => {
+            const key = `events-${gi}`;
+            COPY_STORE[key] = () => g.events.map((e) => e.code).join("\n");
+            const rows = g.events.map((e, ei) => {
+                const rowKey = `event-${gi}-${ei}`;
+                COPY_STORE[rowKey] = () => e.code;
+                const tag = e.tag ? `<span class="tag ${e.tag}">${escapeHtml(e.tagText)}</span>` : "";
+                return `
+                    <div class="event-row">
+                        <div class="event-code-line">
+                            <span class="event-code">${escapeHtml(e.code)}</span>
+                            <span style="display:flex; gap:6px; align-items:center;">${tag}<button type="button" class="mini-btn" data-copy-id="${rowKey}">Sao chép</button></span>
+                        </div>
+                        <div class="event-name">${escapeHtml(e.name)}</div>
+                        <div class="event-meta">Quyền: <span class="sc">${escapeHtml(e.scope)}</span><br>${escapeHtml(e.purpose)}</div>
+                    </div>`;
+            }).join("");
+            return `
+                <div class="event-group">
+                    <div class="event-group-head">
+                        <span class="t">${escapeHtml(g.title)}</span>
+                        <button type="button" class="mini-btn" data-copy-id="${key}">Sao chép tất cả</button>
+                    </div>
+                    ${rows}
+                </div>`;
+        }).join("");
+    }
+
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+            try {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+                resolve();
+            } catch (e) { reject(e); }
+        });
+    }
+
+    function bindCopyButtons() {
+        document.getElementById("landingView").addEventListener("click", async (ev) => {
+            const btn = ev.target.closest("[data-copy-id]");
+            if (!btn) return;
+            const fn = COPY_STORE[btn.dataset.copyId];
+            if (!fn) return;
+            const original = btn.textContent;
+            try {
+                await copyText(fn());
+                btn.classList.add("copied");
+                btn.textContent = "Đã sao chép ✓";
+            } catch (e) {
+                btn.textContent = "Lỗi sao chép";
             }
+            setTimeout(() => {
+                btn.classList.remove("copied");
+                btn.textContent = original;
+            }, 1600);
+        });
+    }
+
+    function initGuide() {
+        renderGuideContent();
+        slides = Array.from(document.querySelectorAll("#landingView .slide"));
+        SLIDE_COUNT = slides.length;
+
+        const dots = document.getElementById("guideDots");
+        dots.innerHTML = "";
+        slides.forEach((s, i) => {
+            const d = document.createElement("button");
+            d.type = "button";
+            d.className = "dot";
+            d.setAttribute("aria-label", `Trang ${i + 1}: ${s.dataset.title}`);
+            d.onclick = () => goToSlide(i);
+            dots.appendChild(d);
+        });
+
+        bindCopyButtons();
+
+        try {
+            const savedAppId = localStorage.getItem("hilark_app_id");
+            const savedRegId = localStorage.getItem("hilark_registration_id");
+            if (savedAppId && savedRegId) {
+                window.__hilarkRegistrationId = savedRegId;
+                window.__hilarkAppId = savedAppId;
+                const appIdInput = document.getElementById("setupAppId");
+                if (appIdInput && !appIdInput.value) appIdInput.value = savedAppId;
+                const readyAppEl = document.getElementById("readyAppId");
+                if (readyAppEl) readyAppEl.textContent = savedAppId;
+                const readyBox = document.getElementById("installReadyBox");
+                if (readyBox) readyBox.style.display = "block";
+                const missingBox = document.getElementById("installMissingBox");
+                if (missingBox) missingBox.style.display = "none";
+                const successBox = document.getElementById("connectSuccessBox");
+                if (successBox) successBox.style.display = "block";
+                const btnConnect = document.getElementById("btnConnectApp");
+                if (btnConnect) {
+                    btnConnect.textContent = "✔ Đã kết nối App (" + savedAppId + ")";
+                    btnConnect.style.background = "#059669";
+                }
+            }
+        } catch (_) {}
+
+        goToSlide(0);
+    }
+
+    function goToSlide(index) {
+        if (index < 0 || index >= SLIDE_COUNT) return;
+        currentSlide = index;
+
+        slides.forEach((s, i) => s.classList.toggle("active", i === index));
+
+        document.querySelectorAll("#guideDots .dot").forEach((d, i) => {
+            d.classList.toggle("active", i === index);
+            d.classList.toggle("done", i < index);
+        });
+
+        const last = index === SLIDE_COUNT - 1;
+        const first = index === 0;
+
+        document.getElementById("guideBarFill").style.width = `${(index / (SLIDE_COUNT - 1)) * 100}%`;
+        document.getElementById("guideCounter").textContent =
+            first ? "Giới thiệu" : last ? "Cài đặt & Cấp quyền" : `Hướng dẫn · ${index}/${SLIDE_COUNT - 2}`;
+
+        document.getElementById("btnPrev").style.visibility = first ? "hidden" : "visible";
+
+        const nextBtn = document.getElementById("btnNext");
+        nextBtn.textContent = first ? "Bắt đầu hướng dẫn →" : index === SLIDE_COUNT - 2 ? "Hoàn tất hướng dẫn →" : "Tiếp theo →";
+
+        // Trang cuối đã có nút Cài đặt riêng → ẩn nút Next
+        nextBtn.style.display = last ? "none" : "flex";
+        document.getElementById("guideSkip").style.visibility = (last || index === 3) ? "hidden" : "visible";
+
+        // Cập nhật Request URL hiển thị đúng app_id nếu đã nhập
+        if (index === 4) {
+            const curAppId = window.__hilarkAppId || document.getElementById("setupAppId")?.value?.trim() || "";
+            const finalUrl = curAppId ? `${WEBHOOK_URL}?app_id=${encodeURIComponent(curAppId)}` : WEBHOOK_URL;
+            const el = document.getElementById("webhookUrlText");
+            if (el) el.textContent = finalUrl;
+        }
+
+        // Cập nhật trạng thái box trên Slide 7 (Hoàn tất cài đặt)
+        if (last) {
+            const hasReg = !!window.__hilarkRegistrationId;
+            const readyBox = document.getElementById("installReadyBox");
+            const missingBox = document.getElementById("installMissingBox");
+            if (readyBox) readyBox.style.display = hasReg ? "block" : "none";
+            if (missingBox) missingBox.style.display = hasReg ? "none" : "block";
+            const readyAppEl = document.getElementById("readyAppId");
+            if (readyAppEl && window.__hilarkAppId) readyAppEl.textContent = window.__hilarkAppId;
+        }
+
+        const container = document.querySelector(".wizard-container");
+        if (container && index > 0) window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function nextSlide() { goToSlide(currentSlide + 1); }
+    function prevSlide() { goToSlide(currentSlide - 1); }
+
+    document.addEventListener("keydown", (e) => {
+        if (document.getElementById("landingView").style.display === "none") return;
+        const tag = (e.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        if (e.key === "ArrowRight") nextSlide();
+        if (e.key === "ArrowLeft") prevSlide();
+    });
+
+    /* ================== SETUP FLOW ================== */
+    async function connectApp() {
+        const appId = document.getElementById("setupAppId").value.trim();
+        const appSecret = document.getElementById("setupAppSecret").value.trim();
+        const verificationToken = document.getElementById("setupVerificationToken").value.trim();
+        const encryptKey = document.getElementById("setupEncryptKey").value.trim();
+        const button = document.getElementById("btnConnectApp");
+        const feedback = document.getElementById("credentialFeedback");
+        const successBox = document.getElementById("connectSuccessBox");
+
+        if (!appId || !appId.startsWith("cli_")) {
+            feedback.textContent = "App ID phải bắt đầu bằng cli_.";
+            if (successBox) successBox.style.display = "none";
+            return false;
+        }
+        if (!appSecret) {
+            feedback.textContent = "Vui lòng nhập App Secret.";
+            if (successBox) successBox.style.display = "none";
+            return false;
+        }
+        if (!verificationToken) {
+            feedback.textContent = "Vui lòng nhập Verification Token trong tab Encryption Strategy.";
+            if (successBox) successBox.style.display = "none";
+            return false;
+        }
+        if (!encryptKey) {
+            feedback.textContent = "Vui lòng nhập Encrypt Key trong tab Encryption Strategy.";
+            if (successBox) successBox.style.display = "none";
+            return false;
+        }
+
+        button.disabled = true;
+        button.textContent = "Đang xác thực App với Lark...";
+        feedback.textContent = "";
+        if (successBox) successBox.style.display = "none";
+
+        try {
+            const testResponse = await fetch("/onboarding/api/test-bot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+            });
+            const testData = await testResponse.json();
+            if (!testData.success) {
+                throw new Error(testData.message || "App credential không hợp lệ.");
+            }
+
+            button.textContent = "Đang lưu cấu hình vào HiLark...";
+            const registerResponse = await fetch("/setup/api/register-app", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    app_id: appId,
+                    app_secret: appSecret,
+                    verification_token: verificationToken,
+                    encrypt_key: encryptKey
+                })
+            });
+            const registerData = await registerResponse.json();
+            if (!registerResponse.ok || !registerData.success || !registerData.data?.registration_id) {
+                throw new Error(registerData.detail || registerData.message || "Không thể đăng ký Custom App.");
+            }
+
+            const regId = registerData.data.registration_id;
+            window.__hilarkRegistrationId = regId;
+            window.__hilarkAppId = appId;
+            try {
+                localStorage.setItem("hilark_registration_id", regId);
+                localStorage.setItem("hilark_app_id", appId);
+            } catch (_) {}
+
+            button.disabled = false;
+            button.textContent = "✔ Đã kết nối App thành công";
+            button.style.background = "#059669";
+            if (successBox) successBox.style.display = "block";
+            feedback.textContent = "";
+
+            const readyAppEl = document.getElementById("readyAppId");
+            if (readyAppEl) readyAppEl.textContent = appId;
+            const readyBox = document.getElementById("installReadyBox");
+            if (readyBox) readyBox.style.display = "block";
+            const missingBox = document.getElementById("installMissingBox");
+            if (missingBox) missingBox.style.display = "none";
+
+            return true;
+        } catch (error) {
+            feedback.textContent = error.message || "Không thể xác thực App.";
+            button.disabled = false;
+            button.textContent = "Xác thực & Lưu khóa vào HiLark";
+            button.style.background = "";
+            return false;
+        }
+    }
+
+    async function beginSetup() {
+        const button = document.getElementById("btnInstall");
+        let regId = window.__hilarkRegistrationId;
+        if (!regId) {
+            try { regId = localStorage.getItem("hilark_registration_id"); } catch (_) {}
+        }
+
+        if (!regId) {
+            // Thử kết nối nếu người dùng đã nhập các trường ở Bước 3
+            const connected = await connectApp();
+            if (!connected) {
+                goToSlide(3);
+                return;
+            }
+            regId = window.__hilarkRegistrationId;
+        }
+
+        button.disabled = true;
+        button.textContent = "Đang mở OAuth user...";
+        const redirectUri = window.location.origin + "/setup/callback";
+        window.location.href = `/setup/install?registration_id=${encodeURIComponent(regId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    }
+
+    const DEFAULT_STEPS = [
+        { step: 1, title: "Admin mở HiLark Setup", description: "Admin nhấn Install HiLark và bắt đầu quy trình cài đặt." },
+        { step: 2, title: "Ủy quyền tenant & user", description: "Admin cài ứng dụng cho doanh nghiệp và cấp OAuth user bắt buộc." },
+        { step: 3, title: "Xác thực App & token", description: "HiLark nhận tenant identity, user access token và refresh token." },
+        { step: 4, title: "Xác nhận quyền Bot", description: "Dùng tenant access token để gọi API trong doanh nghiệp." },
+        { step: 5, title: "Đồng bộ cấu hình & Cấp phát hạ tầng", description: "Tự động thiết lập Lark Base Quản trị và Không gian Tri thức WeKnora." },
+        { step: 6, title: "Gửi tin nhắn kiểm tra", description: "HiLark gửi tin nhắn chào mừng và thông báo kết nối thành công tới Admin qua Lark Chat." },
+        { step: 7, title: "Ready", description: "Toàn bộ hệ thống sẵn sàng. Admin có thể bắt đầu sử dụng HiLark." }
+    ];
+
+    function renderInitialSteps() {
+        const container = document.getElementById("stepsList");
+        container.innerHTML = "";
+        DEFAULT_STEPS.forEach((s) => {
+            const row = document.createElement("div");
+            row.className = "step-row pending";
+            row.id = `step-row-${s.step}`;
+            row.innerHTML = `
+                <div class="step-line"></div>
+                <div class="step-icon-wrap" id="step-icon-${s.step}">
+                    <span class="step-num">${s.step}</span>
+                </div>
+                <div class="step-content">
+                    <div class="step-title">${s.title}</div>
+                    <div class="step-desc">${s.description}</div>
+                    <div class="step-detail" id="step-detail-${s.step}"></div>
+                </div>
+            `;
+            container.appendChild(row);
+        });
+    }
+
+    function updateStepUI(stepNumber, status, detail) {
+        const row = document.getElementById(`step-row-${stepNumber}`);
+        const iconWrap = document.getElementById(`step-icon-${stepNumber}`);
+        const detailEl = document.getElementById(`step-detail-${stepNumber}`);
+
+        if (!row || !iconWrap) return;
+
+        row.className = `step-row ${status}`;
+
+        if (status === "completed") {
+            iconWrap.innerHTML = `
+                <svg style="width: 15px; height: 15px; fill: currentColor;" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                </svg>
+            `;
+        } else if (status === "processing") {
+            iconWrap.innerHTML = `<div class="spinner"></div>`;
+        } else if (status === "failed") {
+            iconWrap.innerHTML = `
+                <svg style="width: 15px; height: 15px; fill: currentColor;" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                </svg>
+            `;
+        } else {
+            iconWrap.innerHTML = `<span class="step-num">${stepNumber}</span>`;
+        }
+
+        if (detailEl && detail) {
+            detailEl.textContent = detail;
+        }
+    }
+
+    // Toggle Custom Section Accordion
+    function toggleCustomSection() {
+        const body = document.getElementById("customBody");
+        const chevron = document.getElementById("customChevron");
+        const isHidden = body.style.display === "none";
+        body.style.display = isHidden ? "block" : "none";
+        if (isHidden) {
+            chevron.classList.add("open");
+        } else {
+            chevron.classList.remove("open");
+        }
+    }
+
+    // BYOK Mode Switcher
+    function setByokMode(enabled) {
+        isByokEnabled = enabled;
+        const optSys = document.getElementById("optSystemKey");
+        const optByok = document.getElementById("optByok");
+        const group = document.getElementById("byokInputGroup");
+
+        if (enabled) {
+            optSys.classList.remove("selected");
+            optByok.classList.add("selected");
+            group.style.display = "block";
+        } else {
+            optByok.classList.remove("selected");
+            optSys.classList.add("selected");
+            group.style.display = "none";
+        }
+    }
+
+    // Provider select changer
+    function onProviderSelect() {
+        const prov = document.getElementById("llmProviderSelect").value;
+        const modelInput = document.getElementById("llmModelInput");
+        const urlInput = document.getElementById("llmBaseUrlInput");
+
+        if (prov === "google") {
+            modelInput.placeholder = "gemini-2.0-flash";
+            urlInput.placeholder = "https://generativelanguage.googleapis.com";
+        } else if (prov === "openai") {
+            modelInput.placeholder = "gpt-4o";
+            urlInput.placeholder = "https://api.openai.com/v1";
+        } else if (prov === "anthropic") {
+            modelInput.placeholder = "claude-3-5-sonnet-20241022";
+            urlInput.placeholder = "https://api.anthropic.com/v1";
+        } else {
+            modelInput.placeholder = "custom-model";
+            urlInput.placeholder = "https://your-custom-llm-proxy.com/v1";
+        }
+    }
+
+    // Show/Hide password
+    function toggleKeyVisibility() {
+        const inp = document.getElementById("geminiKeyInput");
+        const btn = document.getElementById("btnToggleKey");
+        if (inp.type === "password") {
+            inp.type = "text";
+            btn.textContent = "Ẩn";
+        } else {
+            inp.type = "password";
+            btn.textContent = "Hiện";
+        }
+    }
+
+    // Live Test API Key
+    async function testApiKeyLive() {
+        const btn = document.getElementById("btnTestKey");
+        const fb = document.getElementById("testFeedback");
+        const key = document.getElementById("geminiKeyInput").value.trim();
+        const provider = document.getElementById("llmProviderSelect").value;
+        const model = document.getElementById("llmModelInput").value.trim();
+        const baseUrl = document.getElementById("llmBaseUrlInput").value.trim();
+        const timeoutVal = parseFloat(document.getElementById("llmTimeoutInput").value) || 30.0;
+
+        if (!key) {
+            fb.className = "test-feedback error";
+            fb.textContent = "Vui lòng nhập API Key trước.";
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "Đang kiểm tra...";
+        fb.className = "test-feedback";
+        fb.textContent = "";
+
+        try {
+            const resp = await fetch("/onboarding/api/test-key", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    api_key: key,
+                    provider: provider,
+                    model_name: model || undefined,
+                    base_url: baseUrl || undefined,
+                    timeout: timeoutVal
+                })
+            });
+
+            const data = await resp.json();
+            if (data.success) {
+                fb.className = "test-feedback success";
+                fb.textContent = `Thành công (${data.latency_ms} ms)`;
+            } else {
+                fb.className = "test-feedback error";
+                fb.textContent = data.message || "Kết nối thất bại";
+            }
+        } catch (err) {
+            fb.className = "test-feedback error";
+            fb.textContent = "Lỗi kết nối: " + err.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Kiểm tra kết nối";
+        }
+    }
+
+    // Save Custom Settings via AJAX
+    async function saveCustomSettings() {
+        const btn = document.getElementById("btnSaveCustom");
+        const fb = document.getElementById("saveFeedback");
+
+        btn.disabled = true;
+        btn.textContent = "Đang lưu cấu hình...";
+        fb.textContent = "";
+        fb.className = "save-feedback";
+
+        const payload = {
+            open_id: currentAdminOpenId || "ou_default_admin",
+            tenant_key: currentTenantKey || undefined,
+            is_byok_enabled: isByokEnabled,
+            raw_gemini_key: isByokEnabled ? document.getElementById("geminiKeyInput").value.trim() : undefined,
+            digest_schedule_time: document.getElementById("digestTimeSelect").value,
+            hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
+            policy_sync_interval_seconds: parseInt(document.getElementById("policySyncIntervalSelect")?.value) || 3600,
+            llm_provider: document.getElementById("llmProviderSelect").value,
+            llm_model: document.getElementById("llmModelInput").value.trim() || undefined,
+            llm_base_url: document.getElementById("llmBaseUrlInput").value.trim() || undefined,
+            llm_timeout: parseFloat(document.getElementById("llmTimeoutInput").value) || 60.0
         };
 
-        function onProviderChange() {
-            const sel = document.getElementById("llmProviderSelect").value;
-            const def = providerDefaults[sel] || providerDefaults.google;
-            const modelInput = document.getElementById("llmModelInput");
-            const baseUrlInput = document.getElementById("llmBaseUrlInput");
+        try {
+            const resp = await fetch("/onboarding/api/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
 
-            modelInput.placeholder = def.model;
-            baseUrlInput.placeholder = def.baseUrl;
-        }
-
-        // Hướng dẫn tạo Bot & Cấu hình Hạ tầng
-        function toggleBotGuide() {
-            const content = document.getElementById("botGuideContent");
-            const toggleText = document.getElementById("botGuideToggleText");
-            if (!content) return;
-            if (content.style.display === "none") {
-                content.style.display = "block";
-                toggleText.innerText = "Thu gọn ▴";
+            const res = await resp.json();
+            if (res.success) {
+                fb.className = "save-feedback success";
+                fb.textContent = "Đã lưu cấu hình thành công!";
+                setTimeout(() => { fb.textContent = ""; }, 4000);
             } else {
-                content.style.display = "none";
-                toggleText.innerText = "Xem chi tiết ▾";
+                fb.className = "save-feedback error";
+                fb.textContent = res.message || "Lỗi khi lưu cấu hình";
             }
+        } catch (err) {
+            fb.className = "save-feedback error";
+            fb.textContent = "Lỗi gửi yêu cầu: " + err.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Lưu Thay Đổi Cấu Hình";
         }
+    }
 
-        function toggleAdvancedMongo() {
-            const content = document.getElementById("mongoAdvancedContent");
-            const toggleText = document.getElementById("mongoToggleText");
-            if (!content) return;
-            if (content.style.display === "none") {
-                content.style.display = "block";
-                toggleText.innerText = "Thu gọn ▴";
-            } else {
-                content.style.display = "none";
-                toggleText.innerText = "Tùy chọn ▾";
+    // Load existing settings if any
+    async function loadExistingSettings(openId, tenantKey) {
+        if (!openId) return;
+        try {
+            const url = `/onboarding/api/settings/${openId}${tenantKey ? '?tenant_key=' + tenantKey : ''}`;
+            const resp = await fetch(url);
+            if (!resp.ok) return;
+            const res = await resp.json();
+            if (res.success && res.data) {
+                const s = res.data;
+                if (s.is_byok_enabled) {
+                    setByokMode(true);
+                }
+                if (s.llm_provider) {
+                    document.getElementById("llmProviderSelect").value = s.llm_provider;
+                    onProviderSelect();
+                }
+                if (s.llm_model) {
+                    document.getElementById("llmModelInput").value = s.llm_model;
+                }
+                if (s.llm_base_url) {
+                    document.getElementById("llmBaseUrlInput").value = s.llm_base_url;
+                }
+                if (s.llm_timeout) {
+                    document.getElementById("llmTimeoutInput").value = s.llm_timeout;
+                }
+                if (s.digest_schedule_time) {
+                    document.getElementById("digestTimeSelect").value = s.digest_schedule_time;
+                }
+                if (typeof s.hitl_mode_enabled === "boolean") {
+                    document.getElementById("hitlCheckbox").checked = s.hitl_mode_enabled;
+                }
+                if (s.policy_sync_interval_seconds && document.getElementById("policySyncIntervalSelect")) {
+                    document.getElementById("policySyncIntervalSelect").value = String(s.policy_sync_interval_seconds);
+                }
             }
+            loadPolicyStatusAndLogs();
+        } catch (e) {
+            console.debug("Chưa có cấu hình cũ:", e);
+            loadPolicyStatusAndLogs();
         }
+    }
 
-        function toggleSecretVisibility() {
-            const secretInput = document.getElementById("inputAppSecret");
-            const btn = document.getElementById("btnToggleSecret");
-            if (!secretInput) return;
-            if (secretInput.type === "password") {
-                secretInput.type = "text";
-                btn.innerText = "Ẩn";
-            } else {
-                secretInput.type = "password";
-                btn.innerText = "Hiện";
-            }
-        }
+    // Tải thông tin trạng thái & Live Logs của Policy Sync
+    async function loadPolicyStatusAndLogs() {
+        const consoleEl = document.getElementById("policyLogConsole");
+        const tableEl = document.getElementById("lblPolicyTable");
+        const lastSyncEl = document.getElementById("lblPolicyLastSync");
+        const intervalSelect = document.getElementById("policySyncIntervalSelect");
+        if (!consoleEl) return;
 
-        function validateAppIdLive() {
-            return true;
-        }
-
-        async function testBotCredentials() {
-            return true;
-        }
-
-        async function testMongoConnection() {
-            const mongoInput = document.getElementById("inputMongoUrl");
-            const statusSpan = document.getElementById("mongoTestStatus");
-            const btn = document.getElementById("btnTestMongo");
-            const mongoUrl = mongoInput ? mongoInput.value.trim() : "";
-
-            if (!mongoUrl) {
-                statusSpan.innerHTML = '<span style="color: var(--text-secondary);">Đang sử dụng cấu hình MongoDB nội bộ của hệ thống.</span>';
+        try {
+            const tk = currentTenantKey || "";
+            const resp = await fetch(`/policy/status${tk ? '?tenant_key=' + encodeURIComponent(tk) : ''}`);
+            if (!resp.ok) {
+                consoleEl.textContent = `[Lưu ý] Chưa sẵn sàng đọc trạng thái chính sách (HTTP ${resp.status})`;
                 return;
             }
-
-            btn.disabled = true;
-            statusSpan.innerHTML = '<span style="color: var(--accent);">Đang ping cơ sở dữ liệu MongoDB...</span>';
-
-            try {
-                const res = await fetch("/onboarding/api/test-mongo", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ mongo_url: mongoUrl })
-                });
-                const json = await res.json();
-                if (json.success) {
-                    statusSpan.innerHTML = `<span style="color: var(--success); font-weight: 500;">${json.message}</span>`;
-                } else {
-                    statusSpan.innerHTML = `<span style="color: var(--danger); font-weight: 500;">${json.message}</span>`;
+            const data = await resp.json();
+            if (data) {
+                if (tableEl && data.policy_table_id) {
+                    tableEl.textContent = data.policy_table_id;
                 }
-            } catch (err) {
-                statusSpan.innerHTML = `<span style="color: var(--danger);">Lỗi kết nối: ${err.message}</span>`;
-            } finally {
-                btn.disabled = false;
-            }
-        }
-
-        async function saveBotConfigQuietly() {
-            const mongoInput = document.getElementById("inputMongoUrl");
-            const mongoUrl = mongoInput ? mongoInput.value.trim() : "";
-            if (mongoUrl) {
-                try {
-                    await fetch("/onboarding/api/save-bot-config", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ custom_mongo_url: mongoUrl })
-                    });
-                } catch (e) {
-                    console.debug("Lưu mongo config ngầm:", e);
+                if (intervalSelect && data.sync_interval_seconds) {
+                    intervalSelect.value = String(data.sync_interval_seconds);
                 }
-            }
-        }
-
-        async function loadBotConfig() {
-            try {
-                const res = await fetch("/onboarding/api/bot-config");
-                const json = await res.json();
-                if (json.success && json.data) {
-                    const d = json.data;
-                    const mongoInput = document.getElementById("inputMongoUrl");
-                    if (mongoInput && d.custom_mongo_url) {
-                        mongoInput.value = d.custom_mongo_url;
-                        const content = document.getElementById("mongoAdvancedContent");
-                        const toggleText = document.getElementById("mongoToggleText");
-                        if (content) content.style.display = "block";
-                        if (toggleText) toggleText.innerText = "Thu gọn ▴";
+                if (lastSyncEl) {
+                    const ls = data.last_sync || {};
+                    if (ls.synced_at) {
+                        const fileCount = ls.uploaded_files ? ls.uploaded_files.length : (ls.records_count || 0);
+                        lastSyncEl.textContent = `${ls.synced_at.replace('T', ' ').substring(0, 19)} (${fileCount} bản ghi)`;
+                    } else {
+                        lastSyncEl.textContent = "Chưa có";
                     }
                 }
-            } catch (e) {
-                console.debug("Không thể tải bot config:", e);
+                if (data.recent_logs && data.recent_logs.length > 0) {
+                    consoleEl.textContent = data.recent_logs.join("\n");
+                } else {
+                    consoleEl.textContent = "[Thông báo] Chưa có nhật ký đồng bộ gần đây. Nhấn 'Đồng bộ ngay' để quét thủ công.";
+                }
+                const container = document.getElementById("policyLogContainer");
+                if (container) container.scrollTop = container.scrollHeight;
             }
+        } catch (err) {
+            console.debug("Không thể tải policy status:", err);
+            consoleEl.textContent = `[Lỗi kết nối] ${err.message}`;
+        }
+    }
+
+    // Kích hoạt đồng bộ thủ công ngay lập tức từ UI
+    async function triggerPolicySyncLive() {
+        const btn = document.getElementById("btnPolicySyncNow");
+        const consoleEl = document.getElementById("policyLogConsole");
+        const container = document.getElementById("policyLogContainer");
+        if (btn) btn.disabled = true;
+        if (btn) btn.textContent = "Đang đồng bộ...";
+
+        if (consoleEl) {
+            consoleEl.textContent += "\n[Thao tác] Người dùng bấm 'Đồng bộ ngay'. Đang gửi yêu cầu tới server...";
+            if (container) container.scrollTop = container.scrollHeight;
         }
 
-        function toggleCustomBotCredentials() {
-            const content = document.getElementById("customBotCredentialsContent");
-            const btnText = document.getElementById("botToggleBtnText");
-            if (!content) return;
-            if (content.style.display === "none" || !content.style.display) {
-                content.style.display = "block";
-                if (btnText) btnText.innerText = "Thu gọn ▴";
+        try {
+            const tk = currentTenantKey || "";
+            const resp = await fetch(`/policy/sync?force=true${tk ? '&tenant_key=' + encodeURIComponent(tk) : ''}`, {
+                method: "POST"
+            });
+            const res = await resp.json();
+            if (res.success && res.logs && res.logs.length > 0) {
+                consoleEl.textContent = res.logs.join("\n");
+            } else if (res.success) {
+                consoleEl.textContent += "\n[Thành công] Đồng bộ hoàn tất!";
             } else {
-                content.style.display = "none";
-                if (btnText) btnText.innerText = "Đổi sang Bot / Tài khoản khác ▾";
+                consoleEl.textContent += `\n[Lỗi] ${res.detail || res.message || 'Đồng bộ thất bại'}`;
             }
+            if (container) container.scrollTop = container.scrollHeight;
+            await loadPolicyStatusAndLogs();
+        } catch (err) {
+            if (consoleEl) consoleEl.textContent += `\n[Lỗi mạng] ${err.message}`;
+        } finally {
+            if (btn) btn.disabled = false;
+            if (btn) btn.textContent = "🔄 Đồng bộ ngay";
         }
+    }
 
-        async function saveNewBotCredentials() {
-            const appIdInput = document.getElementById("inputNewAppId");
-            const appSecretInput = document.getElementById("inputNewAppSecret");
-            const statusSpan = document.getElementById("botSwitchStatus");
-            const btn = document.getElementById("btnSaveNewBot");
+    async function pollStatus() {
+        if (!currentTaskId) return;
 
-            const appId = appIdInput ? appIdInput.value.trim() : "";
-            const appSecret = appSecretInput ? appSecretInput.value.trim() : "";
+        try {
+            const resp = await fetch(`/setup/api/status/${currentTaskId}`);
+            if (!resp.ok) return;
 
-            if (!appId || !appId.startsWith("cli_")) {
-                if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--danger); font-size: 11.5px;">App ID không hợp lệ (phải bắt đầu bằng cli_)</span>';
-                return;
-            }
-            if (!appSecret) {
-                if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--danger); font-size: 11.5px;">Vui lòng nhập App Secret</span>';
-                return;
-            }
+            const res = await resp.json();
+            if (!res.success || !res.data) return;
 
-            if (btn) btn.disabled = true;
-            if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--accent); font-size: 11.5px;">Đang kết nối Bot mới...</span>';
+            const data = res.data;
+            const steps = data.steps || [];
 
-            try {
-                const res = await fetch("/onboarding/api/save-bot-config", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        app_id: appId,
-                        app_secret: appSecret
-                    })
-                });
-                const json = await res.json();
-                if (json.success) {
-                    if (statusSpan) statusSpan.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 11.5px;">Đã kết nối Bot mới thành công!</span>';
-                    const badge = document.getElementById("botStatusBadge");
-                    if (badge) badge.innerText = `Đã đổi: ${appId.slice(0, 10)}...`;
-                    const wsText = document.getElementById("botWsStatusText");
-                    if (wsText) wsText.innerText = `Lark WebSocket (${appId.slice(0, 10)}...)`;
-                    setTimeout(() => {
-                        toggleCustomBotCredentials();
-                    }, 1200);
+            steps.forEach((s) => {
+                updateStepUI(s.step, s.status, s.detail);
+            });
+
+            if (data.status === "completed") {
+                clearInterval(pollTimer);
+                document.getElementById("progressStatusText").textContent = "Cài đặt hoàn tất";
+                const badge = document.getElementById("progressBadge");
+                badge.className = "status-pill ready";
+                badge.textContent = "Hoàn tất";
+
+                // Điền thông tin vào Ready panel
+                const tenantInfo = data.tenant_info || {};
+                currentAdminOpenId = tenantInfo.admin_open_id || "";
+                currentTenantKey = tenantInfo.tenant_key || "";
+
+                document.getElementById("valTenantKey").textContent = tenantInfo.tenant_key || "default";
+                document.getElementById("valAdminName").textContent = tenantInfo.admin_name || "Quản trị viên";
+
+                const botLink = document.getElementById("linkOpenBot");
+                if (tenantInfo.bot_applink) {
+                    botLink.href = tenantInfo.bot_applink;
+                } else if (tenantInfo.app_id) {
+                    botLink.href = `https://applink.larksuite.com/client/bot/open?appId=${tenantInfo.app_id}`;
                 } else {
-                    if (statusSpan) statusSpan.innerHTML = `<span style="color: var(--danger); font-size: 11.5px;">Lỗi: ${json.detail || json.message || "Không thể kết nối"}</span>`;
-                }
-            } catch (err) {
-                if (statusSpan) statusSpan.innerHTML = `<span style="color: var(--danger); font-size: 11.5px;">Lỗi mạng: ${err.message}</span>`;
-            } finally {
-                if (btn) btn.disabled = false;
-            }
-        }
-
-        async function navigateStep(direction) {
-            if (direction === 1 && currentStep === totalSteps) {
-                saveFinalSettings();
-                return;
-            }
-
-            currentStep += direction;
-            if (currentStep < 1) currentStep = 1;
-            if (currentStep > totalSteps) currentStep = totalSteps;
-
-            updateUI();
-        }
-
-        function updateUI() {
-            document.getElementById("stepIndicator").innerText = stepTitles[currentStep - 1] || "";
-
-            for (let i = 1; i <= 4; i++) {
-                const slide = document.getElementById(`slide${i}`);
-                const dot = document.getElementById(`dot${i}`);
-                if (!slide || !dot) continue;
-
-                if (isIsvMode && i > totalSteps) {
-                    slide.classList.remove("active");
-                    dot.style.display = "none";
-                    continue;
+                    botLink.href = "https://applink.larksuite.com";
                 }
 
-                if (i === currentStep) {
-                    slide.classList.add("active");
-                    dot.classList.add("active");
-                    dot.classList.remove("completed");
-                } else if (i < currentStep) {
-                    slide.classList.remove("active");
-                    dot.classList.remove("active");
-                    dot.classList.add("completed");
+                const baseLink = document.getElementById("linkOpenBase");
+                if (tenantInfo.bitable_app_url) {
+                    baseLink.href = tenantInfo.bitable_app_url;
                 } else {
-                    slide.classList.remove("active");
-                    dot.classList.remove("active");
-                    dot.classList.remove("completed");
+                    baseLink.style.display = "none";
                 }
-            }
 
-            const btnPrev = document.getElementById("btnPrev");
-            const btnNext = document.getElementById("btnNext");
-
-            btnPrev.style.display = currentStep > 1 ? "inline-flex" : "none";
-
-            if (currentStep === 1) {
-                btnNext.innerText = isIsvMode ? "Tiếp tục" : "Bắt đầu thiết lập";
-            } else if (currentStep === totalSteps) {
-                btnNext.innerText = "Hoàn tất & Lưu";
-            } else {
-                btnNext.innerText = "Tiếp tục";
-            }
-        }
-
-        function selectApiKeyMode(enableByok) {
-            isByok = enableByok;
-            const optSys = document.getElementById("optSystemKey");
-            const optByok = document.getElementById("optByok");
-            const inputGroup = document.getElementById("byokInputGroup");
-
-            if (enableByok) {
-                optSys.classList.remove("selected");
-                optByok.classList.add("selected");
-                inputGroup.style.display = "block";
-            } else {
-                optSys.classList.add("selected");
-                optByok.classList.remove("selected");
-                inputGroup.style.display = "none";
-            }
-        }
-
-        async function testKeyLive() {
-            const keyInput = document.getElementById("geminiKeyInput").value.trim();
-            const provider = document.getElementById("llmProviderSelect").value;
-            const model = document.getElementById("llmModelInput").value.trim() || document.getElementById("llmModelInput").placeholder;
-            const baseUrl = document.getElementById("llmBaseUrlInput").value.trim();
-            const timeout = parseFloat(document.getElementById("llmTimeoutInput").value) || 30;
-            const feedback = document.getElementById("testFeedback");
-
-            if (!keyInput) {
-                feedback.innerHTML = '<span class="feedback-badge badge-danger">Vui lòng nhập API Key trước khi kiểm tra.</span>';
-                return;
-            }
-
-            feedback.innerHTML = '<span class="feedback-badge" style="background: var(--surface-tertiary); color: var(--text-secondary);">Đang kiểm tra kết nối...</span>';
-
-            try {
-                const res = await fetch("/onboarding/api/test-key", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        api_key: keyInput,
-                        provider: provider,
-                        model_name: model,
-                        base_url: baseUrl || null,
-                        timeout: timeout
-                    })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    feedback.innerHTML = `<span class="feedback-badge badge-success">${data.message} (${data.latency_ms} ms)</span>`;
-                } else {
-                    feedback.innerHTML = `<span class="feedback-badge badge-danger">${data.message}</span>`;
+                // Điền thông tin WeKnora credentials nếu có
+                if (tenantInfo.weknora_credentials) {
+                    const wc = tenantInfo.weknora_credentials;
+                    const sec = document.getElementById("weknoraCredentialsSection");
+                    sec.style.display = "block";
+                    const wLink = document.getElementById("weknoraWebLink");
+                    wLink.href = wc.web_url || "#";
+                    wLink.textContent = wc.web_url || "WeKnora Vault";
+                    document.getElementById("weknoraUsername").textContent = wc.username || "—";
+                    document.getElementById("weknoraPassword").textContent = wc.initial_password || "—";
                 }
-            } catch (err) {
-                feedback.innerHTML = `<span class="feedback-badge badge-danger">Lỗi kết nối kiểm tra: ${err.message}</span>`;
+
+                // Hiển thị Ready Panel & Progressive Customization Panel
+                document.getElementById("readyPanel").classList.add("active");
+                document.getElementById("customPanel").style.display = "block";
+
+                // Nạp cấu hình hiện tại vào form
+                loadExistingSettings(currentAdminOpenId, currentTenantKey);
+
+            } else if (data.status === "failed") {
+                clearInterval(pollTimer);
+                document.getElementById("progressStatusText").textContent = "Quá trình gặp sự cố";
+                const badge = document.getElementById("progressBadge");
+                badge.className = "status-pill failed";
+                badge.textContent = "Thất bại";
+            }
+        } catch (err) {
+            console.error("Polling error:", err);
+        }
+    }
+
+    function openSettingsView() {
+        document.getElementById("landingView").style.display = "none";
+        document.getElementById("progressView").style.display = "none";
+        const customPanel = document.getElementById("customPanel");
+        if (customPanel) {
+            customPanel.style.display = "block";
+            const customBody = document.getElementById("customBody");
+            if (customBody) customBody.style.display = "block";
+            const customChevron = document.getElementById("customChevron");
+            if (customChevron) customChevron.classList.add("open");
+        }
+        document.getElementById("mainHeading").textContent = "Cấu Hình Trợ Lý HiLark";
+        document.getElementById("mainSubtitle").textContent = "Tùy chỉnh mô hình AI, giờ gửi báo cáo và phương thức phản hồi.";
+        
+        let guideBackBtn = document.getElementById("btnGuideBack");
+        if (!guideBackBtn) {
+            const actionsDiv = document.querySelector(".save-actions");
+            if (actionsDiv) {
+                guideBackBtn = document.createElement("button");
+                guideBackBtn.type = "button";
+                guideBackBtn.id = "btnGuideBack";
+                guideBackBtn.className = "btn-secondary";
+                guideBackBtn.style.cssText = "width:100%; padding:10px; font-size:13px; margin-top:4px;";
+                guideBackBtn.textContent = "📖 Xem lại hướng dẫn tạo Bot trên Lark";
+                guideBackBtn.onclick = openGuideView;
+                actionsDiv.appendChild(guideBackBtn);
             }
         }
+        loadExistingSettings(currentAdminOpenId, currentTenantKey);
+    }
 
-        async function saveFinalSettings() {
-            const btnNext = document.getElementById("btnNext");
-            const feedback1 = document.getElementById("saveFeedback");
-            const feedback2 = document.getElementById("saveFeedbackSlide3");
-            btnNext.innerText = "Đang lưu cấu hình...";
-            btnNext.disabled = true;
+    function openGuideView() {
+        document.getElementById("customPanel").style.display = "none";
+        document.getElementById("progressView").style.display = "none";
+        document.getElementById("landingView").style.display = "block";
+        document.getElementById("mainHeading").textContent = "HiLark Enterprise";
+        document.getElementById("mainSubtitle").textContent = "Cài một lần, cấp quyền đúng lớp, vận hành an toàn theo tenant.";
+        initGuide();
+    }
 
-            const provider = document.getElementById("llmProviderSelect").value;
-            const modelVal = document.getElementById("llmModelInput").value.trim();
-            const baseUrlVal = document.getElementById("llmBaseUrlInput").value.trim();
-            const timeoutVal = parseFloat(document.getElementById("llmTimeoutInput").value) || 60;
+    // Khởi động trang
+    document.addEventListener("DOMContentLoaded", () => {
+        if (INITIAL_TASK_ID) {
+            document.getElementById("landingView").style.display = "none";
+            document.getElementById("progressView").style.display = "block";
+            document.getElementById("mainHeading").textContent = "Thiết Lập HiLark";
+            document.getElementById("mainSubtitle").textContent = "Đang xác thực App, nhận tenant token và lưu OAuth user token...";
 
-            const payload = {
-                open_id: userOpenId,
-                user_name: userName,
-                tenant_key: tenantKey || null,
-                is_byok_enabled: isByok,
-                raw_gemini_key: isByok ? document.getElementById("geminiKeyInput").value.trim() : null,
-                llm_provider: isByok ? provider : "google",
-                llm_model: isByok && modelVal ? modelVal : null,
-                llm_base_url: isByok && baseUrlVal ? baseUrlVal : null,
-                llm_timeout: isByok ? timeoutVal : 60,
-                digest_schedule_time: document.getElementById("digestTimeSelect").value,
-                hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
-                app_id: null,
-                app_secret: null,
-                custom_mongo_url: document.getElementById("inputMongoUrl") ? document.getElementById("inputMongoUrl").value.trim() : null
-            };
-
-            const setFeedback = (html) => {
-                if (feedback1) feedback1.innerHTML = html;
-                if (feedback2) feedback2.innerHTML = html;
-            };
-
-            try {
-                const res = await fetch("/onboarding/api/save", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-                const result = await res.json();
-                if (result.success) {
-                    setFeedback('<div style="color: var(--success); font-weight: 600; font-size: 14px; margin-top: 12px;">Cài đặt hoàn tất.<br><span style="font-size: 12.5px; font-weight: 400; color: var(--text-secondary);">Kho tri thức WeKnora &amp; Lark Base đã sẵn sàng. Cửa sổ sẽ tự đóng sau 3 giây. Bạn có thể bắt đầu sử dụng.</span></div>');
-                    setTimeout(() => {
-                        window.close();
-                    }, 3000);
-                } else {
-                    setFeedback(`<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">${result.message || 'Lỗi khi lưu cấu hình'}</div>`);
-                    btnNext.innerText = "Thử lại";
-                    btnNext.disabled = false;
-                }
-            } catch (e) {
-                setFeedback(`<div style="color: var(--danger); font-size: 12.5px; margin-top: 8px;">Lỗi hệ thống: ${e.message}</div>`);
-                btnNext.innerText = "Thử lại";
-                btnNext.disabled = false;
-            }
+            renderInitialSteps();
+            pollStatus();
+            pollTimer = setInterval(pollStatus, 1000);
+        } else if (INITIAL_VIEW === "settings") {
+            openSettingsView();
+        } else {
+            initGuide();
         }
+    });
+</script>
 
-        async function provisionLarkBase() {
-            const btn = document.getElementById("btnProvisionBase");
-            const feedback = document.getElementById("baseFeedback");
-            btn.disabled = true;
-            btn.innerText = "Đang khởi tạo...";
-            feedback.innerHTML = '<span style="color: var(--text-secondary); font-size: 12.5px;">Đang kết nối Bitable và tạo cấu trúc 3 dự án...</span>';
-            try {
-                const res = await fetch("/onboarding/api/provision-base", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        admin_open_id: userOpenId,
-                        tenant_key: tenantKey || null
-                    })
-                });
-                const data = await res.json();
-                if (data.success && data.data) {
-                    btn.innerText = "Đã khởi tạo thành công";
-                    const bsb = document.getElementById("baseStatusBadge");
-                    if (bsb) {
-                        bsb.innerText = "Đã kết nối";
-                        bsb.className = "status-pill connected";
-                        bsb.style.background = "#F0FDF4";
-                        bsb.style.color = "#16A34A";
-                        bsb.style.border = "1px solid #BBF7D0";
-                    }
-                    const link = document.getElementById("linkOpenBase");
-                    if (data.data.app_url && link) {
-                        link.href = data.data.app_url;
-                        link.style.display = "inline-flex";
-                    }
-                    feedback.innerHTML = '<span style="color: var(--success); font-weight: 500; font-size: 12.5px;">Đã tạo Base và cấp quyền quản trị thành công.</span>';
-                } else {
-                    btn.disabled = false;
-                    btn.innerText = "Thử lại";
-                    feedback.innerHTML = `<span style="color: var(--danger); font-size: 12.5px;">${data.detail || data.message || "Lỗi khởi tạo"}</span>`;
-                }
-            } catch (e) {
-                btn.disabled = false;
-                btn.innerText = "Thử lại";
-                feedback.innerHTML = `<span style="color: var(--danger); font-size: 12.5px;">Lỗi kết nối: ${e.message}</span>`;
-            }
-        }
-
-        function startLarkOAuthFlow() {
-            const width = 520;
-            const height = 660;
-            const left = (window.screen.width / 2) - (width / 2);
-            const top = (window.screen.height / 2) - (height / 2);
-            const authUrl = "/auth/lark/login?redirect=true&source=wizard";
-            
-            const btn = document.getElementById("btnConnectLark");
-            const spinner = document.getElementById("authSpinner");
-            btn.disabled = true;
-            spinner.style.display = "inline";
-
-            const authPopup = window.open(
-                authUrl,
-                "LarkAuthModal",
-                `width=${width},height=${height},top=${top},left=${left},resizable=yes,scrollbars=yes,status=no`
-            );
-
-            const messageHandler = function(event) {
-                if (event.data && event.data.type === "LARK_AUTH_SUCCESS") {
-                    window.removeEventListener("message", messageHandler);
-                    btn.disabled = false;
-                    spinner.style.display = "none";
-                    applyAuthConnected(event.data.user_name, event.data.open_id);
-                    const sf = document.getElementById("saveFeedback");
-                    if (sf) {
-                        sf.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 13px;">Đã liên kết tài khoản Lark thành công.</span>';
-                    }
-                }
-            };
-            window.addEventListener("message", messageHandler);
-
-            const timer = setInterval(async () => {
-                if (!authPopup || authPopup.closed) {
-                    clearInterval(timer);
-                    btn.disabled = false;
-                    spinner.style.display = "none";
-                    await checkAuthStatusLive();
-                }
-            }, 1000);
-        }
-
-        async function checkAuthStatusLive() {
-            try {
-                const res = await fetch("/onboarding/api/auth-status");
-                const json = await res.json();
-                if (json.success && json.data && json.data.has_token && json.data.is_valid) {
-                    applyAuthConnected(json.data.user_name, json.data.open_id, json.data.access_token_remaining);
-                } else {
-                    applyAuthDisconnected();
-                }
-            } catch (e) {
-                applyAuthDisconnected();
-            }
-        }
-
-        function applyAuthConnected(userName, openId, remaining) {
-            const badge = document.getElementById("authStatusBadge");
-            const accInfo = document.getElementById("authAccountInfo");
-            const expInfo = document.getElementById("authExpiryInfo");
-            const btn = document.getElementById("btnConnectLark");
-
-            if (badge) {
-                badge.innerText = "Đã kết nối";
-                badge.className = "status-pill connected";
-                badge.style.background = "#F0FDF4";
-                badge.style.color = "#16A34A";
-                badge.style.border = "1px solid #BBF7D0";
-            }
-            if (accInfo) {
-                accInfo.innerHTML = `Đại diện: <strong>${userName || "Lãnh đạo"}</strong> (ID: <code style="background:var(--surface-tertiary);padding:2px 6px;border-radius:4px;font-size:11px;color:var(--text-primary);">${openId || ""}</code>)`;
-            }
-            if (expInfo) {
-                expInfo.innerText = `Tự động gia hạn (Thời hạn hiện tại: ${remaining || "hoạt động"})`;
-            }
-            if (btn) {
-                btn.innerText = "Cấp quyền lại / Đổi tài khoản";
-                btn.className = "btn btn-secondary";
-                btn.style.background = "var(--surface)";
-                btn.style.color = "var(--text-primary)";
-                btn.style.border = "1px solid var(--border)";
-            }
-        }
-
-        function applyAuthDisconnected() {
-            const badge = document.getElementById("authStatusBadge");
-            const accInfo = document.getElementById("authAccountInfo");
-            const expInfo = document.getElementById("authExpiryInfo");
-            const btn = document.getElementById("btnConnectLark");
-
-            if (badge) {
-                badge.innerText = "Chưa liên kết";
-                badge.className = "status-pill unlinked";
-                badge.style.background = "#FEF2F2";
-                badge.style.color = "#DC2626";
-                badge.style.border = "1px solid #FECACA";
-            }
-            if (accInfo) {
-                accInfo.innerText = "Chưa có tài khoản đại diện gửi tin.";
-            }
-            if (expInfo) {
-                expInfo.innerText = "Token sẽ được tự động lưu và làm mới trong MongoDB.";
-            }
-            if (btn) {
-                btn.innerText = "Ủy quyền tài khoản Lark";
-                btn.className = "btn btn-primary-action";
-                btn.style.background = "#2563EB";
-                btn.style.color = "#FFFFFF";
-                btn.style.border = "none";
-            }
-        }
-
-        function dismissInitScreen() {
-            const init = document.getElementById("initScreen");
-            if (init) {
-                init.classList.add("hidden");
-                setTimeout(() => {
-                    init.style.display = "none";
-                }, 350);
-            }
-        }
-
-        // Tự động load cấu hình cũ nếu có
-        window.addEventListener("DOMContentLoaded", async () => {
-            onProviderChange();
-
-            if (isIsvMode) {
-                const isvC = document.getElementById("isvWorkspaceContainer");
-                const custC = document.getElementById("customAppWorkspaceContainer");
-                const dot4 = document.getElementById("dot4");
-                if (isvC) isvC.style.display = "block";
-                if (custC) custC.style.display = "none";
-                if (dot4) dot4.style.display = "none";
-            }
-
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get("step")) {
-                const targetStep = parseInt(urlParams.get("step"));
-                if (!isNaN(targetStep) && targetStep >= 1 && targetStep <= totalSteps) {
-                    currentStep = targetStep;
-                }
-            }
-            updateUI();
-
-            if (urlParams.get("auth") === "success") {
-                const sf = document.getElementById("saveFeedback");
-                if (sf) {
-                    sf.innerHTML = '<span style="color: var(--success); font-weight: 600; font-size: 13px;">Đã liên kết tài khoản Lark thành công.</span>';
-                }
-            }
-
-            try {
-                await Promise.all([
-                    checkAuthStatusLive(),
-                    loadBotConfig(),
-                    (async () => {
-                        const settingsUrl = `/onboarding/api/settings/${userOpenId}${tenantKey ? `?tenant_key=${encodeURIComponent(tenantKey)}` : ''}`;
-                        const res = await fetch(settingsUrl);
-                        const json = await res.json();
-                        if (json.success && json.data) {
-                            const d = json.data;
-                            if (d.digest_schedule_time) {
-                                document.getElementById("digestTimeSelect").value = d.digest_schedule_time;
-                            }
-                            document.getElementById("hitlCheckbox").checked = d.hitl_mode_enabled !== false;
-                            
-                            if (d.llm_provider) {
-                                document.getElementById("llmProviderSelect").value = d.llm_provider;
-                                onProviderChange();
-                            }
-                            if (d.llm_model) {
-                                document.getElementById("llmModelInput").value = d.llm_model;
-                            }
-                            if (d.llm_base_url) {
-                                document.getElementById("llmBaseUrlInput").value = d.llm_base_url;
-                            }
-                            if (d.llm_timeout) {
-                                document.getElementById("llmTimeoutInput").value = d.llm_timeout;
-                            }
-
-                            if (d.is_byok_enabled) {
-                                selectApiKeyMode(true);
-                                if (d.masked_gemini_api_key) {
-                                    document.getElementById("geminiKeyInput").placeholder = d.masked_gemini_api_key;
-                                }
-                            }
-                            if (d.base_info && d.base_info.app_url) {
-                                const bsb = document.getElementById("baseStatusBadge");
-                                if (bsb) {
-                                    bsb.innerText = "Đã kết nối";
-                                    bsb.className = "status-pill connected";
-                                    bsb.style.background = "#F0FDF4";
-                                    bsb.style.color = "#16A34A";
-                                    bsb.style.border = "1px solid #BBF7D0";
-                                }
-                                const link = document.getElementById("linkOpenBase");
-                                if (link) {
-                                    link.href = d.base_info.app_url;
-                                    link.style.display = "inline-flex";
-                                }
-                                const isvLink = document.getElementById("isvLinkOpenBase");
-                                if (isvLink) {
-                                    isvLink.href = d.base_info.app_url;
-                                }
-                                const btn = document.getElementById("btnProvisionBase");
-                                if (btn) {
-                                    btn.innerText = "Đã kết nối";
-                                }
-                            }
-
-                            if (d.weknora_info) {
-                                const wCard = document.getElementById("weknoraCard");
-                                if (wCard) wCard.style.display = "block";
-                                const uEl = document.getElementById("weknoraUsername");
-                                if (uEl) uEl.innerText = d.weknora_info.admin_username || "admin";
-                                const pEl = document.getElementById("weknoraPassword");
-                                if (pEl) pEl.innerText = d.weknora_info.admin_password || "(đã lưu)";
-                                const lEl = document.getElementById("weknoraLoginLink");
-                                if (lEl && d.weknora_info.weknora_login_url) {
-                                    lEl.href = d.weknora_info.weknora_login_url;
-                                }
-                                const dsEl = document.getElementById("weknoraDatasetsInfo");
-                                if (dsEl) {
-                                    dsEl.innerText = `Policy KB: ${d.weknora_info.policy_dataset_id || 'kb_default'} | Wiki KB: ${d.weknora_info.wiki_dataset_id || 'kb_wiki'}`;
-                                }
-
-                                // Cập nhật cho ISV Mode cards
-                                const isvU = document.getElementById("isvWeknoraUsername");
-                                if (isvU) isvU.innerText = d.weknora_info.admin_username || "admin";
-                                const isvP = document.getElementById("isvWeknoraPassword");
-                                if (isvP) isvP.innerText = d.weknora_info.admin_password || "(đã lưu)";
-                                const isvL = document.getElementById("isvWeknoraLoginLink");
-                                if (isvL && d.weknora_info.weknora_login_url) {
-                                    isvL.href = d.weknora_info.weknora_login_url;
-                                }
-                                const isvDs = document.getElementById("isvWeknoraDatasetsInfo");
-                                if (isvDs) {
-                                    isvDs.innerText = `Policy KB: ${d.weknora_info.policy_dataset_id || 'kb_default'} | Wiki KB: ${d.weknora_info.wiki_dataset_id || 'kb_wiki'}`;
-                                }
-                            }
-                        }
-                    })()
-                ]);
-            } catch(e) {
-            } finally {
-                dismissInitScreen();
-            }
-        });
-    </script>
 </body>
 </html>
-

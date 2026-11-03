@@ -25,6 +25,9 @@
             --danger: #DC2626;
             --danger-light: #FEF2F2;
             --danger-border: #FECACA;
+            --warn: #B45309;
+            --warn-light: #FFFBEB;
+            --warn-border: #FDE68A;
             --radius-sm: 8px;
             --radius-md: 12px;
             --radius-lg: 16px;
@@ -120,11 +123,12 @@
         }
 
         .credential-panel {
-            margin-top: 18px;
+            margin-top: 4px;
             padding: 18px;
             background: oklch(98.5% 0.012 250);
             border: 1px solid var(--accent-border);
             border-radius: var(--radius-md);
+            text-align: left;
         }
 
         .credential-heading {
@@ -184,6 +188,7 @@
             color: var(--text-secondary);
             font-size: 11px;
             line-height: 1.4;
+            text-align: left;
         }
 
         .flow-note-item strong {
@@ -200,6 +205,7 @@
         }
 
         @media (max-width: 520px) {
+            .wizard-container { padding: 26px 18px 22px; }
             .credential-grid, .flow-note { grid-template-columns: 1fr; }
             .credential-heading { display: block; }
             .credential-kicker { display: block; margin-bottom: 6px; }
@@ -266,6 +272,400 @@
             background: var(--surface-secondary);
             border-color: var(--border-hover);
         }
+
+        .btn-secondary:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        /* ============ GUIDE SLIDER ============ */
+        .guide-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+            gap: 10px;
+        }
+
+        .guide-counter {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: var(--text-secondary);
+        }
+
+        .guide-skip {
+            background: none;
+            border: none;
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 2px 0;
+        }
+
+        .guide-skip:hover { text-decoration: underline; }
+
+        .guide-bar {
+            height: 4px;
+            background: var(--surface-tertiary);
+            border-radius: 999px;
+            overflow: hidden;
+            margin-bottom: 18px;
+        }
+
+        .guide-bar-fill {
+            height: 100%;
+            width: 0;
+            background: var(--accent);
+            border-radius: 999px;
+            transition: width .25s ease;
+        }
+
+        .slide {
+            display: none;
+            text-align: left;
+        }
+
+        .slide.active {
+            display: block;
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+
+        .slide-kicker {
+            color: var(--accent);
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .slide-title {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            margin-bottom: 4px;
+        }
+
+        .slide-lead {
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-bottom: 14px;
+        }
+
+        .url-box {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--accent-light);
+            border: 1px solid var(--accent-border);
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            margin-bottom: 14px;
+        }
+
+        .url-box-label {
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .url-box a, .url-box .url-text {
+            flex: 1;
+            min-width: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 12px;
+            color: var(--text-primary);
+            text-decoration: none;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .url-box a:hover { color: var(--accent); text-decoration: underline; }
+
+        .mini-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 5px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            text-decoration: none;
+            white-space: nowrap;
+            flex-shrink: 0;
+            transition: all .15s;
+        }
+
+        .mini-btn:hover {
+            background: var(--surface-secondary);
+            border-color: var(--border-hover);
+        }
+
+        .mini-btn.copied {
+            background: var(--success-light);
+            border-color: var(--success-border);
+            color: var(--success);
+        }
+
+        .substeps {
+            list-style: none;
+            counter-reset: sub;
+            margin-bottom: 4px;
+        }
+
+        .substeps li {
+            counter-increment: sub;
+            position: relative;
+            padding: 0 0 10px 30px;
+            font-size: 12.5px;
+            line-height: 1.5;
+            color: var(--text-primary);
+        }
+
+        .substeps li::before {
+            content: counter(sub);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--surface-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .substeps b { font-weight: 600; }
+
+        code.inline {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11.5px;
+            background: var(--surface-tertiary);
+            border: 1px solid var(--border);
+            padding: 1px 6px;
+            border-radius: 5px;
+            color: #0369A1;
+        }
+
+        .callout {
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.5;
+            margin-top: 6px;
+            border: 1px solid var(--accent-border);
+            background: var(--accent-light);
+            color: #1E3A8A;
+        }
+
+        .callout.warn {
+            background: var(--warn-light);
+            border-color: var(--warn-border);
+            color: var(--warn);
+        }
+
+        .callout.success {
+            background: #ECFDF5;
+            border-color: #A7F3D0;
+            color: #065F46;
+        }
+
+        .callout strong { font-weight: 700; }
+
+        .scope-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+
+        .scope-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .scope-head .t {
+            font-size: 12.5px;
+            font-weight: 700;
+        }
+
+        .scope-head .t small {
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        .chip-wrap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 10.5px;
+            background: var(--surface-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 3px 7px;
+            border-radius: 6px;
+        }
+
+        .json-box {
+            position: relative;
+            background: #0F172A;
+            color: #E2E8F0;
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.55;
+            max-height: 150px;
+            overflow: auto;
+            white-space: pre;
+            margin-bottom: 8px;
+        }
+
+        .event-group {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .event-group-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 9px 12px;
+            background: var(--surface-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .event-group-head .t {
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .event-row {
+            padding: 9px 12px;
+            border-bottom: 1px solid var(--surface-tertiary);
+        }
+
+        .event-row:last-child { border-bottom: none; }
+
+        .event-code-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 3px;
+        }
+
+        .event-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11.5px;
+            font-weight: 600;
+            color: #0369A1;
+            word-break: break-all;
+        }
+
+        .event-name {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .event-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.45;
+        }
+
+        .event-meta .sc {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 10.5px;
+            color: var(--text-primary);
+        }
+
+        .tag {
+            font-size: 9.5px;
+            font-weight: 800;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            background: var(--surface-tertiary);
+            flex-shrink: 0;
+        }
+
+        .tag.cb {
+            background: var(--accent-light);
+            border-color: var(--accent-border);
+            color: var(--accent);
+        }
+
+        .tag.isv {
+            background: var(--warn-light);
+            border-color: var(--warn-border);
+            color: var(--warn);
+        }
+
+        .guide-nav {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .guide-nav button { flex: 1; }
+
+        .dots {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin-top: 14px;
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--border-hover);
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .dot.active {
+            width: 18px;
+            border-radius: 999px;
+            background: var(--accent);
+        }
+
+        .dot.done { background: var(--success); }
 
         /* Progress View & Steps */
         .progress-header {
@@ -878,69 +1278,260 @@
                 <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
             </svg>
         </div>
-        <h2 id="mainHeading">HiLark Enterprise</h2>
-            <p class="desc" id="mainSubtitle">Cài một lần, cấp quyền đúng lớp, vận hành an toàn theo tenant.</p>
+        <h2 id="mainHeading">{{MAIN_HEADING}}</h2>
+        <p class="desc" id="mainSubtitle">{{MAIN_SUBTITLE}}</p>
     </div>
 
-    <!-- 1. LANDING VIEW (Khi chưa có task_id) -->
-    <div id="landingView">
-        <div class="feature-box">
-            <div class="feat-title">Kết nối App của doanh nghiệp</div>
-            <div class="feat-desc">Nhập App ID và App Secret để HiLark xác thực ứng dụng trước khi mở luồng ủy quyền.</div>
-        </div>
+    <!-- 1. LANDING VIEW: GUIDE SLIDER (khi chưa có task_id) -->
+    <div id="landingView" style="{{LANDING_VIEW_STYLE}}">
 
-        <div class="feature-box">
-            <div class="feat-title">Cấp phát theo tenant</div>
-            <div class="feat-desc">Tenant access token được dùng để tạo Base, cấu hình dữ liệu và khởi tạo không gian WeKnora riêng.</div>
+        <div class="guide-top">
+            <span class="guide-counter" id="guideCounter">Giới thiệu</span>
+            <button type="button" class="guide-skip" id="guideSkip" onclick="goToSlide(3)">Đã có key? Đến bước nhập key →</button>
         </div>
+        <div class="guide-bar"><div class="guide-bar-fill" id="guideBarFill"></div></div>
 
-        <div class="feature-box">
-            <div class="feat-title">OAuth user là bắt buộc</div>
-            <div class="feat-desc">Admin tiếp tục cấp quyền user để HiLark nhận access token, refresh token và gửi đúng hành động dưới danh nghĩa người dùng.</div>
-        </div>
-
-        <div class="credential-panel">
-            <div class="credential-heading">
-                <span class="credential-kicker">Bước 0 · App credential</span>
-                <span class="credential-title">Kết nối ứng dụng Lark</span>
+        <!-- SLIDE 0 · Giới thiệu -->
+        <section class="slide active" data-title="Giới thiệu">
+            <div class="feature-box">
+                <div class="feat-title">Kết nối App của doanh nghiệp</div>
+                <div class="feat-desc">Nhập App ID và App Secret để HiLark xác thực ứng dụng trước khi mở luồng ủy quyền.</div>
             </div>
-            <p class="credential-help">Thông tin này chỉ dùng để xác thực App và lấy quyền gọi API tenant. HiLark không dùng tenant token để giả danh user; bước OAuth user bên dưới vẫn bắt buộc.</p>
-            <div class="credential-grid">
-                <div>
-                    <label class="input-label" for="setupAppId">App ID</label>
-                    <input id="setupAppId" class="form-input" autocomplete="off" placeholder="cli_xxxxxxxxxxxxxxxx">
+
+            <div class="feature-box">
+                <div class="feat-title">Cấp phát theo tenant</div>
+                <div class="feat-desc">Tenant access token được dùng để tạo Base, cấu hình dữ liệu và khởi tạo không gian WeKnora riêng.</div>
+            </div>
+
+            <div class="feature-box">
+                <div class="feat-title">OAuth user là bắt buộc</div>
+                <div class="feat-desc">Admin tiếp tục cấp quyền user để HiLark nhận access token, refresh token và gửi đúng hành động dưới danh nghĩa người dùng.</div>
+            </div>
+
+            <div class="flow-note" aria-label="Các lớp quyền của luồng setup">
+                <div class="flow-note-item"><strong>App credential</strong>Xác thực ứng dụng HiLark.</div>
+                <div class="flow-note-item"><strong>Tenant token</strong>Tạo Base và gọi API trong doanh nghiệp.</div>
+                <div class="flow-note-item"><strong>User OAuth</strong>Gửi hành động dưới danh nghĩa Admin.</div>
+            </div>
+
+            <div class="callout" style="margin-top: 14px;">
+                <strong>Trước khi cài đặt</strong>, bạn cần tạo một Custom App trên Lark và lấy 4 khóa: App ID, App Secret, Verification Token, Encrypt Key. Hướng dẫn gồm 6 bước ngắn ở các trang tiếp theo (~5 phút).
+            </div>
+        </section>
+
+        <!-- SLIDE 1 · Tạo Custom App -->
+        <section class="slide" data-title="Tạo Custom App">
+            <div class="slide-kicker">Bước 1 / 6</div>
+            <div class="slide-title">Tạo Custom App trên Lark Developer</div>
+            <p class="slide-lead">Mỗi doanh nghiệp dùng một ứng dụng riêng để HiLark hoạt động độc lập trong tenant của bạn.</p>
+
+            <div class="url-box">
+                <span class="url-box-label">Console</span>
+                <a href="https://open.larksuite.com/app" target="_blank" rel="noopener">https://open.larksuite.com/app</a>
+                <a class="mini-btn" href="https://open.larksuite.com/app" target="_blank" rel="noopener">Mở ↗</a>
+            </div>
+
+            <ol class="substeps">
+                <li>Đăng nhập bằng tài khoản <b>Admin</b> hoặc tài khoản có quyền phát triển ứng dụng của doanh nghiệp.</li>
+                <li>Nhấn <b>Create custom app</b> (Tạo ứng dụng tùy chỉnh).</li>
+                <li>Đặt tên là <code class="inline">HiLark</code>, nhập mô tả ngắn và chọn biểu tượng bất kỳ.</li>
+                <li>Nhấn <b>Create</b> để vào trang quản lý ứng dụng.</li>
+            </ol>
+
+            <div class="callout warn">
+                Nếu doanh nghiệp dùng Feishu (Trung Quốc), truy cập <code class="inline">open.feishu.cn/app</code> thay cho địa chỉ trên.
+            </div>
+        </section>
+
+        <!-- SLIDE 2 · Bật Bot -->
+        <section class="slide" data-title="Bật Bot">
+            <div class="slide-kicker">Bước 2 / 6</div>
+            <div class="slide-title">Bật tính năng Bot</div>
+            <p class="slide-lead">HiLark cần năng lực Bot để nhận tin nhắn, gửi thẻ duyệt và chào Admin sau khi cài đặt.</p>
+
+            <ol class="substeps">
+                <li>Trong menu bên trái, chọn <b>Add features</b> (Thêm tính năng).</li>
+                <li>Tại thẻ <b>Bot</b>, nhấn <b>Add</b>.</li>
+                <li>Vào <b>Bot</b> trong menu trái, bật các tùy chọn cho phép Bot nhận tin nhắn nhóm và tin nhắn riêng (DM).</li>
+            </ol>
+
+            <div class="callout">
+                Bật Bot sẽ tự động kích hoạt sự kiện <code class="inline">card.action.trigger</code> dùng cho thẻ duyệt bản nháp / duyệt tri thức.
+            </div>
+        </section>
+
+        <!-- SLIDE 3 · Lấy khóa & Kết nối -->
+        <section class="slide" data-title="Lấy khóa & Kết nối">
+            <div class="slide-kicker">Bước 3 / 6</div>
+            <div class="slide-title">Lấy 4 khóa &amp; Kết nối với HiLark</div>
+            <p class="slide-lead">Lấy App ID, App Secret, Verification Token và Encrypt Key từ Lark để HiLark xác thực và sẵn sàng giải mã webhook.</p>
+
+            <ol class="substeps">
+                <li>Vào <b>Credentials &amp; Basic Info</b> ở menu bên trái: sao chép <b>App ID</b> (bắt đầu bằng <code class="inline">cli_</code>) và <b>App Secret</b>.</li>
+                <li>Vào <b>Events &amp; Callbacks</b> → tab <b>Encryption Strategy</b>: sao chép <b>Verification Token</b> và <b>Encrypt Key</b> (nhấn <i>Generate</i> nếu đang để trống).</li>
+                <li>Nhập 4 khóa vào bảng bên dưới và nhấn <b>Xác thực &amp; Lưu khóa vào HiLark</b>.</li>
+            </ol>
+
+            <div class="callout" style="margin-bottom: 12px;">
+                <strong>💡 Tại sao cần lưu khóa trước?</strong> Khi cấu hình Request URL ở bước tiếp theo, Lark sẽ gửi gói tin kiểm tra challenge mã hóa bằng Encrypt Key. HiLark cần biết Encrypt Key trước để giải mã thành công ngay lập tức.
+            </div>
+
+            <div class="credential-panel" style="margin-top: 0;">
+                <div class="credential-grid">
+                    <div>
+                        <label class="input-label" for="setupAppId">App ID</label>
+                        <input id="setupAppId" class="form-input" autocomplete="off" placeholder="cli_xxxxxxxxxxxxxxxx">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupAppSecret">App Secret</label>
+                        <input id="setupAppSecret" class="form-input" type="password" autocomplete="off" placeholder="Nhập App Secret">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupVerificationToken">Verification Token</label>
+                        <input id="setupVerificationToken" class="form-input" type="password" autocomplete="off" placeholder="Encryption Strategy → Verification Token">
+                    </div>
+                    <div>
+                        <label class="input-label" for="setupEncryptKey">Encrypt Key</label>
+                        <input id="setupEncryptKey" class="form-input" type="password" autocomplete="off" placeholder="Encryption Strategy → Encrypt Key">
+                    </div>
                 </div>
-                <div>
-                    <label class="input-label" for="setupAppSecret">App Secret</label>
-                    <input id="setupAppSecret" class="form-input" type="password" autocomplete="off" placeholder="Nhập App Secret">
+                <div class="credential-error" id="credentialFeedback" aria-live="polite"></div>
+                <div id="connectSuccessBox" class="callout success" style="display: none; margin-top: 10px;">
+                    <strong>✔ Đã kết nối App thành công!</strong> HiLark đã lưu Encrypt Key và sẵn sàng tiếp nhận &amp; giải mã sự kiện. Hãy nhấn <b>Tiếp theo →</b> để cấu hình quyền và sự kiện.
                 </div>
-                <div>
-                    <label class="input-label" for="setupVerificationToken">Verification Token</label>
-                    <input id="setupVerificationToken" class="form-input" type="password" autocomplete="off" placeholder="Event Subscriptions → Verification Token">
-                </div>
-                <div>
-                    <label class="input-label" for="setupEncryptKey">Encrypt Key</label>
-                    <input id="setupEncryptKey" class="form-input" type="password" autocomplete="off" placeholder="Event Subscriptions → Encrypt Key">
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button type="button" class="btn-primary" id="btnConnectApp" onclick="connectApp()" style="flex: 1;">
+                        Xác thực &amp; Lưu khóa vào HiLark
+                    </button>
                 </div>
             </div>
-            <div class="credential-error" id="credentialFeedback" aria-live="polite"></div>
-        </div>
+        </section>
 
-        <div class="flow-note" aria-label="Các lớp quyền của luồng setup">
-            <div class="flow-note-item"><strong>App credential</strong>Xác thực ứng dụng HiLark.</div>
-            <div class="flow-note-item"><strong>Tenant token</strong>Tạo Base và gọi API trong doanh nghiệp.</div>
-            <div class="flow-note-item"><strong>User OAuth</strong>Gửi hành động dưới danh nghĩa Admin.</div>
-        </div>
+        <!-- SLIDE 4 · Scopes -->
+        <section class="slide" data-title="Cấp quyền (Scopes)">
+            <div class="slide-kicker">Bước 4 / 6</div>
+            <div class="slide-title">Thêm quyền (Scopes)</div>
+            <p class="slide-lead">Cần cấp hai nhóm quyền: <b>tenant</b> (Bot gọi API) và <b>user</b> (hành động dưới danh nghĩa người dùng).</p>
 
-        <div class="actions">
-            <button type="button" class="btn-primary" id="btnInstall" onclick="beginSetup()">
-                Cài đặt HiLark cho Doanh nghiệp · xác thực App &amp; cấp quyền user
-            </button>
+            <ol class="substeps">
+                <li>Vào <b>Permissions &amp; Scopes</b> (Quyền &amp; phạm vi).</li>
+                <li>Nhấn <b>Batch import/export scopes</b> (Nhập/xuất hàng loạt).</li>
+                <li>Dán nguyên khối JSON bên dưới → <b>Next</b> → <b>Add scopes</b>.</li>
+            </ol>
+
+            <div class="json-box" id="scopesJsonBox"></div>
+            <div style="display:flex; gap:8px; margin-bottom: 12px;">
+                <button type="button" class="mini-btn" data-copy-id="scopes-all" style="flex:1; padding:8px;">Sao chép JSON đầy đủ</button>
+            </div>
+
+            <div class="scope-block">
+                <div class="scope-head">
+                    <span class="t">Tenant <small id="tenantCount"></small></span>
+                    <button type="button" class="mini-btn" data-copy-id="scopes-tenant">Sao chép</button>
+                </div>
+                <div class="chip-wrap" id="tenantChips"></div>
+            </div>
+
+            <div class="scope-block">
+                <div class="scope-head">
+                    <span class="t">User <small id="userCount"></small></span>
+                    <button type="button" class="mini-btn" data-copy-id="scopes-user">Sao chép</button>
+                </div>
+                <div class="chip-wrap" id="userChips"></div>
+            </div>
+
+            <div class="callout warn">
+                Quyền <code class="inline">offline_access</code> (user) là bắt buộc để HiLark nhận <b>refresh token</b>. Thiếu quyền này, phiên OAuth sẽ hết hạn và Bot không tự gia hạn được.
+            </div>
+        </section>
+
+        <!-- SLIDE 5 · Events -->
+        <section class="slide" data-title="Sự kiện (Events)">
+            <div class="slide-kicker">Bước 5 / 6</div>
+            <div class="slide-title">Cấu hình Request URL &amp; Đăng ký sự kiện</div>
+            <p class="slide-lead">HiLark nhận tin nhắn, thẻ tương tác và thay đổi dữ liệu qua Event Subscriptions.</p>
+
+            <div class="callout success" style="margin-bottom: 12px;">
+                <strong>✔ Sẵn sàng xác thực:</strong> Do bạn đã lưu Encrypt Key vào HiLark ở Bước 3, khi bạn dán Request URL và nhấn <b>Save</b>, HiLark sẽ tự động giải mã và phản hồi challenge thành công ngay lập tức!
+            </div>
+
+            <ol class="substeps">
+                <li>Tab <b>Event configuration</b> → chọn phương thức <b>Send notifications to developer's server</b> và dán <b>Request URL</b> bên dưới → Nhấn <b>Save</b>.</li>
+                <li>Nhấn <b>Add Events</b>, tìm và thêm từng sự kiện trong danh sách (sao chép mã nhanh bằng nút bên cạnh).</li>
+                <li>Tab <b>Callback configuration</b>: chọn cùng phương thức và dán cùng Request URL, thêm <code class="inline">card.action.trigger</code>.</li>
+            </ol>
+
+            <div class="url-box">
+                <span class="url-box-label">Request URL</span>
+                <span class="url-text" id="webhookUrlText"></span>
+                <button type="button" class="mini-btn" data-copy-id="webhook-url">Sao chép</button>
+            </div>
+
+            <div id="eventGroups"></div>
+
+            <div class="callout warn">
+                Mỗi sự kiện cần có quyền đi kèm — bạn đã import ở Bước 4. Sự kiện <code class="inline">app_ticket</code> chỉ dành cho ISV/Store App, <b>không cần</b> với Custom App.
+            </div>
+        </section>
+
+        <!-- SLIDE 6 · Redirect + Publish -->
+        <section class="slide" data-title="Redirect & Phát hành">
+            <div class="slide-kicker">Bước 6 / 6</div>
+            <div class="slide-title">Khai báo Redirect URL &amp; phát hành</div>
+            <p class="slide-lead">OAuth user cần Redirect URL hợp lệ, và ứng dụng phải được phát hành thì quyền mới có hiệu lực.</p>
+
+            <ol class="substeps">
+                <li>Vào <b>Security Settings</b> (Cài đặt bảo mật) → mục <b>Redirect URLs</b> → thêm địa chỉ bên dưới.</li>
+                <li>Vào <b>Version Management &amp; Release</b> → <b>Create a version</b>, điền số phiên bản (vd. <code class="inline">1.0.0</code>) và ghi chú cập nhật.</li>
+                <li>Nhấn <b>Save</b> → <b>Publish</b>. Với doanh nghiệp của bạn, Admin có thể tự duyệt trong <b>Lark Admin Console</b>.</li>
+                <li>Sau mỗi lần thêm/sửa scope hoặc event, cần <b>tạo phiên bản mới và phát hành lại</b>.</li>
+            </ol>
+
+            <div class="url-box">
+                <span class="url-box-label">Redirect</span>
+                <span class="url-text" id="redirectUrlText"></span>
+                <button type="button" class="mini-btn" data-copy-id="redirect-url">Sao chép</button>
+            </div>
+
+            <div class="callout">
+                Xong rồi! Sang trang cuối để hoàn tất cài đặt và cấp quyền OAuth cho HiLark.
+            </div>
+        </section>
+
+        <!-- SLIDE 7 · Hoàn tất Cài đặt & Cấp quyền -->
+        <section class="slide" data-title="Cài đặt & Cấp quyền">
+            <div class="slide-kicker">Hoàn tất cài đặt</div>
+            <div class="slide-title">Kích hoạt HiLark cho Doanh nghiệp</div>
+            <p class="slide-lead">Ứng dụng đã được kết nối và phát hành trên Lark. Nhấn nút bên dưới để cấp quyền OAuth user và kích hoạt toàn bộ hệ thống.</p>
+
+            <div id="installReadyBox" class="callout success" style="display: none; margin-bottom: 16px;">
+                <strong>✔ Sẵn sàng cài đặt cho App:</strong> <span id="readyAppId" style="font-family: ui-monospace, monospace; font-weight: 700;"></span>
+            </div>
+
+            <div id="installMissingBox" class="callout warn" style="display: block; margin-bottom: 16px;">
+                <strong>Chưa lưu khóa App:</strong> Bạn chưa lưu khóa App ở Bước 3. Hãy nhấn nút bên dưới để nhập và lưu khóa trước khi tiếp tục:
+                <div style="margin-top: 8px;">
+                    <button type="button" class="mini-btn" onclick="goToSlide(3)" style="padding: 6px 12px;">Đến Bước 3 lưu khóa App →</button>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button type="button" class="btn-primary" id="btnInstall" onclick="beginSetup()">
+                    Cài đặt HiLark cho Doanh nghiệp · cấp quyền user (OAuth)
+                </button>
+            </div>
+        </section>
+
+        <!-- GUIDE NAV -->
+        <div class="guide-nav" id="guideNav">
+            <button type="button" class="btn-secondary" id="btnPrev" onclick="prevSlide()">← Quay lại</button>
+            <button type="button" class="btn-primary" id="btnNext" onclick="nextSlide()">Bắt đầu hướng dẫn →</button>
         </div>
+        <div class="dots" id="guideDots" aria-label="Điều hướng các trang hướng dẫn"></div>
     </div>
 
     <!-- 2. PROGRESS VIEW (Khi đang thực hiện 7 bước) -->
-    <div id="progressView" style="display: none;">
+    <div id="progressView" style="{{PROGRESS_VIEW_STYLE}}">
         <div class="progress-header">
             <span class="progress-title" id="progressStatusText">Đang thiết lập hệ thống...</span>
             <span class="status-pill processing" id="progressBadge">Đang xử lý</span>
@@ -948,6 +1539,14 @@
 
         <div class="steps-container" id="stepsList">
             <!-- Sẽ được điền động qua JavaScript -->
+        </div>
+
+        <!-- GĐ5: khi pipeline hỏng, tenant được đánh dấu `provisioning_failed`.
+             authorization code chỉ dùng một lần nên "Thử lại" phải phát lại phiên ủy quyền
+             cho đúng App đã đăng ký trong phiên này. -->
+        <div id="progressRetryHost" style="display: none; margin-top: 18px; padding: 16px; border: 1px solid rgba(248, 113, 113, 0.35); border-radius: 14px; background: rgba(248, 113, 113, 0.06);">
+            <p id="progressRetryHint" style="margin: 0 0 12px; color: #cbd5e1; font-size: 13px; line-height: 1.6;"></p>
+            <button type="button" id="btnRetrySetup" style="padding: 10px 20px; border: none; border-radius: 10px; background: #3b82f6; color: #fff; font-weight: 600; cursor: pointer;">Thử lại</button>
         </div>
 
         <!-- READY PANEL (ADMIN CARD) -->
@@ -975,10 +1574,11 @@
                 </a>
             </div>
         </div>
+    </div>
 
-        <!-- 3. PROGRESSIVE CUSTOMIZATION PANEL (TÙY CHỌN SAU KHI READY) -->
-        <div class="custom-panel fade-in" id="customPanel" style="display: none;">
-            <div class="custom-header" onclick="toggleCustomSection()">
+    <!-- 3. PROGRESSIVE CUSTOMIZATION PANEL (BẢNG CẤU HÌNH TRỢ LÝ) -->
+    <div class="custom-panel fade-in" id="customPanel" style="{{CUSTOM_PANEL_STYLE}}">
+        <div class="custom-header" onclick="toggleCustomSection()">
                 <div class="custom-header-left">
                     <div class="custom-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -998,11 +1598,11 @@
                 </div>
             </div>
 
-            <div class="custom-body" id="customBody" style="display: none;">
+            <div class="custom-body" id="customBody" style="{{CUSTOM_BODY_STYLE}}">
                 <!-- KHỐI 1: BỘ NÃO AI & BYOK (TỪ ONBOARDING SLIDE 2) -->
                 <div class="form-section">
                     <div class="section-heading">Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</div>
-                    
+
                     <div class="option-card selected" id="optSystemKey" onclick="setByokMode(false)">
                         <div class="radio-circle"></div>
                         <div>
@@ -1077,7 +1677,51 @@
                     </div>
                 </div>
 
-                <!-- KHỐI 3: THÔNG TIN WEKNORA WEB VAULT -->
+                <!-- KHỐI 3: ĐỒNG BỘ CHÍNH SÁCH DOANH NGHIỆP & NHẬT KÝ (POLICY SYNC & LOGS) -->
+                <div class="form-section">
+                    <div class="section-heading">Đồng Bộ Chính Sách &amp; Quy Định Công Ty</div>
+
+                    <label class="input-label" for="policySyncIntervalSelect">Chu kỳ quét &amp; đồng bộ định kỳ:</label>
+                    <select id="policySyncIntervalSelect" class="custom-select" style="margin-bottom: 6px;">
+                        <option value="1800">30 phút (Giai đoạn thử nghiệm)</option>
+                        <option value="3600" selected>1 giờ (Mặc định khuyến nghị)</option>
+                        <option value="10800">3 giờ</option>
+                        <option value="21600">6 giờ</option>
+                        <option value="43200">12 giờ</option>
+                        <option value="86400">24 giờ (1 ngày)</option>
+                    </select>
+                    <div class="input-hint" style="margin-bottom: 14px;">
+                        Hệ thống luôn tự động đồng bộ tức thì (Real-time) mỗi khi có bản ghi mới trên Lark Base. Chu kỳ quét định kỳ là chốt chặn an toàn đảm bảo không sót tài liệu.
+                    </div>
+
+                    <div class="admin-card" style="margin-bottom: 12px; padding: 12px 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="status-dot success" style="width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+                                <span style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Nhật ký đồng bộ Base ➔ WeKnora</span>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <button type="button" class="btn-secondary" id="btnPolicySyncNow" onclick="triggerPolicySyncLive()" style="padding: 5px 10px; font-size: 12px;">
+                                    🔄 Đồng bộ ngay
+                                </button>
+                                <button type="button" class="btn-secondary" id="btnRefreshPolicyLogs" onclick="loadPolicyStatusAndLogs()" style="padding: 5px 10px; font-size: 12px;">
+                                    Làm mới
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11.5px; color: var(--text-secondary); margin-bottom: 10px;">
+                            <div>Bảng Base: <code id="lblPolicyTable" style="color: var(--accent); font-size: 11px;">—</code></div>
+                            <div>Lần sync gần nhất: <span id="lblPolicyLastSync" style="font-weight: 600; color: var(--text-primary);">Chưa có</span></div>
+                        </div>
+
+                        <div style="background: #090d16; border-radius: 6px; border: 1px solid #1e293b; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #94a3b8; max-height: 150px; overflow-y: auto;" id="policyLogContainer">
+                            <div id="policyLogConsole" style="line-height: 1.6; white-space: pre-wrap;">[Hệ thống] Đang tải nhật ký đồng bộ chính sách...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- KHỐI 4: THÔNG TIN WEKNORA WEB VAULT -->
                 <div class="form-section" id="weknoraCredentialsSection" style="display: none;">
                     <div class="section-heading">Không Gian Tri Thức WeKnora (Web Vault)</div>
                     <div class="admin-card">
@@ -1101,50 +1745,342 @@
                     <button type="button" class="btn-primary" id="btnSaveCustom" onclick="saveCustomSettings()">
                         Lưu Thay Đổi Cấu Hình
                     </button>
+                    <button type="button" class="btn-secondary" id="btnGuideBack" onclick="openGuideView()" style="width:100%; padding:10px; font-size:13px; margin-top:4px;">
+                        📖 Xem lại hướng dẫn tạo Bot trên Lark
+                    </button>
                     <div id="saveFeedback" class="save-feedback"></div>
                 </div>
             </div>
         </div>
 
-    </div>
 </div>
 
 <script>
     const INITIAL_TASK_ID = "{{TASK_ID}}";
+    const INITIAL_VIEW = "{{INITIAL_VIEW}}";
+    const SERVER_TENANT_KEY = "{{TENANT_KEY}}";
+    const SERVER_OPEN_ID = "{{OPEN_ID}}";
+
     let currentTaskId = INITIAL_TASK_ID;
     let pollTimer = null;
     let isByokEnabled = false;
-    let currentAdminOpenId = "";
-    let currentTenantKey = "";
+    let currentAdminOpenId = SERVER_OPEN_ID || "";
+    let currentTenantKey = SERVER_TENANT_KEY || "";
 
-    async function beginSetup() {
+    /* ================== GUIDE CONFIG ==================
+       Request URL cho Event & Callback trong HiLark là /api/lark/events.
+       Redirect URL cho OAuth user là /setup/callback. */
+    const WEBHOOK_PATH  = "/api/lark/events";
+    const REDIRECT_PATH = "/setup/callback";
+    const WEBHOOK_URL  = window.location.origin + WEBHOOK_PATH;
+    const REDIRECT_URL = window.location.origin + REDIRECT_PATH;
+
+    const SCOPES = {
+        tenant: [
+            "im:message:send_as_bot",
+            "im:chat",
+            "im:chat:readonly",
+            "im:message",
+            "im:message.group_msg",
+            "im:message.group_at_msg",
+            "bitable:app",
+            "contact:user.base:readonly",
+            "wiki:node:read",
+            "wiki:wiki:readonly",
+            "docx:document:readonly",
+            "drive:drive:readonly"
+        ],
+        user: [
+            "offline_access",
+            "im:message.send_as_user",
+            "im:chat",
+            "im:chat:readonly",
+            "im:message",
+            "bitable:app",
+            "contact:user.base:readonly",
+            "wiki:node:read",
+            "wiki:wiki:readonly",
+            "docx:document:readonly",
+            "drive:drive:readonly"
+        ]
+    };
+
+    const EVENT_GROUPS = [
+        {
+            title: "1. Chat & Bot (bắt buộc cốt lõi)",
+            events: [
+                { code: "im.message.receive_v1", name: "Receive messages · Nhận tin nhắn", scope: "im:message, im:message.group_at_msg, im:message:send_as_bot", purpose: "Nhận tin nhắn chat từ nhóm và tin nhắn riêng (DM)." },
+                { code: "card.action.trigger", name: "Card action trigger · Tương tác thẻ", scope: "Tự động có khi bật Bot", purpose: "Nhận sự kiện bấm nút duyệt bản nháp, duyệt tri thức trên Thẻ.", tag: "cb", tagText: "Callback" },
+                { code: "im.chat.member.bot.added_v1", name: "Bot added to group chat", scope: "im:chat hoặc im:chat:readonly", purpose: "Biết khi Bot được thêm vào nhóm mới để bắt đầu giám sát." },
+                { code: "im.chat.member.bot.deleted_v1", name: "Bot removed from group chat", scope: "im:chat hoặc im:chat:readonly", purpose: "Biết khi Bot bị xóa khỏi nhóm để dừng giám sát." }
+            ]
+        },
+        {
+            title: "2. Thu hồi & Cảm xúc",
+            events: [
+                { code: "im.message.recalled_v1", name: "Message recalled · Thu hồi tin nhắn", scope: "im:message hoặc im:message:readonly", purpose: "Đồng bộ xóa/đánh dấu tin nhắn bị thu hồi khỏi bộ nhớ đệm." },
+                { code: "im.message.reaction.created_v1", name: "Message reaction created · Thả cảm xúc", scope: "im:message hoặc im:message:readonly", purpose: "Bắt cảm xúc người dùng (like, thả tim) với tin nhắn trả lời." }
+            ]
+        },
+        {
+            title: "3. Lark Base / Bitable (đồng bộ tri thức)",
+            events: [
+                { code: "drive.file.bitable_record_changed_v1", name: "Bitable record changed", scope: "bitable:app", purpose: "Đồng bộ dữ liệu khi có bản ghi mới hoặc sửa đổi trong Base." },
+                { code: "drive.file.bitable_field_changed_v1", name: "Bitable field changed", scope: "bitable:app", purpose: "Cập nhật cấu trúc bảng khi admin đổi tên/thêm cột." },
+                { code: "drive.file.edit_v1", name: "File edited in Drive", scope: "drive:drive:readonly", purpose: "Lắng nghe khi tài liệu hoặc tệp được chỉnh sửa." }
+            ]
+        },
+        {
+            title: "4. Vòng đời doanh nghiệp (Lifecycle)",
+            events: [
+                { code: "app_status_change", name: "App status change", scope: "Custom App / Store App", purpose: "Biết khi app được kích hoạt hoặc tạm dừng." },
+                { code: "app_uninstalled", name: "App uninstalled", scope: "Custom App / Store App", purpose: "Tự động dọn dẹp kết nối khi doanh nghiệp gỡ app." },
+                { code: "open_app", name: "App first opened", scope: "Custom App / Store App", purpose: "Kích hoạt màn hình chào mừng (Onboarding)." },
+                { code: "app_ticket", name: "App ticket update", scope: "Chỉ ISV / Store App", purpose: "Nhận ticket cấp phép token của Lark Marketplace. Không cần với Custom App.", tag: "isv", tagText: "Chỉ ISV" }
+            ]
+        }
+    ];
+
+    /* Kho nội dung cho nút "Sao chép" */
+    const COPY_STORE = {
+        "scopes-all": () => JSON.stringify({ scopes: SCOPES }, null, 2),
+        "scopes-tenant": () => SCOPES.tenant.join("\n"),
+        "scopes-user": () => SCOPES.user.join("\n"),
+        "webhook-url": () => {
+            const curAppId = window.__hilarkAppId || document.getElementById("setupAppId")?.value?.trim() || "";
+            return curAppId ? `${WEBHOOK_URL}?app_id=${encodeURIComponent(curAppId)}` : WEBHOOK_URL;
+        },
+        "redirect-url": () => REDIRECT_URL
+    };
+
+    /* ================== GUIDE SLIDER ================== */
+    let slides = [];
+    let currentSlide = 0;
+    let SLIDE_COUNT = 0;
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function renderGuideContent() {
+        document.getElementById("scopesJsonBox").textContent = COPY_STORE["scopes-all"]();
+        document.getElementById("tenantCount").textContent = `· ${SCOPES.tenant.length} quyền`;
+        document.getElementById("userCount").textContent = `· ${SCOPES.user.length} quyền`;
+        document.getElementById("tenantChips").innerHTML = SCOPES.tenant.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join("");
+        document.getElementById("userChips").innerHTML = SCOPES.user.map((s) => `<span class="chip">${escapeHtml(s)}</span>`).join("");
+        document.getElementById("webhookUrlText").textContent = WEBHOOK_URL;
+        document.getElementById("redirectUrlText").textContent = REDIRECT_URL;
+
+        const wrap = document.getElementById("eventGroups");
+        wrap.innerHTML = EVENT_GROUPS.map((g, gi) => {
+            const key = `events-${gi}`;
+            COPY_STORE[key] = () => g.events.map((e) => e.code).join("\n");
+            const rows = g.events.map((e, ei) => {
+                const rowKey = `event-${gi}-${ei}`;
+                COPY_STORE[rowKey] = () => e.code;
+                const tag = e.tag ? `<span class="tag ${e.tag}">${escapeHtml(e.tagText)}</span>` : "";
+                return `
+                    <div class="event-row">
+                        <div class="event-code-line">
+                            <span class="event-code">${escapeHtml(e.code)}</span>
+                            <span style="display:flex; gap:6px; align-items:center;">${tag}<button type="button" class="mini-btn" data-copy-id="${rowKey}">Sao chép</button></span>
+                        </div>
+                        <div class="event-name">${escapeHtml(e.name)}</div>
+                        <div class="event-meta">Quyền: <span class="sc">${escapeHtml(e.scope)}</span><br>${escapeHtml(e.purpose)}</div>
+                    </div>`;
+            }).join("");
+            return `
+                <div class="event-group">
+                    <div class="event-group-head">
+                        <span class="t">${escapeHtml(g.title)}</span>
+                        <button type="button" class="mini-btn" data-copy-id="${key}">Sao chép tất cả</button>
+                    </div>
+                    ${rows}
+                </div>`;
+        }).join("");
+    }
+
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+            try {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+                resolve();
+            } catch (e) { reject(e); }
+        });
+    }
+
+    function bindCopyButtons() {
+        document.getElementById("landingView").addEventListener("click", async (ev) => {
+            const btn = ev.target.closest("[data-copy-id]");
+            if (!btn) return;
+            const fn = COPY_STORE[btn.dataset.copyId];
+            if (!fn) return;
+            const original = btn.textContent;
+            try {
+                await copyText(fn());
+                btn.classList.add("copied");
+                btn.textContent = "Đã sao chép ✓";
+            } catch (e) {
+                btn.textContent = "Lỗi sao chép";
+            }
+            setTimeout(() => {
+                btn.classList.remove("copied");
+                btn.textContent = original;
+            }, 1600);
+        });
+    }
+
+    function initGuide() {
+        renderGuideContent();
+        slides = Array.from(document.querySelectorAll("#landingView .slide"));
+        SLIDE_COUNT = slides.length;
+
+        const dots = document.getElementById("guideDots");
+        dots.innerHTML = "";
+        slides.forEach((s, i) => {
+            const d = document.createElement("button");
+            d.type = "button";
+            d.className = "dot";
+            d.setAttribute("aria-label", `Trang ${i + 1}: ${s.dataset.title}`);
+            d.onclick = () => goToSlide(i);
+            dots.appendChild(d);
+        });
+
+        bindCopyButtons();
+
+        try {
+            const savedAppId = localStorage.getItem("hilark_app_id");
+            const savedRegId = localStorage.getItem("hilark_registration_id");
+            if (savedAppId && savedRegId) {
+                window.__hilarkRegistrationId = savedRegId;
+                window.__hilarkAppId = savedAppId;
+                const appIdInput = document.getElementById("setupAppId");
+                if (appIdInput && !appIdInput.value) appIdInput.value = savedAppId;
+                const readyAppEl = document.getElementById("readyAppId");
+                if (readyAppEl) readyAppEl.textContent = savedAppId;
+                const readyBox = document.getElementById("installReadyBox");
+                if (readyBox) readyBox.style.display = "block";
+                const missingBox = document.getElementById("installMissingBox");
+                if (missingBox) missingBox.style.display = "none";
+                const successBox = document.getElementById("connectSuccessBox");
+                if (successBox) successBox.style.display = "block";
+                const btnConnect = document.getElementById("btnConnectApp");
+                if (btnConnect) {
+                    btnConnect.textContent = "✔ Đã kết nối App (" + savedAppId + ")";
+                    btnConnect.style.background = "#059669";
+                }
+            }
+        } catch (_) {}
+
+        goToSlide(0);
+    }
+
+    function goToSlide(index) {
+        if (index < 0 || index >= SLIDE_COUNT) return;
+        currentSlide = index;
+
+        slides.forEach((s, i) => s.classList.toggle("active", i === index));
+
+        document.querySelectorAll("#guideDots .dot").forEach((d, i) => {
+            d.classList.toggle("active", i === index);
+            d.classList.toggle("done", i < index);
+        });
+
+        const last = index === SLIDE_COUNT - 1;
+        const first = index === 0;
+
+        document.getElementById("guideBarFill").style.width = `${(index / (SLIDE_COUNT - 1)) * 100}%`;
+        document.getElementById("guideCounter").textContent =
+            first ? "Giới thiệu" : last ? "Cài đặt & Cấp quyền" : `Hướng dẫn · ${index}/${SLIDE_COUNT - 2}`;
+
+        document.getElementById("btnPrev").style.visibility = first ? "hidden" : "visible";
+
+        const nextBtn = document.getElementById("btnNext");
+        nextBtn.textContent = first ? "Bắt đầu hướng dẫn →" : index === SLIDE_COUNT - 2 ? "Hoàn tất hướng dẫn →" : "Tiếp theo →";
+
+        // Trang cuối đã có nút Cài đặt riêng → ẩn nút Next
+        nextBtn.style.display = last ? "none" : "flex";
+        document.getElementById("guideSkip").style.visibility = (last || index === 3) ? "hidden" : "visible";
+
+        // Cập nhật Request URL hiển thị đúng app_id nếu đã nhập
+        if (index === 4) {
+            const curAppId = window.__hilarkAppId || document.getElementById("setupAppId")?.value?.trim() || "";
+            const finalUrl = curAppId ? `${WEBHOOK_URL}?app_id=${encodeURIComponent(curAppId)}` : WEBHOOK_URL;
+            const el = document.getElementById("webhookUrlText");
+            if (el) el.textContent = finalUrl;
+        }
+
+        // Cập nhật trạng thái box trên Slide 7 (Hoàn tất cài đặt)
+        if (last) {
+            const hasReg = !!window.__hilarkRegistrationId;
+            const readyBox = document.getElementById("installReadyBox");
+            const missingBox = document.getElementById("installMissingBox");
+            if (readyBox) readyBox.style.display = hasReg ? "block" : "none";
+            if (missingBox) missingBox.style.display = hasReg ? "none" : "block";
+            const readyAppEl = document.getElementById("readyAppId");
+            if (readyAppEl && window.__hilarkAppId) readyAppEl.textContent = window.__hilarkAppId;
+        }
+
+        const container = document.querySelector(".wizard-container");
+        if (container && index > 0) window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function nextSlide() { goToSlide(currentSlide + 1); }
+    function prevSlide() { goToSlide(currentSlide - 1); }
+
+    document.addEventListener("keydown", (e) => {
+        if (document.getElementById("landingView").style.display === "none") return;
+        const tag = (e.target.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        if (e.key === "ArrowRight") nextSlide();
+        if (e.key === "ArrowLeft") prevSlide();
+    });
+
+    /* ================== SETUP FLOW ================== */
+    async function connectApp() {
         const appId = document.getElementById("setupAppId").value.trim();
         const appSecret = document.getElementById("setupAppSecret").value.trim();
         const verificationToken = document.getElementById("setupVerificationToken").value.trim();
         const encryptKey = document.getElementById("setupEncryptKey").value.trim();
-        const button = document.getElementById("btnInstall");
+        const button = document.getElementById("btnConnectApp");
         const feedback = document.getElementById("credentialFeedback");
+        const successBox = document.getElementById("connectSuccessBox");
 
         if (!appId || !appId.startsWith("cli_")) {
             feedback.textContent = "App ID phải bắt đầu bằng cli_.";
-            return;
+            if (successBox) successBox.style.display = "none";
+            return false;
         }
         if (!appSecret) {
             feedback.textContent = "Vui lòng nhập App Secret.";
-            return;
+            if (successBox) successBox.style.display = "none";
+            return false;
         }
         if (!verificationToken) {
-            feedback.textContent = "Vui lòng nhập Verification Token trong Event Subscriptions của App.";
-            return;
+            feedback.textContent = "Vui lòng nhập Verification Token trong tab Encryption Strategy.";
+            if (successBox) successBox.style.display = "none";
+            return false;
         }
         if (!encryptKey) {
-            feedback.textContent = "Vui lòng nhập Encrypt Key trong Event Subscriptions của App.";
-            return;
+            feedback.textContent = "Vui lòng nhập Encrypt Key trong tab Encryption Strategy.";
+            if (successBox) successBox.style.display = "none";
+            return false;
         }
 
         button.disabled = true;
-        button.textContent = "Đang xác thực App...";
+        button.textContent = "Đang xác thực App với Lark...";
         feedback.textContent = "";
+        if (successBox) successBox.style.display = "none";
 
         try {
             const testResponse = await fetch("/onboarding/api/test-bot", {
@@ -1157,7 +2093,7 @@
                 throw new Error(testData.message || "App credential không hợp lệ.");
             }
 
-            button.textContent = "Đang tạo phiên kết nối tenant...";
+            button.textContent = "Đang lưu cấu hình vào HiLark...";
             const registerResponse = await fetch("/setup/api/register-app", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1173,13 +2109,58 @@
                 throw new Error(registerData.detail || registerData.message || "Không thể đăng ký Custom App.");
             }
 
-            button.textContent = "Đang mở OAuth user...";
-            window.location.href = `/setup/install?registration_id=${encodeURIComponent(registerData.data.registration_id)}`;
+            const regId = registerData.data.registration_id;
+            window.__hilarkRegistrationId = regId;
+            window.__hilarkAppId = appId;
+            try {
+                localStorage.setItem("hilark_registration_id", regId);
+                localStorage.setItem("hilark_app_id", appId);
+            } catch (_) {}
+
+            button.disabled = false;
+            button.textContent = "✔ Đã kết nối App thành công";
+            button.style.background = "#059669";
+            if (successBox) successBox.style.display = "block";
+            feedback.textContent = "";
+
+            const readyAppEl = document.getElementById("readyAppId");
+            if (readyAppEl) readyAppEl.textContent = appId;
+            const readyBox = document.getElementById("installReadyBox");
+            if (readyBox) readyBox.style.display = "block";
+            const missingBox = document.getElementById("installMissingBox");
+            if (missingBox) missingBox.style.display = "none";
+
+            return true;
         } catch (error) {
             feedback.textContent = error.message || "Không thể xác thực App.";
             button.disabled = false;
-            button.textContent = "Cài đặt HiLark cho Doanh nghiệp · xác thực App & cấp quyền user";
+            button.textContent = "Xác thực & Lưu khóa vào HiLark";
+            button.style.background = "";
+            return false;
         }
+    }
+
+    async function beginSetup() {
+        const button = document.getElementById("btnInstall");
+        let regId = window.__hilarkRegistrationId;
+        if (!regId) {
+            try { regId = localStorage.getItem("hilark_registration_id"); } catch (_) {}
+        }
+
+        if (!regId) {
+            // Thử kết nối nếu người dùng đã nhập các trường ở Bước 3
+            const connected = await connectApp();
+            if (!connected) {
+                goToSlide(3);
+                return;
+            }
+            regId = window.__hilarkRegistrationId;
+        }
+
+        button.disabled = true;
+        button.textContent = "Đang mở OAuth user...";
+        const redirectUri = window.location.origin + "/setup/callback";
+        window.location.href = `/setup/install?registration_id=${encodeURIComponent(regId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     }
 
     const DEFAULT_STEPS = [
@@ -1379,6 +2360,7 @@
             raw_gemini_key: isByokEnabled ? document.getElementById("geminiKeyInput").value.trim() : undefined,
             digest_schedule_time: document.getElementById("digestTimeSelect").value,
             hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
+            policy_sync_interval_seconds: parseInt(document.getElementById("policySyncIntervalSelect")?.value) || 3600,
             llm_provider: document.getElementById("llmProviderSelect").value,
             llm_model: document.getElementById("llmModelInput").value.trim() || undefined,
             llm_base_url: document.getElementById("llmBaseUrlInput").value.trim() || undefined,
@@ -1442,9 +2424,96 @@
                 if (typeof s.hitl_mode_enabled === "boolean") {
                     document.getElementById("hitlCheckbox").checked = s.hitl_mode_enabled;
                 }
+                if (s.policy_sync_interval_seconds && document.getElementById("policySyncIntervalSelect")) {
+                    document.getElementById("policySyncIntervalSelect").value = String(s.policy_sync_interval_seconds);
+                }
             }
+            loadPolicyStatusAndLogs();
         } catch (e) {
             console.debug("Chưa có cấu hình cũ:", e);
+            loadPolicyStatusAndLogs();
+        }
+    }
+
+    // Tải thông tin trạng thái & Live Logs của Policy Sync
+    async function loadPolicyStatusAndLogs() {
+        const consoleEl = document.getElementById("policyLogConsole");
+        const tableEl = document.getElementById("lblPolicyTable");
+        const lastSyncEl = document.getElementById("lblPolicyLastSync");
+        const intervalSelect = document.getElementById("policySyncIntervalSelect");
+        if (!consoleEl) return;
+
+        try {
+            const tk = currentTenantKey || "";
+            const resp = await fetch(`/policy/status${tk ? '?tenant_key=' + encodeURIComponent(tk) : ''}`);
+            if (!resp.ok) {
+                consoleEl.textContent = `[Lưu ý] Chưa sẵn sàng đọc trạng thái chính sách (HTTP ${resp.status})`;
+                return;
+            }
+            const data = await resp.json();
+            if (data) {
+                if (tableEl && data.policy_table_id) {
+                    tableEl.textContent = data.policy_table_id;
+                }
+                if (intervalSelect && data.sync_interval_seconds) {
+                    intervalSelect.value = String(data.sync_interval_seconds);
+                }
+                if (lastSyncEl) {
+                    const ls = data.last_sync || {};
+                    if (ls.synced_at) {
+                        const fileCount = ls.uploaded_files ? ls.uploaded_files.length : (ls.records_count || 0);
+                        lastSyncEl.textContent = `${ls.synced_at.replace('T', ' ').substring(0, 19)} (${fileCount} bản ghi)`;
+                    } else {
+                        lastSyncEl.textContent = "Chưa có";
+                    }
+                }
+                if (data.recent_logs && data.recent_logs.length > 0) {
+                    consoleEl.textContent = data.recent_logs.join("\n");
+                } else {
+                    consoleEl.textContent = "[Thông báo] Chưa có nhật ký đồng bộ gần đây. Nhấn 'Đồng bộ ngay' để quét thủ công.";
+                }
+                const container = document.getElementById("policyLogContainer");
+                if (container) container.scrollTop = container.scrollHeight;
+            }
+        } catch (err) {
+            console.debug("Không thể tải policy status:", err);
+            consoleEl.textContent = `[Lỗi kết nối] ${err.message}`;
+        }
+    }
+
+    // Kích hoạt đồng bộ thủ công ngay lập tức từ UI
+    async function triggerPolicySyncLive() {
+        const btn = document.getElementById("btnPolicySyncNow");
+        const consoleEl = document.getElementById("policyLogConsole");
+        const container = document.getElementById("policyLogContainer");
+        if (btn) btn.disabled = true;
+        if (btn) btn.textContent = "Đang đồng bộ...";
+
+        if (consoleEl) {
+            consoleEl.textContent += "\n[Thao tác] Người dùng bấm 'Đồng bộ ngay'. Đang gửi yêu cầu tới server...";
+            if (container) container.scrollTop = container.scrollHeight;
+        }
+
+        try {
+            const tk = currentTenantKey || "";
+            const resp = await fetch(`/policy/sync?force=true${tk ? '&tenant_key=' + encodeURIComponent(tk) : ''}`, {
+                method: "POST"
+            });
+            const res = await resp.json();
+            if (res.success && res.logs && res.logs.length > 0) {
+                consoleEl.textContent = res.logs.join("\n");
+            } else if (res.success) {
+                consoleEl.textContent += "\n[Thành công] Đồng bộ hoàn tất!";
+            } else {
+                consoleEl.textContent += `\n[Lỗi] ${res.detail || res.message || 'Đồng bộ thất bại'}`;
+            }
+            if (container) container.scrollTop = container.scrollHeight;
+            await loadPolicyStatusAndLogs();
+        } catch (err) {
+            if (consoleEl) consoleEl.textContent += `\n[Lỗi mạng] ${err.message}`;
+        } finally {
+            if (btn) btn.disabled = false;
+            if (btn) btn.textContent = "🔄 Đồng bộ ngay";
         }
     }
 
@@ -1521,10 +2590,73 @@
                 const badge = document.getElementById("progressBadge");
                 badge.className = "status-pill failed";
                 badge.textContent = "Thất bại";
+                showSetupRetryAction(data);
             }
         } catch (err) {
             console.error("Polling error:", err);
         }
+    }
+
+    function showSetupRetryAction(data) {
+        /**
+         * GĐ5: tenant dừng ở `provisioning_failed`. authorization code đã bị dùng một lần
+         * nên "Thử lại" phải phát lại phiên ủy quyền cho ĐÚNG App của phiên cài đặt này
+         * (server không còn mượn App trong `.env` để chạy pipeline hộ).
+         */
+        const host = document.getElementById("progressRetryHost");
+        if (!host) return;
+
+        const hint = document.getElementById("progressRetryHint");
+        const reason = data && data.error ? String(data.error) : "";
+        if (hint) {
+            hint.textContent = reason
+                ? `Doanh nghiệp đang ở trạng thái "provisioning_failed". Lý do: ${reason}`
+                : 'Doanh nghiệp đang ở trạng thái "provisioning_failed". Kiểm lại cấu hình App/WeKnora rồi bấm "Thử lại".';
+        }
+
+        const registrationId = (data && data.app_registration_id) || window.__hilarkRegistrationId || "";
+        const btn = document.getElementById("btnRetrySetup");
+        if (btn) {
+            btn.onclick = () => {
+                if (registrationId) {
+                    window.location.href = `/setup/install?registration_id=${encodeURIComponent(registrationId)}`;
+                } else {
+                    // Mất registration của phiên (restart server): quay lại bước nhập
+                    // App ID/App Secret để đăng ký lại, không ủy quyền bằng App mặc định.
+                    window.location.href = "/setup";
+                }
+            };
+        }
+        host.style.display = "block";
+    }
+
+    function openSettingsView() {
+        document.getElementById("landingView").style.display = "none";
+        document.getElementById("progressView").style.display = "none";
+        const customPanel = document.getElementById("customPanel");
+        if (customPanel) {
+            customPanel.style.display = "block";
+            const customBody = document.getElementById("customBody");
+            if (customBody) customBody.style.display = "block";
+            const customChevron = document.getElementById("customChevron");
+            if (customChevron) customChevron.classList.add("open");
+        }
+        document.getElementById("mainHeading").textContent = "Cấu Hình Trợ Lý HiLark";
+        document.getElementById("mainSubtitle").textContent = "Tùy chỉnh mô hình AI, giờ gửi báo cáo và phương thức phản hồi.";
+        
+        const guideBackBtn = document.getElementById("btnGuideBack");
+        if (guideBackBtn) guideBackBtn.style.display = "block";
+
+        loadExistingSettings(currentAdminOpenId, currentTenantKey);
+    }
+
+    function openGuideView() {
+        document.getElementById("customPanel").style.display = "none";
+        document.getElementById("progressView").style.display = "none";
+        document.getElementById("landingView").style.display = "block";
+        document.getElementById("mainHeading").textContent = "HiLark Enterprise";
+        document.getElementById("mainSubtitle").textContent = "Cài một lần, cấp quyền đúng lớp, vận hành an toàn theo tenant.";
+        initGuide();
     }
 
     // Khởi động trang
@@ -1538,6 +2670,10 @@
             renderInitialSteps();
             pollStatus();
             pollTimer = setInterval(pollStatus, 1000);
+        } else if (INITIAL_VIEW === "settings") {
+            openSettingsView();
+        } else {
+            initGuide();
         }
     });
 </script>

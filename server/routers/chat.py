@@ -40,6 +40,7 @@ async def chat(request: ChatRequest):
         user_name=request.user_name,
         responder_name=request.responder_name,
         role=request.role,
+        tenant_key=request.tenant_key,
     )
 
     if result.get("status") == "invalid_input":

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from core.config import settings
+from core.tenant_errors import TenantContextMissing, TokenUnavailable
 from database.db import get_system_config_collection
 from database.scoped_query import get_current_tenant_key
 from models.memory import get_vietnam_now_iso
@@ -46,59 +47,42 @@ class BaseProvisionService:
         app_id: Optional[str] = None,
         app_secret: Optional[str] = None,
     ) -> str:
-        """Lấy Bot Tenant Access Token qua singleton lark_base_service hoặc auth endpoint."""
+        """
+        Bot Tenant Access Token — luôn qua broker tập trung của ĐÚNG tenant.
+
+        Trước đây hàm này có bốn tầng: caller truyền token → lark_base_service singleton →
+        ISV cache → "App bất kỳ trong DB rồi `.env`". Hai tầng cuối cho phép cấp token của
+        doanh nghiệp A cho request đang thao tác Base của doanh nghiệp B, nên bị bỏ hoàn toàn.
+
+        Ngoại lệ duy nhất còn lại là cặp (app_id, app_secret) do caller truyền **tường minh**
+        (luồng one-click setup, khi credential chưa chắc đã kịp link tenant).
+        """
         eff_tenant = tenant_key or get_current_tenant_key()
         if app_id and app_secret:
-            try:
-                resp = httpx.post(
-                    f"{getattr(settings, 'LARK_DOMAIN', 'https://open.larksuite.com')}/open-apis/auth/v3/tenant_access_token/internal",
-                    json={"app_id": app_id, "app_secret": app_secret},
-                    timeout=10.0,
+            if not eff_tenant:
+                raise TenantContextMissing(
+                    "Gọi _get_tenant_access_token(app_id, app_secret) phải kèm tenant_key "
+                    "để token được gắn đúng doanh nghiệp."
                 )
-                data = resp.json()
-                if data.get("code") == 0:
-                    return data.get("tenant_access_token", "")
-            except Exception as e:
-                logger.error(f"Lỗi lấy tenant token cho Custom App {app_id}: {e}")
-            return ""
-
-        try:
-            from services.lark.bitable import lark_base_service
-            token = lark_base_service.get_tenant_access_token(tenant_key=eff_tenant)
-            if token:
-                return token
-        except Exception:
-            pass
-
-        # Nếu đang ở ISV Mode và có tenant_key
-        if getattr(settings, "IS_ISV_MODE", False) and eff_tenant:
-            try:
-                from services.auth.isv_token_service import isv_token_service
-                token = isv_token_service.get_cached_tenant_token(eff_tenant)
-                if token:
-                    return token
-            except Exception:
-                pass
-
-        # Fallback gọi trực tiếp API Lark Auth
-        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
-        app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
-        app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
-        if not app_id or not app_secret:
-            return ""
-
-        try:
             resp = httpx.post(
-                f"{domain}/open-apis/auth/v3/tenant_access_token/internal",
+                f"{getattr(settings, 'LARK_DOMAIN', 'https://open.larksuite.com')}/open-apis/auth/v3/tenant_access_token/internal",
                 json={"app_id": app_id, "app_secret": app_secret},
                 timeout=10.0,
             )
             data = resp.json()
-            if data.get("code") == 0:
-                return data.get("tenant_access_token", "")
-        except Exception as e:
-            logger.error(f"Lỗi khi lấy tenant access token cho base provisioning: {e}")
-        return ""
+            if data.get("code") != 0 or not data.get("tenant_access_token"):
+                raise TokenUnavailable(
+                    f"Lark từ chối cấp tenant_access_token khi provision Base: "
+                    f"code={data.get('code')}, msg={data.get('msg')}",
+                    tenant_key=eff_tenant,
+                    kind="tenant",
+                    lark_code=data.get("code") if isinstance(data.get("code"), int) else None,
+                )
+            return data["tenant_access_token"]
+
+        from services.auth.tenant_token_manager import token_broker
+
+        return token_broker.get_token_sync(eff_tenant, "bot")
 
     async def _get_tenant_access_token_async(
         self,
@@ -106,17 +90,14 @@ class BaseProvisionService:
         app_id: Optional[str] = None,
         app_secret: Optional[str] = None,
     ) -> str:
-        """Lấy Bot Tenant Access Token bất đồng bộ (hỗ trợ ISV Token Service tự làm mới)."""
+        """Phiên bản async: chờ trên token loop duy nhất, không tạo loop mới."""
         eff_tenant = tenant_key or get_current_tenant_key()
-        if getattr(settings, "IS_ISV_MODE", False) and eff_tenant:
-            try:
-                from services.auth.isv_token_service import isv_token_service
-                token = await isv_token_service.get_tenant_access_token(eff_tenant)
-                if token:
-                    return token
-            except Exception as e:
-                logger.warning(f"Lỗi khi lấy ISV tenant token cho base provisioning: {e}")
-        return await asyncio.to_thread(self._get_tenant_access_token, eff_tenant, app_id, app_secret)
+        if app_id and app_secret:
+            return await asyncio.to_thread(self._get_tenant_access_token, eff_tenant, app_id, app_secret)
+
+        from services.auth.tenant_token_manager import token_broker
+
+        return await token_broker.get(eff_tenant, "bot")
 
     async def get_active_base_config(
         self,
@@ -124,10 +105,14 @@ class BaseProvisionService:
         tenant_key: Optional[str] = None,
     ) -> SystemBaseConfigRecord:
         """
-        Lấy cấu hình Lark Base đang hoạt động:
-          - Nếu có tenant_key: Ưu tiên đọc từ MongoDB collection 'tenants'.
-          - Nếu không có: Kiểm tra trong MongoDB collection 'system_config'.
-          - Nếu chưa có -> Tạo đối tượng mặc định từ file .env.
+        Lấy cấu hình Lark Base đang hoạt động, **chỉ từ MongoDB**:
+          - Có tenant_key: đọc document `tenants` của chính tenant đó.
+          - Không có tenant_key: đọc document `system_config/lark_base_config`.
+          - Chưa có ở cả hai: trả bản ghi rỗng để caller báo "chưa setup".
+
+        Trước đây tầng cuối cùng của chuỗi là `.env` kèm table id hardcode
+        `"tblZphzEZPLQAy24"`. Nó khiến một tenant chưa setup Base âm thầm đọc/ghi
+        vào Base của đơn vị khác, nên bị bỏ hoàn toàn.
         """
         eff_tenant = tenant_key or get_current_tenant_key()
 
@@ -173,23 +158,21 @@ class BaseProvisionService:
             self._cached_config = rec
             return rec
 
-        # Fallback cấu hình mặc định từ .env
-        default_app_token = getattr(settings, "LARK_BASE_APP_TOKEN", "") or os.getenv("LARK_BASE_APP_TOKEN", "") or os.getenv("app_token", "")
-        default_table_id = getattr(settings, "LARK_BASE_TABLE_ID", "") or os.getenv("LARK_BASE_TABLE_ID", "") or os.getenv("table_id", "")
-        default_policy_table_id = getattr(settings, "LARK_BASE_POLICY_TABLE_ID", "") or os.getenv("LARK_BASE_POLICY_TABLE_ID", "") or os.getenv("policy_table_id", "") or "tblZphzEZPLQAy24"
-        domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
-        
-        fallback_url = f"{domain}/base/{default_app_token}" if default_app_token else ""
-
+        # Không có bản ghi nào trong MongoDB: trả cấu hình rỗng.
+        # Caller quyết định "chưa setup"; tuyệt đối không vay app_token/table_id từ .env.
+        logger.info(
+            "Chưa tìm thấy cấu hình Base trong MongoDB (tenant='%s', system_config/lark_base_config=None).",
+            eff_tenant or "default",
+        )
         rec = SystemBaseConfigRecord(
             config_key="lark_base_config",
             tenant_key="default",
-            app_token=default_app_token,
-            app_url=fallback_url,
-            chat_scope_table_id=default_table_id,
-            policy_table_id=default_policy_table_id,
+            app_token="",
+            app_url="",
+            chat_scope_table_id="",
+            policy_table_id="",
             is_auto_provisioned=False,
-            provisioned_by="system_env",
+            provisioned_by="",
         )
         self._cached_config = rec
         return rec
@@ -490,28 +473,49 @@ class BaseProvisionService:
             # Cập nhật cache singleton trong RAM cho single-tenant
             self._cached_config = config_record
 
-        # Kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới
+        # Kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới.
+        # KHÔNG ghi `app_token`/`table_id` lên singleton `lark_base_service` nữa: Base này
+        # thuộc về tenant vừa được cấp phát, còn singleton thì mọi tenant cùng dùng.
         try:
-            from services.lark.bitable import lark_base_service
+            from services.lark.bitable import LarkBaseService
             from services.lark import lark_service
             from services.knowledge.chat_scopes import scope_service
 
-            lark_base_service.app_token = new_app_token
-            lark_base_service.table_id = chat_scope_table_id
-            logger.info("✔ Đã đồng bộ app_token & table_id mới vào singleton lark_base_service")
+            if not eff_tenant or eff_tenant == "default":
+                logger.info(
+                    "ℹ️ Bỏ kích hoạt runtime Base tức thì: không có tenant tường minh. "
+                    "bootstrap startup sẽ dựng LarkBaseService riêng cho từng tenant."
+                )
+            else:
+                base_service = LarkBaseService(
+                    tenant_key=eff_tenant,
+                    app_token=new_app_token,
+                    table_id=chat_scope_table_id,
+                )
+                logger.info(
+                    "✔ Đã dựng LarkBaseService riêng cho tenant '%s' (app_token=%s, table=%s)",
+                    eff_tenant, new_app_token, chat_scope_table_id,
+                )
 
-            # 1. Đăng ký handler bắt sự kiện Base thay đổi
-            lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
+                # Resolver đang giữ cấu hình Base cũ của tenant này -> bỏ cache.
+                try:
+                    from services.tenancy.tenant_resolver import tenant_resolver
+                    tenant_resolver.invalidate(eff_tenant)
+                except Exception as inv_err:
+                    logger.debug("Không invalidate được resolver cache cho %s: %s", eff_tenant, inv_err)
 
-            # 2. Đăng ký lắng nghe sự kiện thay đổi trên Lark Cloud (Subscribe Drive API)
-            asyncio.create_task(asyncio.to_thread(lark_base_service.subscribe_events))
+                # 1. Đăng ký handler bắt sự kiện Base thay đổi
+                lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
 
-            # 3. Quét và đồng bộ danh sách nhóm chat của bot vào Base mới
-            asyncio.create_task(asyncio.to_thread(lark_base_service.sync_bot_chats))
+                # 2. Đăng ký lắng nghe sự kiện thay đổi trên Lark Cloud (Subscribe Drive API)
+                asyncio.create_task(asyncio.to_thread(base_service.subscribe_events, new_app_token))
 
-            # 4. Đồng bộ chính sách & tài liệu từ Base vào WeKnora & MongoDB
-            asyncio.create_task(scope_service.sync_all_groups_from_base())
-            logger.info("✔ Đã kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới!")
+                # 3. Quét và đồng bộ danh sách nhóm chat của bot vào Base mới
+                asyncio.create_task(asyncio.to_thread(base_service.sync_bot_chats))
+
+                # 4. Đồng bộ chính sách & tài liệu từ Base vào WeKnora & MongoDB
+                asyncio.create_task(scope_service.sync_all_groups_from_base(tenant_key=eff_tenant))
+                logger.info("✔ Đã kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới!")
         except Exception as conn_err:
             logger.warning(f"Chưa thể kết nối runtime Base ngay lập tức: {conn_err}")
 

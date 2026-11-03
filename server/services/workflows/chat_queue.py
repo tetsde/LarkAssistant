@@ -281,6 +281,8 @@ class ChatQueueService:
 
     async def _execute_pipeline(self, item: ChatQueueItem) -> None:
         """Thực thi pipeline trò chuyện chuẩn của HiLark."""
+        from core.tenant_errors import TenantResolutionError, TokenUnavailable
+        from services.lark.tenant_error_reply import notify_tenant_error
         from services.workflows.chat_workflow import process_chat_pipeline
 
         logger.debug("[QUEUE] dispatch msg=%s chat=%s user=%s", item.anchor_message_id, item.chat_id, item.user_name)
@@ -328,6 +330,18 @@ class ChatQueueService:
                     logger.info("[REPLY] msg=%s sent=yes identity=%s", item.anchor_message_id, item.responder_name or "User")
                 else:
                     logger.warning("[REPLY] msg=%s sent=no result=%s", item.anchor_message_id, lark_res)
+        except (TenantResolutionError, TokenUnavailable) as e:
+            # Lỗi thuộc hợp đồng tenant: giải thích ngắn gọn trong chat để doanh nghiệp
+            # biết mình chưa cài đặt xong / cần uỷ quyền lại, thay vì im lặng.
+            logger.warning(
+                "[DROP] msg=%s reason=%s error=%s", item.anchor_message_id, e.error_code, e
+            )
+            await notify_tenant_error(
+                e,
+                message_id=item.anchor_message_id,
+                chat_id=item.chat_id,
+                tenant_key=item.tenant_key,
+            )
         except Exception as e:
             logger.error(f"Lỗi khi thực thi pipeline từ Queue: {e}", exc_info=True)
 

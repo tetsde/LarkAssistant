@@ -61,14 +61,18 @@ from models.memory import (
 # 2. HELPER FUNCTIONS: ID GENERATION & STRING CLEANING
 # ==============================================================================
 
-def generate_stable_entity_id(workspace_id: str, name: str) -> str:
+def generate_stable_entity_id(workspace_id: str, name: str, tenant_key: str = "") -> str:
     """
     Tạo ID ổn định do Python sinh ra (Deterministic ID dựa trên uuid5).
-    Đảm bảo cùng một thực thể trong cùng một workspace luôn có id đồng nhất.
+    Đảm bảo cùng một thực thể trong cùng một workspace + tenant luôn có id đồng nhất.
+
+    ⚠️ tenant_key PHẢI được truyền vào để tránh va chạm ID giữa các doanh nghiệp khác nhau.
+    Xem: docs/project-memory/DECISIONS.md — B4 fix (2026-11-03)
     """
     clean_name = re.sub(r"\s+", " ", name.strip().lower())
     clean_ws = workspace_id.strip().lower()
-    seed = f"{clean_ws}:{clean_name}"
+    clean_tenant = (tenant_key or "").strip().lower()
+    seed = f"{clean_tenant}:{clean_ws}:{clean_name}"
     stable_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, seed)
     return f"ent_{stable_uuid.hex[:12]}"
 
@@ -418,6 +422,7 @@ def parse_entities(
     workspace_id: str = "default",
     source_message_id: Optional[str] = None,
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
+    tenant_key: str = "",
 ) -> List[Entity]:
     """Parse JSON trả về từ LLM và chuyển đổi thành Entity."""
     data = safe_parse_json_list(raw_response, fallback_type="Entities")
@@ -469,7 +474,7 @@ def parse_entities(
                 source_message_ids=merged_sources,
             )
         else:
-            stable_id = generate_stable_entity_id(workspace_id=workspace_id, name=name)
+            stable_id = generate_stable_entity_id(workspace_id=workspace_id, name=name, tenant_key=tenant_key)
             entity = Entity(
                 id=stable_id,
                 workspace_id=workspace_id,
@@ -499,6 +504,7 @@ def extract_entities(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
+    tenant_key: str = "",
 ) -> List[Dict[str, Any]]:
     """Trích xuất Nhánh 1: Entities (Sync)."""
     llm_client = client or GeminiClient(api_key=api_key)
@@ -546,6 +552,7 @@ def extract_entities(
         workspace_id=workspace_id,
         source_message_id=source_message_id,
         existing_entities=existing_entities,
+        tenant_key=tenant_key,
     )
     return [e.to_dict() for e in entities]
 
@@ -562,6 +569,7 @@ async def extract_entities_async(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     client: Optional[GeminiClient] = None,
+    tenant_key: str = "",
 ) -> List[Dict[str, Any]]:
     """Trích xuất Nhánh 1: Entities (Async)."""
     llm_client = client or GeminiClient(api_key=api_key)
@@ -609,6 +617,7 @@ async def extract_entities_async(
         workspace_id=workspace_id,
         source_message_id=source_message_id,
         existing_entities=existing_entities,
+        tenant_key=tenant_key,
     )
     return [e.to_dict() for e in entities]
 
@@ -1016,6 +1025,7 @@ class LLMExtractor:
         source_message_id: Optional[str] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        tenant_key: str = "",
     ) -> List[Dict[str, Any]]:
         """Bóc tách riêng Nhánh 1: Entities."""
         return extract_entities(
@@ -1025,6 +1035,7 @@ class LLMExtractor:
             existing_entities=existing_entities,
             existing_facts=existing_facts,
             client=self.client,
+            tenant_key=tenant_key,
         )
 
     # Alias
@@ -1037,6 +1048,7 @@ class LLMExtractor:
         source_message_id: Optional[str] = None,
         existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        tenant_key: str = "",
     ) -> List[Dict[str, Any]]:
         """Bóc tách riêng Nhánh 1: Entities (Async)."""
         return await extract_entities_async(
@@ -1046,6 +1058,7 @@ class LLMExtractor:
             existing_entities=existing_entities,
             existing_facts=existing_facts,
             client=self.client,
+            tenant_key=tenant_key,
         )
 
     # Alias
@@ -1108,6 +1121,7 @@ class LLMExtractor:
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         # Legacy keyword compatibility
         existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        tenant_key: str = "",
     ) -> Dict[str, Any]:
         """
         Bóc tách toàn diện một câu truy vấn/tin nhắn thành cả 2 nhánh (Sync):
@@ -1123,6 +1137,7 @@ class LLMExtractor:
             source_message_id=source_message_id,
             existing_entities=existing_entities,
             existing_facts=current_existing_facts,
+            tenant_key=tenant_key,
         )
 
         all_entities = list(existing_entities or []) + entities_result
@@ -1161,6 +1176,7 @@ class LLMExtractor:
         existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
         # Legacy keyword compatibility
         existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
+        tenant_key: str = "",
     ) -> Dict[str, Any]:
         """Bóc tách toàn diện cả 2 nhánh (Async)."""
         current_existing_facts = existing_facts if existing_facts is not None else existing_claims
@@ -1171,6 +1187,7 @@ class LLMExtractor:
             source_message_id=source_message_id,
             existing_entities=existing_entities,
             existing_facts=current_existing_facts,
+            tenant_key=tenant_key,
         )
 
         all_entities = list(existing_entities or []) + entities_result
@@ -1212,6 +1229,7 @@ def extract(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
+    tenant_key: str = "",
 ) -> Dict[str, Any]:
     """Hàm tiện ích cấp module: bóc tách toàn diện 2 nhánh (Sync)."""
     extractor = LLMExtractor(api_key=api_key) if api_key else llm_extractor
@@ -1224,6 +1242,7 @@ def extract(
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         existing_claims=existing_claims,
+        tenant_key=tenant_key,
     )
 
 
@@ -1237,6 +1256,7 @@ async def extract_async(
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
+    tenant_key: str = "",
 ) -> Dict[str, Any]:
     """Hàm tiện ích cấp module: bóc tách toàn diện 2 nhánh (Async)."""
     # Khả năng tương thích ngược: nếu unittest patch utils.llm_extractor.extract_async
@@ -1244,18 +1264,23 @@ async def extract_async(
     if old_mod and hasattr(old_mod, "extract_async"):
         old_func = getattr(old_mod, "extract_async")
         if old_func is not extract_async and (hasattr(old_func, "assert_called") or hasattr(old_func, "_mock_return_value")):
-            res = old_func(
-                query=query,
-                workspace_id=workspace_id,
-                source_message_id=source_message_id,
-                sender=sender,
-                asserted_by=asserted_by,
-                existing_entities=existing_entities,
-                existing_facts=existing_facts,
-                existing_claims=existing_claims,
-                api_key=api_key,
-            )
+            kwargs = {
+                "query": query,
+                "workspace_id": workspace_id,
+                "source_message_id": source_message_id,
+                "sender": sender,
+                "asserted_by": asserted_by,
+                "existing_entities": existing_entities,
+                "existing_facts": existing_facts,
+                "existing_claims": existing_claims,
+                "api_key": api_key,
+            }
+            # Only pass tenant_key if old_func accepts it
             import inspect
+            sig = inspect.signature(old_func)
+            if "tenant_key" in sig.parameters:
+                kwargs["tenant_key"] = tenant_key
+            res = old_func(**kwargs)
             if inspect.isawaitable(res):
                 return await res
             return res
@@ -1270,6 +1295,7 @@ async def extract_async(
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         existing_claims=existing_claims,
+        tenant_key=tenant_key,
     )
 
 

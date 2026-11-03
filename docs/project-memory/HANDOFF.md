@@ -2,23 +2,430 @@
 
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
+## Latest: Rà Soát Multi-Tenant, Hoàn Thiện Cô Lập BYOK & Kế Hoạch Triển Khai Production (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Hoàn thành rà soát bảo mật toàn diện cho môi trường Multi-Tenant Production.
+  - Phát hiện và vá điểm rò rỉ tiềm ẩn trong cơ chế giải quyết BYOK Key (`user_settings_service.py`):
+    + Trước đây: `resolve_effective_llm_client` và `resolve_effective_llm_key` chỉ nhận `user_id` và `chat_id` mà không có `tenant_key`, dẫn đến việc query collection `user_settings` và `chat_scopes` chỉ bằng `open_id`, tiềm ẩn nguy cơ lấy nhầm cấu hình BYOK hoặc scope key giữa các tenant.
+    + Đã vá: Bổ sung tham số `tenant_key: Optional[str] = None` vào `resolve_effective_llm_client` và `resolve_effective_llm_key`, fallback tự động về `get_current_tenant_key()`. Truyền tường minh `tenant_key=eff_tenant` tại `chat_workflow.py:1345`.
+  - Tư vấn thiết lập hạn mức hệ thống (Quotas & Limits) 4 tầng: Hàng đợi Chat (Debounce 1.75s, Cooldown 4.0s, Concurrency 5-10 pipelines), WeKnora Ingestion (File size 25-30MB, Folder depth 3, max files 200), Token Quota (Top-K 5-7 chunks ~ 5k tokens, Max output 2048 tokens), và Reverse Proxy Nginx.
+  - Lập Kế hoạch Triển khai Sản xuất (Production Deployment Plan) chi tiết tại artifact `PRODUCTION_DEPLOYMENT_AND_SYSTEM_QUOTAS.md`.
+- **Bằng chứng xác thực (Verified):**
+  - Chạy `tests/final_test/test_data_leakage_fixes.py` -> **5/5 tests PASSED**.
+  - Chạy `tests/final_test/test_byok_onboarding.py` -> **26/26 tests PASSED**.
+  - Kiểm tra giải mã log WeKnora: lỗi `VECTORSTORE_WRITE_FAILED` là do cạn kiệt Google Gemini API credit (HTTP 402), không phải lỗi logic code hay kết nối WeKnora.
+
+## Previous: Khắc Phục Triệt Để 4 Lỗ Hổng Rò Rỉ Dữ Liệu Cross-Tenant & Cross-Group (EDL-0074) (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Thực hiện audit bảo mật chuyên sâu luồng Parse Docs, Context Composer, Claims Extractor và Setup Onboarding.
+  - Phát hiện và vá triệt để 4 điểm rò rỉ dữ liệu / xung đột đa khách thuê (Cross-Tenant Leakage):
+    1. **B3 (Context Composer Claim Leak):** Tại `context_composer.py:706`, điều kiện `if not c.tenant_key or c.tenant_key == eff_tenant` cho phép claim mồ côi (không tenant_key) lọt vào prompt của bất kỳ tenant nào. Tại `normalize_claims_data:379`, `tenant_key=f.get("tenant_key") or tenant_key` tự động gán tenant hiện tại cho dữ liệu thiếu tenant.
+    2. **B1 (Lark Doc Link Ingestion Missing Tenant):** Tại `document_handler.py:141-151`, các lệnh gọi `parse_lark_docx`, `parse_lark_wiki`, `parse_lark_folder` không truyền `tenant_key=msg.tenant_key`, dẫn tới nguy cơ dùng bot token của tenant khác để đọc docs.
+    3. **B2 (Parse Attachment Missing Tenant):** Tại `doc_parser.py:parse_attachment()`, không có tham số `tenant_key` và gọi download qua singleton `_lark` property thay vì client của đúng tenant.
+    4. **B4 (Entity ID Collision & Index Flaw):** Tại `llm_extractor.py:64`, `generate_stable_entity_id()` chỉ băm theo `f"{clean_ws}:{clean_name}"` mà không có `tenant_key`. Hai công ty khác nhau có cùng tên thực thể sẽ sinh ra trùng `ent_id`. Khi lưu vào collection `memories`, unique index cũ chỉ nằm trên `id` đơn lẻ (`idx_memories_id_unique`), gây lỗi `DuplicateKeyError` hoặc ghi đè dữ liệu chéo.
+- **Giải pháp triển khai:**
+  1. `server/services/knowledge/context_composer.py`:
+     - Line 709: Xóa escape hatch, chỉ giữ claim có `c.tenant_key == eff_tenant`.
+     - Line 379: Giữ nguyên `tenant_key=f.get("tenant_key")`, không auto-adopt.
+  2. `server/services/lark/handlers/document_handler.py`:
+     - Truyền `tenant_key=msg.tenant_key` vào `parse_lark_docx`, `parse_lark_wiki`, `parse_lark_folder`, và `parse_attachment`.
+  3. `server/services/knowledge/doc_parser.py` & `server/services/lark/runtime.py`:
+     - Bổ sung `get_lark_service_for_tenant(tenant_key)` trong `runtime.py`.
+     - Thêm helper `_get_lark_for_tenant(tenant_key)` và param `tenant_key` vào `parse_attachment()` trong `doc_parser.py`.
+  4. `server/services/ai/llm_extractor.py` & `server/services/workflows/chat_workflow.py`:
+     - `generate_stable_entity_id` băm theo `f"{clean_tenant}:{clean_ws}:{clean_name}"`.
+     - `extract_async`, `extract_entities_async`, `extract` nhận và truyền `tenant_key`.
+     - `chat_workflow.py` truyền `tenant_key=eff_tenant` vào `extract_async()`.
+  5. `server/database/indexes.py` & `scripts/migrate_entity_index.py`:
+     - Chuyển `idx_memories_id_unique` thành compound unique `[("tenant_key", ASCENDING), ("id", ASCENDING)]` (`idx_memories_tenant_id_unique`).
+     - Tự động drop index cũ trong `ensure_database_indexes()`.
+     - Viết script `scripts/migrate_entity_index.py` (hỗ trợ dry-run và `--apply`).
+- **Bằng chứng xác thực (Verified):**
+  - Tạo test suite chuyên biệt `tests/final_test/test_data_leakage_fixes.py` -> **5/5 tests PASSED**.
+  - `tests/final_test/test_claims_knowledge_multi_tenant.py` -> **8/8 tests PASSED**.
+  - `tests/final_test/test_cross_tenant_isolation_complete.py` -> **5/5 tests PASSED**.
+  - Tổng cộng 18/18 multi-tenant security isolation tests PASSED 100%.
+  - Chạy full regression test suite toàn hệ thống (`pytest tests/`): **280/280 tests PASSED** (0 failed). Hoàn toàn không phát sinh regression.
+
+## Previous: Vô Hiệu Hóa Lark WebSocket Ngầm Khi Dùng Webhook Gateway & Kích Hoạt Thành Công Tenant Mới (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Trong log server xuất hiện lỗi `RuntimeError: Task ... got Future ... attached to a different loop` từ thư viện `lark_oapi.ws.client`.
+  - Phân tích nguyên nhân:
+    1. Trước đây khi chạy bot local, HiLark dùng chế độ persistent WebSocket connection (`lark.ws.Client`). Khi nâng cấp lên kiến trúc Multi-Tenant qua Webhook Gateway (`/api/lark/events`), đoạn mã khởi động WebSocket ngầm cho từng App trong `bot_runner.py` vẫn chạy.
+    2. SDK `lark_oapi` có biến `loop` toàn cục ở cấp module; khi chạy đồng thời nhiều kết nối WebSocket trên cùng một process Python, các thread ghi đè biến `loop` của nhau gây xung đột.
+- **Giải pháp triển khai:**
+  1. `server/core/config.py`: Bổ sung cờ `ENABLE_LARK_WEBSOCKET: bool = False` (mặc định tắt WebSocket để ưu tiên Webhook Gateway).
+  2. `server/services/lark/bot_runner.py` & `server/routers/onboarding.py`: Bọc điều kiện `enable_ws` trước khi khởi động WebSocket threads.
+  3. Deploy vào container và restart `hilark-server`.
+- **Bằng chứng xác thực (Verified):**
+  - Log server thông báo sạch sẽ:
+    `   - WebSocket Mode    : ⚪ Tắt (Sử dụng Webhook)`
+    `ℹ️ Chế độ Lark WebSocket đang tắt (ENABLE_LARK_WEBSOCKET=False). Mọi sự kiện và tương tác nhận qua Webhook Gateway (/api/lark/events).`
+  - Hoàn toàn không còn bất kỳ exception `attached to a different loop` nào.
+  - Quá trình OAuth user của App mới `cli_aa63f447fc78de27` đã hoàn tất thành công 100%:
+    `Tenant: 198ccffa855b1975 App: cli_aa63f447fc78de27 Status: ready`
+    `🧹 [SWEEPER] completed checked=2 ok=2 missing=0 unavailable=0`
+
+## Previous: Khắc phục Triệt Để Lỗi Lark OAuth 20029 & Đồng bộ Dynamic Redirect URI (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Khi Admin bấm cấp quyền OAuth user trên giao diện Setup (`/setup/install`), Lark trả về lỗi: `URL chuyển hướng không hợp lệ. Mã lỗi: 20029`.
+  - Phân tích nguyên nhân:
+    1. Trong `server/core/config.py`, biến `LARK_OAUTH_REDIRECT_URI` bị hardcode mặc định là `"http://localhost:8000/auth/lark/callback"`. Do đó khi gọi OAuth authorize, hệ thống luôn gửi `redirect_uri=http://localhost:8000/...` thay vì URL Ngrok/domain công khai (`https://hertz-liftoff-earphone.ngrok-free.dev/setup/callback`) mà người dùng đã đăng ký trong Lark Security Settings.
+    2. Frontend hiển thị URL chuyển hướng là `/setup/callback`, nhưng backend router `/setup/install` lại trỏ sang `/auth/lark/callback`.
+- **Giải pháp triển khai:**
+  1. `server/core/config.py`: Đổi default của `LARK_OAUTH_REDIRECT_URI` thành `""` (không hardcode `localhost:8000`).
+  2. `server/routers/setup.py` & `server/routers/auth.py`: Bổ sung cơ chế nhận diện tự động từ headers proxy (`X-Forwarded-Proto`, `X-Forwarded-Host`) và ưu tiên nhận `redirect_uri` từ client param.
+  3. `server/templates/setup_one_click.html` & `server/templates/onboarding_wizard.html`: Truyền `redirect_uri = window.location.origin + "/setup/callback"` khi chuyển hướng sang `/setup/install`.
+- **Bằng chứng xác thực (Verified):**
+  - Chạy `curl -i` giả lập qua Ngrok: Header trả về `location: https://accounts.larksuite.com/...&redirect_uri=https%3A%2F%2Fhertz-liftoff-earphone.ngrok-free.dev%2Fsetup%2Fcallback`. Khớp 100% với Redirect URL trong Lark Console.
+  - Test suite: 29/29 tests PASSED.
+
+## Previous: Khắc phục Triệt Để Vòng Lặp Rebuild Docs & Đốt Token AI (EDL-0073) (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Người dùng báo cáo hệ thống liên tục tự động rebuild tài liệu Lark Docs, vòng lặp đệ quy quét Drive và upload lại sang WeKnora dù dữ liệu không hề thay đổi, dẫn tới Gemini 2.5 Flash + BatchEmbed chạy liên tục và đốt cạn token/tiền của user.
+  - Phân tích nguyên nhân gốc rễ (Root Cause Analysis):
+    1. *`force=True` hardcode:* Tại `server/services/lark/bot_runner.py:393` (`_async_bitable_bootstrap()`) và `server/services/knowledge/policy_sync.py:731` (`start_loop()`), hàm `sync_policies` được gọi với `force=True`. Điều này làm bypass điều kiện kiểm tra MD5 hash trong `_upload_or_rebuild()`. Do đó dù MD5 của Lark DocX khớp 100% với file trên WeKnora, file vẫn bị xóa và upload lại, kích hoạt pipeline embedding.
+    2. *`interval_seconds=30` hardcode:* Tại `server/services/lark/bot_runner.py:420`, `scope_service.start_loop(interval_seconds=30)` chạy lặp vô tận mỗi 30 giây, đệ quy 4 tầng Lark Drive (4 GET requests/lần = 480 req/giờ).
+- **Giải pháp triển khai:**
+  1. `server/services/lark/bot_runner.py`:
+     - Line 395: Đổi `force=True` -> `force=False` trong bootstrap.
+     - Line 424: Tăng `interval_seconds=30` -> `interval_seconds=1800` (30 phút).
+  2. `server/services/knowledge/policy_sync.py`:
+     - Line 734: Đổi `force=True` -> `force=False` trong định kỳ loop. Cờ `force=True` chỉ được kích hoạt khi user chủ động bấm "Đồng bộ ngay" trên UI.
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - Sao chép 2 files vào container `hilark-server` và khởi động lại container.
+  - Startup logs xác nhận so sánh MD5 hoạt động:
+    `ℹ️ [PolicySync] 'Lark DocX (WzxDw72ILiBI1Ika862jGWE9pta).md' không đổi nội dung (MD5 khớp). Giữ nguyên bản ghi WeKnora ba774ca3-9fde-4f3e-9353-8a57614c9394.`
+  - Worker ChatScope khởi động chu kỳ 1800s:
+    `⏰ [ScopeSync Loop] Khởi động worker đồng bộ Chat Scopes định kỳ (Chu kỳ 1800s).`
+  - Quan sát logs sau restart: Hệ thống hoàn toàn yên tĩnh, không còn vòng lặp rebuild docs hay gọi WeKnora/Gemini.
+  - Test suite: Chạy `tests/lark/` -> **29/29 PASSED**.
+
+## Previous: Hoàn Tất Kế Hoạch Định Danh Webhook & Card Action Theo App ID (Deterministic Multi-Tenant Routing — EDL-0072) (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Người dùng phản ánh khi cấu hình Request URL trên Lark Developer Console (`/api/lark/events`) theo hướng dẫn của màn hình Setup thì bị báo lỗi: `Challenge code didn't get response`.
+  - Phân tích nguyên nhân:
+    1. *Nghịch lý thứ tự (Chicken-and-egg problem):* Giao diện Setup (`setup_one_click.html` & `onboarding_wizard.html`) đặt Bước 5 (Cấu hình Request URL trên Lark) TRƯỚC Bước 7 (Nhập 4 khóa App vào HiLark).
+    2. *Mã hóa bắt buộc của Lark:* Khi tab Encryption Strategy trên Lark có Encrypt Key, Lark bắt buộc mã hóa Challenge payload bằng AES CBC (`SHA256(encrypt_key)`).
+    3. *Bug loop candidate Custom App (`messenger.py`):* Trong DB có 2 Custom Apps (`cli_aa6c6ae8baf85e11` và `cli_aa63f447fc78de27`). Khi nhận encrypted challenge, `candidate_service.event_dispatcher.do()` của SDK trả về HTTP 500 do candidate 1 không khớp key. Code trước đó `return Response(...)` vô điều kiện mà không kiểm tra `status_code == 200`, làm ngắt vòng lặp ngay ở candidate 1 mà không bao giờ thử candidate 2.
+    4. *Thiếu cơ chế định danh trực tiếp 1-1:* Toàn bộ hệ thống trước đây phải duyệt qua toàn bộ App trong DB để thử giải mã (brute-force đoán mò), vi phạm nguyên tắc cách ly dữ liệu đa tenant (Zero Cross-Talk).
+- **Giải pháp triển khai (Toàn bộ 5 Phase theo `docs/IMPLEMENTATION_PLAN_APP_ID_WEBHOOK_ROUTING.md`):**
+  - **Phase 1: Gateway Routing Core (`server/services/lark/messenger.py`):**
+    - Trích xuất `inbound_app_id` từ `request.query_params.get("app_id")` hoặc `payload.header.app_id`.
+    - Định danh trực tiếp 1-1 (Zero Looping): Nếu có `inbound_app_id`, tra đúng 1 bản ghi App trong MongoDB `lark_app_credentials`, khởi tạo runtime client và giải mã trực tiếp bằng đúng key đó (Fail-fast nếu sai key, không thử key của tenant khác).
+    - Vá bug loop fallback: Nếu không có `inbound_app_id`, sắp xếp App theo `updated_at` giảm dần (ưu tiên app vừa tạo/sửa). Chỉ `return Response` khi `status_code == 200`.
+  - **Phase 2: Hỗ trợ Path Parameter (`server/routers/lark.py`):**
+    - Bổ sung `POST /api/lark/events/{app_id}` và `POST /api/lark/card-action/{app_id}` song song với query-param để hỗ trợ proxy/firewall doanh nghiệp không cho phép query string.
+    - Hàm helper `_inject_app_id(request, app_id)` nạp `app_id` vào scope `query_string` để tái sử dụng toàn bộ logic của `messenger.py`.
+  - **Phase 3: Tái cấu trúc Luồng Slider Setup & Onboarding Wizard:**
+    - **Bước 1 / 6:** Tạo Custom App trên Lark Developer.
+    - **Bước 2 / 6:** Bật tính năng Bot.
+    - **Bước 3 / 6:** Lấy 4 khóa & Kết nối với HiLark (Đưa form nhập `App ID`, `App Secret`, `Verification Token`, `Encrypt Key` lên ngay tại đây kèm nút *"Xác thực & Lưu khóa vào HiLark"*).
+    - **Bước 4 / 6:** Thêm quyền (Scopes) bằng JSON batch import.
+    - **Bước 5 / 6:** Cấu hình Request URL & Sự kiện (HiLark đã có sẵn `Encrypt Key` từ Bước 3 nên khi bấm Save trên Lark, Challenge được giải mã và trả lời HTTP 200 thành công ngay lập tức). Tự động sinh URL có `?app_id=cli_xxx`.
+    - **Bước 6 / 6:** Khai báo Redirect URL (`https://<domain>/setup/callback`, giữ sạch không query param per RFC 6749) & Phát hành phiên bản 1.0.0.
+    - **Hoàn tất cài đặt (Slide 7):** Hiển thị trạng thái App đã kết nối kèm nút bấm kích hoạt OAuth user duy nhất.
+  - **Phase 4: Bộ kiểm thử tự động (`server/tests/lark/test_multitenant_webhook_routing.py`):**
+    - Viết test suite chuyên dụng 7 test cases kiểm thử độc lập, pass 100%:
+      1. `test_inbound_encrypted_event_with_matching_app_id_param` (PASS)
+      2. `test_inbound_encrypted_event_with_mismatched_app_id_param` (PASS - từ chối fail-fast, không leak sang App khác)
+      3. `test_inbound_encrypted_event_without_param_resolves_latest_app` (PASS - fallback theo updated_at)
+      4. `test_card_action_callback_with_app_id_param_routes_to_correct_tenant` (PASS)
+      5. `test_url_verification_challenge_responds_with_challenge_code` (PASS)
+      6. `test_path_based_route_events_app_id_identical_to_query_param` (PASS)
+      7. `test_path_based_route_card_action_app_id` (PASS)
+    - Đồng thời sửa 2 async test trong `tests/lark/test_manual_edit_draft.py` (`@pytest.mark.anyio`) giúp toàn bộ test trong `tests/lark/` pass 100% (29/29 passed).
+  - **Phase 5: Tài liệu & Ghi nhận Quyết định:**
+    - Cập nhật `docs/lark_event_subscription.md` hướng dẫn cấu hình cả 2 dạng URL (Query param & Path param).
+    - Ghi nhận quyết định kiến trúc `EDL-0072` vào `docs/project-memory/DECISIONS.md`.
+    - Đánh dấu hoàn thành toàn bộ 5 phase trong `docs/IMPLEMENTATION_PLAN_APP_ID_WEBHOOK_ROUTING.md`.
+- **Bằng chứng xác thực (Verified in Container `hilark-server` & Live Tunnel Ngrok):**
+  - Đã sao chép `server/routers/lark.py`, `server/services/lark/messenger.py` và các template vào container `hilark-server`.
+  - Khởi động lại container `hilark-server`, trạng thái `Up (healthy)`.
+  - Kiểm thử live challenge mã hóa AES qua Ngrok:
+    + URL query param: `POST https://hertz-liftoff-earphone.ngrok-free.dev/api/lark/events?app_id=cli_aa63f447fc78de27` -> HTTP 200 `{"challenge":"live_test_challenge_external"}`.
+    + URL path-based: `POST https://hertz-liftoff-earphone.ngrok-free.dev/api/lark/events/cli_aa63f447fc78de27` -> HTTP 200 `{"challenge":"live_path_based_test"}`.
+    + URL không param (fallback): `POST https://hertz-liftoff-earphone.ngrok-free.dev/api/lark/events` -> HTTP 200 `{"challenge":"live_test_challenge_external_fallback"}`.
+
+
+## Latest: Khắc Phục Triệt Để Lỗi Tính Năng Tự Sửa Bản Nháp (Manual Edit Draft Form Callback & P2CardActionTrigger form_value Ingestion) (2026-11-03)
+- **Vấn đề đã xử lý:**
+  - Người dùng phản ánh: "check lại sỗ tính năng tự sửa của draft to approve UI đang có vấn đề, sửa xong nhưng bấm thì báo lỗi".
+  - **Phân tích nguyên nhân gốc:**
+    1. *Lark SDK unmarshal drop `form_value`:* Trong SDK `lark_oapi`, class `P2CardActionTriggerData` không khai báo thuộc tính `form_value` trong `_types`. Do đó khi nhận callback qua WebSocket, hàm `JSON.unmarshal` của SDK tự động bỏ qua và xóa sạch dữ liệu form nhập liệu của người dùng (`event.form_value`).
+    2. *Dispatcher chỉ tìm ở cấp `action`:* Trong `_internal_on_card_action_trigger` (`dispatcher.py`), code chỉ đọc `getattr(action, "form_value", None)`. Trong khi theo đặc tả Lark Card JSON 2.0, dữ liệu form được đặt ở `event.form_value`.
+    3. *HTTP Webhook extraction thiếu tầng `event`:* Trong `parse_card_action_payload` (`card_action_handler.py`), code chỉ đọc `action_dict.get("form_value")` mà bỏ qua `payload["event"]["form_value"]`.
+    4. *`submit_manual_edit` thiếu nội dung:* Do 3 nguyên nhân trên, `edited_content` luôn rỗng (`""`), dẫn đến việc hệ thống trả về thông báo lỗi: "Vui lòng nhập nội dung câu trả lời trước khi gửi".
+    5. *Không nhắm đúng `draft_id` cụ thể:* Luồng `send_latest` chỉ gọi `claim_latest_pending(owner_id)` chung chung thay vì ưu tiên claim chính xác theo `draft_id` được gắn trên thẻ.
+- **Giải pháp triển khai:**
+  - **Patch `P2CardActionTriggerData` (`server/services/lark/dispatcher.py`):**
+    - Monkey-patch khai báo `P2CardActionTriggerData._types["form_value"] = dict` và `setattr(P2CardActionTriggerData, "form_value", None)` tại thời điểm nạp module.
+    - Trong `_internal_on_card_action_trigger`: Trích xuất `form_val`, `input_val`, `btn_name`, `tag_name` đồng thời từ cả `action` và `event`.
+  - **Nâng cấp `parse_card_action_payload` (`server/services/lark/handlers/card_action_handler.py`):**
+    - Hỗ trợ bóc tách đa tầng: `event.form_value` -> `action.form_value` -> root `form_value`.
+    - Thêm cơ chế fallback trích xuất linh hoạt giá trị đầu tiên trong form nếu key tên component thay đổi.
+  - **Tối ưu hóa `DraftStore` & `DraftService` (`draft_store.py`, `draft_workflow.py`):**
+    - Thêm hàm `claim_draft(owner_id, draft_id, tenant_key)`: Cho phép claim chính xác bản nháp theo `id` hoặc `message_id`, đảm bảo thao tác sửa trên đúng tin nhắn đang duyệt.
+    - Nâng cấp `manual_edit_draft`, `submit_manual_edit`, và `cancel_manual_edit` ưu tiên tìm kiếm theo `draft_id` trên thẻ trước khi fallback về `latest_pending`.
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - Chạy bộ kiểm thử 4 test cases trong `server/tests/lark/test_manual_edit_draft.py`:
+    1. `test_p2_card_action_trigger_data_has_form_value`: PASS (unmarshal `form_value` thành công).
+    2. `test_parse_card_action_payload_extracts_form_value_from_event`: PASS (trích xuất payload thành công).
+    3. `test_handle_card_action_submit_manual_edit_success`: PASS (xác nhận gửi nội dung đã sửa và trả về thẻ trạng thái xanh).
+    4. `test_handle_card_action_manual_edit_opens_form_card`: PASS (mở thẻ form Card JSON 2.0 với nội dung điền sẵn).
+  - Khởi động lại container `hilark-server` thành công, bot WebSocket kết nối ổn định.
+
+
+## Latest: Rebuild Toàn Diện Chính Sách Khi Đồng Bộ & Cô Lập Tuyệt Đối Tài Liệu Nhóm Chat (2026-11-03)
+- **Vấn đề đã xử lý:**
+  1. **Đồng bộ chính sách (Policy Rebuild Flow):** Người dùng yêu cầu khi nội dung tài liệu Lark Docs được cập nhật và bấm "Đồng bộ ngay", hệ thống phải nạp lại và rebuild lại hoàn toàn chỉ mục (chunks, vectors, graph) của tài liệu đó thay vì tạo thêm 1 bản ghi tài liệu mới gây nhân bản / trùng lặp trong cơ sở tri thức chính sách.
+  2. **Cô lập tài liệu nhóm chat (Chat Group Document Isolation):** Đảm bảo tài liệu được gắn cho từng nhóm chat trong Base (Bảng 1) được cô lập tuyệt đối, không rò rỉ dữ liệu chéo giữa các nhóm kể cả khi dùng chung `weknora_default_dataset_id`.
+- **Giải pháp & Kiến trúc:**
+  - **WeKnora Client (`server/services/knowledge/weknora_client.py`):**
+    - Bổ sung `list_knowledges(dataset_id, page, page_size, tenant_id)` gọi `GET /api/v1/knowledge-bases/{dataset_id}/knowledge` để liệt kê toàn bộ tài liệu đang có trong knowledge base.
+    - Bổ sung `delete_knowledge(knowledge_id, tenant_id)` gọi `DELETE /api/v1/knowledge/{knowledge_id}` cho phép xóa triệt để một tài liệu kèm toàn bộ chunks/vectors liên quan.
+  - **Policy Rebuild Service (`server/services/knowledge/policy_sync.py`):**
+    - Thay thế hàm upload thông thường bằng `_upload_or_rebuild(file_name, file_bytes, mime_type, target_policy_kb, tenant_id)`:
+      + Tính mã MD5 hash của nội dung mới.
+      + Quét danh sách tài liệu hiện có trong KB chính sách qua `list_knowledges`.
+      + Nếu phát hiện tài liệu cùng tên: So sánh hash; nếu hash khác hoặc đang sync cưỡng bức (`force=True`), gọi `delete_knowledge` để dọn dẹp bản ghi cũ.
+      + Polling chờ worker `asynq` của WeKnora xóa hoàn tất khỏi DB (tránh lỗi `409 Conflict`), sau đó mới tải lên tệp mới.
+      + WeKnora tiến hành bóc tách lại, sinh chunk mới và embed lại toàn bộ. Đảm bảo KB chính sách chỉ luôn duy nhất 1 bản ghi mới nhất cho mỗi file tài liệu.
+  - **Chat Group Strict Isolation (`server/services/workflows/chat_workflow.py`):**
+    - Trích xuất danh sách tài liệu được cấp phép (`allowed_doc_names`, `allowed_kids`, `has_group_docs`) từ `chat_scopes`.
+    - **Khắc phục triệt để 3 điểm rò rỉ:**
+      1. *Nhóm 0 tài liệu:* Nếu nhóm chat không được cấp tài liệu dự án nào (`not has_group_docs`), hoàn toàn bỏ qua việc query vào `project_dataset_id`. Trong quá trình lọc chunk, 100% chunk không phải chính sách sẽ bị loại bỏ ngay lập tức.
+      2. *So khớp tên tệp chặt chẽ:* Thay vì kiểm tra substring 2 chiều dễ gây false positive (`doc_name in ad or ad in doc_name`), chuyển sang chuẩn hoá basename tệp và kiểm tra trùng khớp chính xác hoặc tiền tố tối thiểu 5 ký tự.
+      3. *Phân định chính sách an toàn:* Chỉ các chunk có `kb_id in policy_kb_ids` mới được công nhận là tài liệu chính sách dùng chung. Tài liệu trong project dataset dù có tên chứa chữ "policy" hay "quy định" cũng không thể vượt rào kiểm soát.
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - **Rebuild chính sách:**
+    - Test gọi `POST /policy/sync?tenant_key=19835e79ba9c9942&force=true`:
+      Log: `🔄 Rebuild 'Lark DocX (dox...).md': Đang xoá bản cũ (66f0...) để rebuild lại chỉ mục... ✔ Đã nạp & rebuild thành công`
+    - Kiểm tra `list_knowledges`: Tổng số tài liệu đúng 1, trạng thái `finalizing` ➔ `completed`. Không xuất hiện bản ghi nhân bản.
+  - **Cô lập nhóm chat:**
+    - Chạy kịch bản `process_chat_pipeline` kiểm thử thực tế trên 2 nhóm:
+      + Nhóm `test` (`oc_4a63905bd7a20fb15e03048e5e42b551`, 0 files): Trả về `num_chunks: 0` (hoàn toàn không thấy bất kỳ chunk nào của nhóm OmniOps).
+      + Nhóm `OmniOps` (`oc_efea34ca5a78a73f6e27db62138ee2a1`, 11 files): Trả về `num_chunks: 3` (`03_architecture.md`, `OmniOps_Project_Overview.docx.md`).
+    - Dữ liệu giữa các nhóm hoàn toàn tách biệt, đúng theo cấu hình trên Lark Base.
+
+
+## Latest: Khử Trùng Lặp Trước Khi Tải (Pre-Deduplication) & Bắn Thẳng File Vào WeKnora Tránh Gọi DocReader Dư Thừa (2026-11-02)
+- **Vấn đề đã xử lý:**
+  1. Người dùng phản ánh: "file lark docs dc gắn thẳng qua bên weknora rồi mà vẫn phải gọi docreader làm gì nhỉ, t tưởng cái này chĩ hỗ trợ tệp tin bên ngoài?" và "hồi nãy t mới upload là bên weknora đã nhận docs và đang xử lí rồi, docreader mới theo sau, check giúp t luồng hiện tại".
+  2. Phân tích nguyên nhân gốc từ kiến trúc:
+     - WeKnora có container docreader nội bộ (`WeKnora-docreader:50051`) kết nối với `WeKnora-app`. Khi nhận tệp nhị phân qua `POST /api/v1/knowledge-bases/{dataset_id}/knowledge/file`, WeKnora tự động đẩy sang docreader của nó để parse/chunking/indexing.
+     - HiLark cũng có AnyDoc gRPC docreader (`hilark.docreader:50051`) - vốn chỉ phục vụ bóc tách văn bản tức thì từ tin nhắn chat (ảnh/pdf gửi vào group) để nạp context cho LLM và extract claims vào MongoDB.
+     - Khi đồng bộ thư mục Drive trong `chat_scopes.py`, code cũ gọi `parse_lark_folder` (bên trong gọi DocReader gRPC) TRƯỚC KHI kiểm tra xem file đã tồn tại trên WeKnora chưa.
+     - Hậu quả: Vòng lặp `ScopeSync` chạy mỗi 30 giây. Cứ mỗi 30s nó lại tải và parse lại toàn bộ 11 file qua gRPC docreader gây lãng phí CPU/băng thông nghiêm trọng, và khi WeKnora đang xử lý background task (graph/wiki) thì docreader từ vòng lặp kế tiếp lại ập tới.
+- **Giải pháp triển khai:**
+  - Tách quá trình đồng bộ thư mục trong `chat_scopes.py` thành 2 giai đoạn:
+    1. **Thu thập metadata đệ quy trước (`_collect_folder_items`):** Quét cây thư mục Lark Drive (hỗ trợ subfolder lồng nhau) để lấy danh sách item mà không tải dữ liệu bytes.
+    2. **Pre-deduplication check:** So khớp với `existing_doc_map` (danh sách tài liệu đã đồng bộ của scope). Nếu tài liệu đã có `knowledge_id` trên WeKnora ➔ BỎ QUA NGAY LẬP TỨC mà không tải bytes hay gọi bất kỳ parser nào.
+    3. **Bắn thẳng nhị phân cho tệp ngoài (`itype == "file"`):** Đối với các tệp ngoài tải từ Drive (PDF, Word, Excel, CSV, MD...), HiLark chỉ tải bytes và nạp trực tiếp sang WeKnora với MIME type chuẩn, để WeKnora tự xử lý bằng pipeline docreader nội bộ của nó. Không gọi gRPC AnyDoc của HiLark.
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - Đã copy file `server/services/knowledge/chat_scopes.py` vào container và restart `hilark-server`.
+  - Log thực tế của container:
+    ```
+    2026-11-02 16:56:41,554 [INFO] hilark.lark: ✔ [LARK DRIVE] Quét thư mục YDz8fmSXvlvtled3wsEjJcijp0g: tìm thấy 3 tệp/thư mục.
+    2026-11-02 16:56:42,450 [INFO] hilark.lark: ✔ [LARK DRIVE] Quét thư mục WJmpfKtpll7VUkdVgZ3jdxLlpOb: tìm thấy 2 tệp/thư mục.
+    2026-11-02 16:56:43,424 [INFO] hilark.lark: ✔ [LARK DRIVE] Quét thư mục CPayf0LjOlSi8ydd2BCjl6Iipda: tìm thấy 4 tệp/thư mục.
+    2026-11-02 16:56:44,378 [INFO] hilark.lark: ✔ [LARK DRIVE] Quét thư mục ZExZf0EhHlCzC4d0PqgjSCnBpIF: tìm thấy 5 tệp/thvr mục.
+    2026-11-02 16:56:44,378 [INFO] services.knowledge.chat_scopes: 📁 [ChatScope Sync] Thư mục YDz8fmSXvlvtled3wsEjJcijp0g chứa 11 tệp (sau khi quét đệ quy).
+    2026-11-02 16:56:44,462 [INFO] services.knowledge.chat_scopes: ✔ [ChatScope Sync] Đồng bộ thành công nhóm 'OmniOps' (oc_efea34ca5a78a73f6e27db62138ee2a1): Trạng thái='Hoạt động', 11 files WeKnora, Nhãn cấm=['Ngân sách', 'Vận hành']
+    ```
+  - Quá trình kiểm tra 11 tệp mất đúng 84ms, hoàn toàn không gọi gRPC DocReader, không tải lại bytes, và trạng thái 11 files WeKnora của nhóm `OmniOps` được giữ nguyên vẹn.
+
+## Latest: Fix Đệ Quy Thư Mục Lồng Nhau (Nested Folders) Khi Đồng Bộ Base ➔ WeKnora (2026-11-02)
+- **Vấn đề đã xử lý:**
+  - Nhóm `OmniOps` dán link thư mục cha `YDz8fmSXvlvtled3wsEjJcijp0g`, bên trong chứa 3 thư mục con: `01_project`, `03_sensitive`, `04_operations`.
+  - Trong `server/services/knowledge/chat_scopes.py`, đoạn code cũ tự duyệt `alist_drive_folder_files` chỉ ở cấp 1 (shallow scan) và chỉ xử lý `itype in ["docx", "wiki", "file"]`. Khi gặp `itype == "folder"`, code cũ không làm gì, dẫn đến việc bỏ qua toàn bộ 3 thư mục con và kết quả báo `0 files WeKnora`.
+- **Giải pháp & Bằng chứng:**
+  - Refactor khối 6.2.1 trong `chat_scopes.py`: Chuyển sang sử dụng `doc_parser_service.parse_lark_folder(token, recursive=True, max_depth=3, tenant_key=eff_tenant)`.
+  - Kết quả kiểm chứng thực tế trong container:
+    - Tìm thấy đầy đủ **11 tài liệu con** nằm sâu trong các thư mục lồng nhau: `risk_register.md`, `incident_report.md`, `vendor_contract_summary.md`, `employee_records.csv`, `finance_snapshot.csv`, `security_register.md`, `03_architecture.md`, `02_requirements.md`, `OmniOps_Project_Overview.docx`, `04_api_contract.md`, `01_project_charter.md`.
+    - Phân giải thành công qua AnyDoc / DocX OpenAPI và nạp toàn bộ 11 tài liệu vào WeKnora dataset của nhóm `OmniOps` (`59eaf81b-16ee-4576-b480-7132f3e8c34b`).
+    - Log xác nhận: `✔ [ChatScope Sync] Đồng bộ thành công nhóm 'OmniOps' (oc_efea34ca5a78a73f6e27db62138ee2a1): Trạng thái='Hoạt động', 11 files WeKnora, Nhãn cấm=['Ngân sách', 'Vận hành']`.
+
+## Latest: Hỗ Trợ Phân Giải Thư Mục (Lark Drive Folder) Cho Chính Sách Base Với Cơ Chế Cô Lập Tenant Nghiêm Ngặt (2026-11-02)
+- **Vấn đề đã xử lý:**
+  1. Mở rộng hỗ trợ nạp tài liệu từ Thư mục (Lark Drive Folder) trong Bảng 2 (Chính sách & Quy định Công ty): Khi người dùng dán liên kết 1 Folder Lark Drive vào Base, hệ thống tự động quét đệ quy các tài liệu con (DocX, Wiki, file PDF/Word/Excel/TXT, hình ảnh OCR) và nạp toàn bộ vào Policy KB.
+  2. Gia cố nguyên tắc cô lập dữ liệu đa tenant (Multi-tenant data isolation fail-closed): Mọi thao tác liệt kê tệp, tải nhị phân và upload WeKnora đều gắn chặt với `tenant_key` và `weknora_tenant_id` của tenant yêu cầu, ngăn chặn hoàn toàn việc rò rỉ hoặc ghi đè chéo giữa các tổ chức.
+- **Giải pháp & Kiến trúc:**
+  - **Lark OpenAPI Client (`server/services/lark/client.py`):**
+    - Bổ sung tham số `tenant_key: Optional[str] = None` cho 4 hàm: `alist_drive_folder_files`, `list_drive_folder_files`, `adownload_drive_file`, `download_drive_file`.
+    - Truyền `tenant_key=tenant_key` trực tiếp vào `_get_request_option(as_user=..., tenant_key=tenant_key)` cả khi request chính và khi fallback bot token, bảo đảm TokenBroker cấp đúng token của tenant đó.
+  - **Doc Parser Service (`server/services/knowledge/doc_parser.py`):**
+    - Nâng cấp `parse_lark_folder` và `parse_text_links`: Nhận `tenant_key: Optional[str] = None` và truyền xuyên suốt qua tất cả các hàm con (`alist_drive_folder_files`, `parse_lark_docx`, `parse_lark_wiki`, `adownload_drive_file`).
+  - **Chat Scopes (`server/services/knowledge/chat_scopes.py`):**
+    - Truyền `tenant_key=eff_tk` khi phân giải thư mục Lark Drive cho nhóm chat.
+  - **Policy Sync Service (`server/services/knowledge/policy_sync.py`):**
+    - Trong chu trình `sync_policies`: Sau khi thử DocX và Wiki, nếu không khớp sẽ tự động gọi `doc_parser_service.parse_lark_folder(tok, tenant_key=eff_tenant)`.
+    - Nạp toàn bộ tài liệu con thành công vào `target_policy_kb` với `tenant_id=weknora_tenant_id`.
+    - Báo cáo chi tiết số lượng tệp hợp lệ và tên từng tệp từ thư mục ra console log UI per tenant.
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - Chạy `python3 -m py_compile` sạch trên cả 4 file.
+  - Sync code vào container `hilark-server` và khởi động lại dịch vụ thành công.
+  - Endpoint `/policy/status?tenant_key=19835e79ba9c9942` trả về HTTP 200 OK.
+
+## Latest: UI Cấu Hình Chu Kỳ Quét & Nhật Ký Đồng Bộ Chính Sách Base ➔ WeKnora (2026-11-02)
+- **Vấn đề đã xử lý:**
+  1. Kiểm tra và xác thực cơ chế chạy của `policy_sync_interval_seconds = 3600` sau khi kiến trúc đa tenant được tái cấu trúc.
+  2. Đưa cấu hình chu kỳ quét định kỳ (`policy_sync_interval_seconds`) lên UI trên cả 2 màn hình cài đặt (`onboarding_wizard.html` và `setup_one_click.html`) để quản trị viên có thể tùy chỉnh trực tiếp.
+  3. Bổ sung bảng điều khiển Nhật ký đồng bộ trực tiếp (Live Logs console) trên UI, cho phép xem tiến trình quét tài liệu, số lượng bản ghi trích xuất, và chủ động bấm nút "🔄 Đồng bộ ngay" hoặc "Làm mới".
+- **Giải pháp & Kiến trúc:**
+  - **Backend Models & Storage:**
+    - `server/models/onboarding.py`, `server/models/user_settings.py`: Thêm `policy_sync_interval_seconds: Optional[int] = Field(default=3600)`.
+    - `server/services/user_settings_service.py`: Lưu vào collection `user_settings` đồng thời đồng bộ vào document của tenant trong `tenants` (`$set: {"policy_sync_interval_seconds": ...}`).
+  - **Dynamic Multi-tenant Scheduler & Real-time Logs:**
+    - `server/services/knowledge/policy_sync.py`:
+      - Thiết kế bộ đệm xoay vòng (ring buffer) `_recent_logs: Dict[str, List[str]]` ghi nhận các mốc sự kiện với timestamp định dạng `[HH:MM:SS]`.
+      - Tái cấu trúc vòng lặp `start_policy_sync_loop`: Tick mỗi 60 giây và duyệt qua các tenant đang hoạt động, so sánh `now - last_synced_at >= tenant_interval`. Người dùng thay đổi cấu hình trên UI sẽ có hiệu lực ngay trong vòng 60s mà không cần restart server.
+      - Lưu `last_policy_sync` gồm timestamp, status, số records, tokens, và logs vào MongoDB.
+    - `server/routers/policy.py`:
+      - Nâng cấp `GET /policy/status`: Trả về `sync_interval_seconds`, `last_sync`, và `recent_logs` theo từng tenant.
+      - Nâng cấp `POST /policy/sync`: Trả về mảng `logs` chi tiết sau khi hoàn thành.
+      - Bổ sung `POST /policy/interval`: Cho phép cập nhật nhanh chu kỳ quét.
+    - `server/routers/onboarding.py`: Endpoint `/onboarding/api/save` và `/onboarding/api/settings/{open_id}` hỗ trợ đầy đủ `policy_sync_interval_seconds`.
+  - **Frontend UI & UX (Apple Minimalist):**
+    - `server/templates/onboarding_wizard.html` & `server/templates/setup_one_click.html`:
+      - Thêm KHỐI 3: Dropdown chọn chu kỳ quét (30 phút, 1 giờ, 3 giờ, 6 giờ, 12 giờ, 24 giờ).
+      - Hộp nhật ký trực tiếp (Dark Terminal UI) hiển thị trạng thái bảng Base, mốc thời gian lần sync gần nhất, và toàn bộ log chi tiết.
+      - Tích hợp nút `🔄 Đồng bộ ngay` (`triggerPolicySyncLive()`) và `Làm mới` (`loadPolicyStatusAndLogs()`).
+      - Tự động nạp dữ liệu khi mở giao diện cấu hình và lưu đồng bộ khi nhấn "Lưu Thay Đổi Cấu Hình".
+- **Bằng chứng xác thực (Verified in Container `hilark-server`):**
+  - Đồng bộ file vào container và restart `hilark-server` thành công.
+  - Worker khởi động: `⏰ [PolicySync Loop] Khởi động worker đồng bộ định kỳ theo từng tenant (Tick 60s).`
+  - Gọi `GET /policy/status?tenant_key=19835e79ba9c9942`: Trả về `sync_interval_seconds: 3600`, `policy_table_id: "tblFoQ7C8qdu6BE8"`, `last_sync` kèm đầy đủ 4 dòng nhật ký có timestamp.
+  - Gọi `POST /policy/sync?tenant_key=19835e79ba9c9942&force=true`: Thực thi quét Base và trả về HTTP 200 kèm `logs`.
+  - Gọi `POST /onboarding/api/save` và `POST /policy/interval`: Lưu chu kỳ mới vào DB và cập nhật trạng thái runtime tức thì.
+  - Render HTML của cả `/onboarding/wizard` và `/setup` chứa đầy đủ cấu trúc UI mới.
+- **Vấn đề đã xử lý:** Lỗi Lark OpenAPI trả về `HTTP 400 Bad Request, code 230099, ErrCode 200621: msg: [parse card json err, please check whether the card json is correct], value: [unknown property, property: elements, path: ]` khi bot gửi thẻ phê duyệt bản nháp câu trả lời (`DRAFT_PENDING_APPROVAL`) tới DM của chủ nhân (`ou_79d38f5e2b6034c05476a66df0be3528`).
+- **Nguyên nhân gốc:**
+  - Trong thẻ tương tác khai báo `"schema": "2.0"` (`build_draft_card`, `build_draft_edit_form_card`, `build_updated_status_card`), cấu trúc Schema 2.0 quy định các phần tử giao diện nằm trong `"body": { "elements": [...] }`.
+  - Tuy nhiên ở tầng gốc (root dictionary) vẫn còn sót thuộc tính `"elements": elements`. Bộ kiểm tra hợp lệ nghiêm ngặt của Lark Schema 2.0 từ chối vì `elements` ở root path là "unknown property".
+- **Giải pháp:**
+  - Sửa `server/services/lark/card_builder.py`: Loại bỏ `"elements": elements` ở root level của cả 3 hàm tạo thẻ Schema 2.0 (`build_draft_card`, `build_draft_edit_form_card`, `build_updated_status_card`).
+  - Cập nhật `server/services/lark/messenger.py`: Nâng cấp regex/pattern phát hiện card string JSON hỗ trợ cả `"schema"` và `"body"`.
+  - Thêm unit test `server/tests/lark/test_card_builder_schema.py`: Kiểm tra toàn diện cả 4 test case đều passed (100%).
+  - Đã sync code vào container `hilark-server` và xác thực gửi thẻ thực tế qua Lark OpenAPI thành công (nhận `message_id: om_x100b61bd8ce798a0edadb48475baf9e`).
+
+## Latest: WS8 — "Tra cứu có hợp đồng" cho Tenant Resolution & Token Flow (EDL-0070, 2026-11-02)
+- **Trạng thái:** code + test của cả 6 giai đoạn (GĐ0–GĐ6) đã xong trên nhánh `fix/tenant-resolution-token`.
+  **Chưa commit, chưa deploy** (AGENTS: agent không tự commit).
+- **Bằng chứng hồi quy:** `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 .venv/bin/python -m pytest tests -q`
+  → **250 passed, 3 warnings in 25.04s**. Baseline GĐ0 là **117 passed / 11 failed / 37 errors**.
+  `import main` chạy sạch; `python -m compileall core services routers database models` exit 0.
+- **GĐ1 — Token loop & TokenBroker (T1–T4):** `server/core/token_loop.py` (daemon thread, `submit/asubmit`, stop trong
+  lifespan), `server/core/tenant_errors.py` (6 exception có `error_code`+`http_status`), TokenBroker cache 3 chiều
+  `(tenant_key, app_id, kind)` + single-flight + buffer 300s + không bao giờ trả `""`; `bitable.py`/`client.py` dùng
+  `get_sync`, `isv_token_service` thành wrapper. Test: `tests/auth/test_token_loop_concurrency.py`,
+  `tests/auth/test_token_broker.py`.
+- **GĐ2 — TenantResourceResolver fail-closed (T7/T8/C1/C2/C4):** `services/tenancy/tenant_resolver.py` hợp đồng 6 bước,
+  cache 60s, `resolve_current()` theo ContextVar. Đã xoá `_resolve_app_credentials_*`, nhánh `.env`/hardcode
+  `"tblZphzEZPLQAy24"` và các `or settings.*` trong `chat_scopes`, `chat_workflow`, `digest_workflow`, `policy_sync`,
+  `weknora_client` (`dataset_id` bắt buộc), `token_service`, `tenant_lifecycle_handler`. Test:
+  `tests/tenancy/test_tenant_resolver.py`, `tests/tenancy/test_sentinel_env.py`.
+- **GĐ3 — Bỏ ghi đè singleton (C3):** `LarkBaseService.for_tenant()/for_policy_table()`, instance không tenant raise
+  `TenantContextMissing`. Test: `tests/tenancy/test_base_service_tenant_isolation.py`.
+- **GĐ4 — OAuth mang danh tính App (T5/T6/S1):** collection `oauth_states` (TTL 10', dùng một lần),
+  `/auth/lark/login` đòi `tenant_key`, callback truyền `app_id/app_secret`, `exchange_code_for_token` đòi
+  `expected_tenant_key` và không ghi `primary_user_token`. Test: `tests/auth/test_oauth_state_service.py`,
+  `tests/auth/test_oauth_login_flow_contract.py`.
+- **GĐ5 — State machine + invalidation + sweeper + phản hồi người dùng (T9/S2–S4):** `services/tenancy/tenant_state.py`
+  (`mark_ready`, `invalidate_caches`), `tenant_refresh_sweeper` thay `start_token_refresh_loop`, lỗi chat
+  `services/lark/tenant_error_reply.py`, HTTP 409/401/503 qua handler trong `main.py`, nút **"Thử lại"** trong
+  `templates/setup_one_click.html`. Test: `tests/tenancy/test_tenant_state_machine.py`,
+  `tests/auth/test_tenant_refresh_sweeper.py`, `tests/lark/test_tenant_error_reply.py`,
+  `tests/final_test/test_tenant_error_http_mapping.py`.
+- **GĐ6 — Dữ liệu & bảo mật (D1/D2):** `scripts/cleanup_test_tenant.py` (mặc định `--dry-run`, có
+  `--mongo-url/--mongo-db`; đã verify `--apply` xoá 6 document trên DB seed local, còn 0), test DB riêng
+  `LarkAssistant_test` qua `tests/conftest.py` + `HILARK_TEST_MONGO_URL`, `docker-compose.prod.yml` bỏ credential
+  Atlas embedded (`${MONGO_URL:?...}` → `docker compose config` EXIT=1 khi thiếu), audit script thêm mục 9
+  (state machine + `app_id` khớp).
+- **Sửa thêm trong phiên này (phát hiện khi audit lại spec, không phải churn test):**
+  1. `main.py` thiếu handler cho `TokenUnavailable`/`UserTokenMissing` (không phải subclass `TenantResolutionError`)
+     ⇒ Lark từ chối cấp token bị trả 500 thay vì 503/401. Đã đăng ký handler + `/auth/lark/exchange` nhả lỗi có kiểu
+     để body giữ `error_code` + `tenant_key`.
+  2. `resolve_effective_owner_open_id()` (`chat_workflow.py`) vẫn còn 3 nguồn toàn cục: `settings.LARK_USER_OPEN_ID`,
+     "tenant bất kỳ" và `auth_tokens.primary_user_token` ⇒ bản nháp của tenant A có thể gửi cho lãnh đạo tenant B.
+     Thu còn 7 bậc chỉ nguồn thuộc tenant; `user_settings`/`system_config` chỉ được tin khi document mang `tenant_key`
+     khớp (`routers/onboarding.py` nay ghi `tenant_key` vào `lark_admin_config`); `_sync_runtime_admin_open_id` không
+     còn ghi `settings.LARK_USER_OPEN_ID`. Test: `tests/final_test/test_owner_open_id_tenant_scoped.py`.
+  3. Xoá `bitable.get_tenant_access_token_async()` và hai attribute `_app_access_token[_expires_at]` còn sót của
+     `LarkTokenService` (thuộc danh sách "Xoá" của GĐ1/GĐ4).
+- **Việc còn lại — cần người dùng:**
+  1. **D2:** tenant tương ứng registration `19a84399cc971978` / App `cli_aa6c6ae8baf85e11` vẫn thiếu App Secret hợp lệ
+     (Lark báo App ID mismatch, ghi nhận ở mục dưới). Cần nhập secret qua `register_app` + `link_tenant`; nếu secret đã
+     mất thì uninstall/setup lại. Agent không tự sinh hay đoán credential.
+  2. **Đổi mật khẩu MongoDB Atlas** vì connection string từng nằm trong `docker-compose.prod.yml`/Git history (EDL-0024),
+     rồi set `MONGO_URL`/`MONGODB_URI` trong `.env` của máy deploy.
+  3. Chạy `scripts/audit_tenant_config_readonly.py` và `scripts/cleanup_test_tenant.py --apply` trên production sau khi review dry-run.
+  4. Chạy lại full suite + audit **trên Atlas thật** (phiên này Atlas không truy cập được: `SSL: TLSV1_ALERT_INTERNAL_ERROR`).
+  5. Commit nhánh `fix/tenant-resolution-token` khi người dùng sẵn sàng.
+- **Chưa làm / chưa verify:** deploy production, Notion Decision Log (**không có Notion MCP** nên EDL-0070 là Local Record),
+  test thủ công E2E hai tenant song song trên môi trường thật.
+- **Nếu scale ≥ 2 replica:** phải thêm lease Mongo cho `refresh_token` trước khi bật sweeper (giả định GĐ5).
+
+## Latest (superseded by EDL-0070): WS7 - Single Source of Truth Refactor (2026-11-02)
+- **Status:** ✅ COMPLETED - All 5 bypass locations refactored, 46/46 tests passing (100%)
+- **Deliverables completed:**
+  1. **Task #1:** Fixed `base_provision_service.py:114` - changed `isv_token_service.get_tenant_access_token()` → `tenant_token_manager.get_token(token_type="bot")`
+  2. **Task #2:** Fixed `one_click_setup_service.py:352` - same change as Task #1
+  3. **Task #3:** Fixed `messenger.py:299, 541` (2 locations) - changed `token_service.get_valid_user_token()` → `tenant_token_manager.get_token(token_type="user")`
+  4. **Task #4:** Fixed `runtime.py:39, 54` (2 locations) - same change as Task #3
+  5. **Task #5:** Fixed `bitable.py:186` - created 3-tier solution:
+     - `get_tenant_access_token_async()`: New async version using `tenant_token_manager.get_token()`
+     - `get_tenant_access_token()`: Sync wrapper using `asyncio.run()` when safe
+     - `_get_tenant_access_token_fallback()`: Old implementation for edge cases (when event loop is already running)
+  6. **Task #6:** Full test suite verification - 46/46 tests PASSED in 14.36s (zero regressions)
+- **Architecture decision:**
+  - All token access now flows through `TenantTokenManager` as single source of truth
+  - Per-tenant RAM cache + asyncio.Lock prevents race conditions
+  - Zero direct calls to `isv_token_service` or `token_service` from business logic
+  - Backward compatibility preserved via sync wrappers for legacy callers
+- **Files modified:**
+  - `server/services/lark/base_provision_service.py`
+  - `server/services/setup/one_click_setup_service.py`
+  - `server/services/lark/messenger.py`
+  - `server/services/lark/runtime.py`
+  - `server/services/lark/bitable.py`
+- **Test results:**
+  - 30 unit tests (test_tenant_token_manager.py) - PASSED
+  - 7 integration tests (test_tenant_token_manager_integration.py) - PASSED
+  - 9 ISV token service tests (test_isv_token_service.py) - PASSED
+  - Total: **46/46 tests PASSED (100%)** in 14.36s
+- **Next steps:**
+  - Update `DECISIONS.md` with EDL-0069 (WS7: Single source of truth refactor)
+  - Monitor production logs for any edge cases with sync wrapper fallback
+  - Consider migrating remaining sync callers (`_get_headers`, `subscribe_base_events`, `get_bot_chats`) to async in future sprint
+
+## Previous: WS6 - Integration Tests & Documentation (2026-11-02)
+- **Status:** ✅ COMPLETED - All 7 E2E integration tests passing (100%)
+- **Deliverables completed:**
+  1. **WS1:** TenantTokenManager singleton (650 lines) with per-tenant cache + asyncio.Lock architecture, zero .env fallback design
+  2. **WS2:** 30 unit tests covering cache hits/misses, expiry buffers, concurrency patterns, error recovery (30/30 PASSED)
+  3. **WS3:** Refactored `bitable.py` (-50 lines) to use TenantTokenManager for token provisioning (41/41 tests PASSED)
+  4. **WS4:** Refactored `client.py` Lark client builder (-57 lines) to use centralized token manager (39/39 tests PASSED)
+  5. **WS5:** Removed .env fallback via IS_ISV_MODE guards in `token_service.py`: production (IS_ISV_MODE=True) disables legacy PRIMARY_TOKEN_DOC_ID fallback; single-tenant (IS_ISV_MODE=False) retains backward compat (126/128 tests PASSED)
+  6. **WS6 Integration Tests:** 7 E2E test suites all passing:
+     - `test_e2e_multi_tenant_isolation_separate_tokens`: Verifies tenant A/B token isolation
+     - `test_e2e_concurrent_tenants_independent_refresh`: 5 parallel tenant refresh operations
+     - `test_e2e_cache_persistence_across_multiple_requests`: Token reuse across 10 requests
+     - `test_e2e_user_and_bot_tokens_isolated_same_tenant`: Per-token-type isolation
+     - `test_e2e_error_recovery_cache_invalidation`: Error handling and cache cleanup
+     - `test_e2e_service_delegation_parameters_correct`: Verify exact parameter passing to services
+     - `test_e2e_monitoring_stats_accuracy`: Cache stats accuracy (total_tenants_tracked)
+  7. **Full test suite:** 46/46 tests pass (30 unit + 7 integration + 9 final ISV tests) with zero regressions
+- **Documentation updated:**
+  - `PROJECT_CONTEXT.md`: Added TenantTokenManager architecture, per-tenant isolation design, IS_ISV_MODE role
+  - `DECISIONS.md`: Added EDL-0068 entry for centralized token management decision
+  - `HANDOFF.md`: Session completion status
+- **Technical notes:**
+  - Fixed patch paths: token_service imports inside methods (`_refresh_user_token` @ line 215), so patched at `services.auth.token_service.token_service` not `services.auth.tenant_token_manager.token_service`
+  - Fixed stats method: `get_cache_stats()` now counts unique tenants from cache keys (union of user + bot cache) instead of locks
+  - Fixed mock signatures: All mock side_effect functions now accept `**kwargs` to handle keyword arguments in delegated calls
+
 ## Current task
-- **Goal:** Kiểm thử và hoàn thiện toàn diện Hệ thống Trợ lý AI theo Đề bài thử việc (9 trang) & Chuẩn bị Môi trường Triển khai Sản xuất (Production-Ready Architecture) cho Anh Hiệp:
-  1. **Phase 1: Group Setup, Baseline Docs, Multimodal OCR & Knowledge Alignment:** Đã hoàn thành 100% (10/10 test cases passed).
-  2. **Phase 2: Chat Intent, Safety Guardrails & HITL Interactive Governance:** Đã hoàn thành 100% (9/9 test cases passed).
-  3. **Phase 3: End-to-End Daily Digest & Management Reporting:** Đã hoàn thành 100% (9/9 test cases passed).
-  4. **Phase 4: Hybrid BYOK, Auto-Provision Lark Base & Onboarding Screen Guide:** Đã hoàn thành 100% (18/18 test cases passed).
-  5. **Nâng cấp Multi-Provider LLM & Apple Minimalist UI:** Hỗ trợ ChatGPT, Anthropic, Google, và Custom (OpenAI-compatible), timeout tùy chỉnh, base URL tùy biến, Initializing Screen mượt mà và loại bỏ 100% emoji khỏi giao diện.
-  6. **Hướng dẫn Tạo Bot & Cấu hình Hạ tầng Nâng cao:** Bổ sung hướng dẫn 2 phút tạo Custom App trên Lark Developer, form nhập và thẩm định trực tiếp cặp App ID & App Secret qua Lark Open Platform, cùng tùy chọn nâng cao kết nối MongoDB riêng của doanh nghiệp.
-  7. **Chiến lược Kiến trúc Lark Store App (ISV Multi-Tenant SaaS) & Cụm Server Bảo trợ:** Nhận chỉ đạo và cam kết hạ tầng máy chủ tập trung từ Anh Hiệp ("Cần server anh cấp server"), lập Kế hoạch triển khai toàn diện `IMPLEMENTATION_PLAN_LARK_STORE_ISV_APP.md` cho mô hình SaaS Multi-Tenant (1-Click Install từ Lark App Directory, cô lập dữ liệu `tenant_key`, dynamic ISV token lifecycle).
-  8. **Hoàn thành Workstream 1 - Vòng đời Token ISV & Marketplace Auth Engine:** Xây dựng `ISVTokenService`, nhận `app_ticket` qua webhook, cấp mới và cache `app_access_token` và `tenant_access_token` độc lập theo `tenant_key`, Dual-Mode tương thích ngược Custom App (9 TCs passed).
-  9. **Hoàn thành Workstream 2 - Cô lập Dữ liệu Multi-Tenant trong MongoDB:** Bổ sung `tenant_key` vào 6 Models cốt lõi (`Entity`, `Fact`, `ChatScopeRecord`, `StagingMessage`, `DailyDigestRecord`, `UserSettingsRecord`), nâng cấp Index Model compound với tiền tố `tenant_key`, xây dựng `TenantScopedCollection` & `scoped_query` engine chống rò rỉ dữ liệu chéo giữa các công ty (6 TCs passed).
-  10. **Hoàn thành Workstream 3 - Bộ định tuyến Sự kiện & Client Pool Đa Doanh nghiệp:** Bóc tách `tenant_key` từ Event Header / Sender trong `parse_event`, tự động kích hoạt `TenantContext` trong `_dispatch_to_handlers`, xử lý sự kiện Vòng đời Doanh nghiệp `app_status_change` & `app_uninstalled` qua `tenant_lifecycle_handler`, hỗ trợ `tenant_key` trong các hàm gửi tin `messenger.py` (8 TCs passed).
-  11. **Hoàn thành Workstream 4 - Đa Dataset WeKnora & Auto-Provision Bitable theo Doanh nghiệp:** Tự động cấp phát WeKnora Tenant và bộ 2 KB chuẩn (Policy & Wiki Digest), sinh mật khẩu Admin ngẫu nhiên an toàn, bàn giao qua Lark DM và nhúng thông tin trực tiếp vào Screen Guide Onboarding Wizard (Giải pháp B), tự động tạo Lark Base trên Drive doanh nghiệp theo `tenant_key` (10 TCs passed).
-  12. **Hoàn thành Workstream 5 - Onboarding & Trải nghiệm Kích hoạt 1-Click từ Marketplace:** Tự động gửi Lark Interactive Card V2 chào mừng khi nhận sự kiện cài đặt app từ Store, xây dựng giao diện Adaptive Dual-Mode Screen Guide (3 bước tinh gọn cho ISV Mode, 4 bước chuẩn cho Custom App Mode), hỗ trợ bộ lệnh điều hành nhanh trong DM 1-1 cho Admin (/status, /dashboard, /weknora, /setup, /wizard) (9 TCs passed).
-  13. **Khắc phục lỗi Onboarding Wizard & Dọn dẹp Chuẩn hóa Lark Base (EDL-0028, EDL-0029, EDL-0030):** Khắc phục lỗi `save_user_settings()` nhận `tenant_key`, dọn sạch 100% các cột rác (`Text`, `Single option`, `Date`, `Attachment`), xóa 10 dòng trống rỗng, chuẩn hóa tên tiếng Việt cho view và trường primary của Base; tự động hóa hoàn toàn trong `base_provision_service.py` và rebuild container `hilark-server` thành công (117/117 TCs passed).
-  14. **Khắc phục Triệt để Lỗi FieldNameNotFound (code 1254045) Khi Thêm Bot Vào Nhóm Chat:** Cách ly cache schema theo `(app_token, table_id)`, khử trùng lặp và làm sạch bộ lọc alias thích ứng (`_adapt_fields`), đồng thời tự động phân giải đúng Base của Tenant trong `_internal_on_bot_added_event`.
-- **Status:** SẴN SÀNG 100% - TOÀN BỘ 117/117 TEST CASES PASSED, DOCKER SERVER HEALTHY, BASE VÀ WEKNORA ĐĂNG NHẬP 100% THÀNH CÔNG.
 
 ## 15. Chuẩn Hóa Cổng Đăng Nhập WeKnora Web Console (Cổng 80) & Cấp Quyền Admin Hệ Thống
 - **Vấn đề người dùng gặp phải:** Khi click vào nút đăng nhập WeKnora, trình duyệt nhận phản hồi JSON `{"error":"Unauthorized: missing authentication"}`.
@@ -495,3 +902,120 @@
   1. `token_service.get_valid_user_token(tenant_key="19835e79ba9c9942")` tự động tìm và trả về đúng token sống `u-6q2EuY.gt5FWG...` (100% passed).
   2. `_prepare_user_msg_payload_async()` tạo thành công `RequestOption` mang `opt.user_access_token = u-6q2EuY.gt5FWG...` (100% passed).
   3. Container `hilark-server` đã rebuild và chạy healthy.
+
+## Current session update — Khắc phục lỗi UI báo lỗi dù tin nhắn đã gửi thành công (Card Action Response Schema & Sender Mismatch)
+- Root cause:
+  1. Sau khi `draft_svc.send_latest` gửi tin nhắn vào nhóm thành công (HTTP 200 OK), hàm callback trả về HTTP response cho Lark mang trường `"card": updated_card` dạng raw card dictionary `{header: ..., elements: ...}`, trong khi chuẩn OpenAPI Card Action Callback của Lark quy định bắt buộc phải bọc trong `{"card": {"type": "raw", "data": updated_card}}`. Do sai schema payload phản hồi, ứng dụng Lark client từ chối cập nhật và hiển thị toast đỏ "Lỗi thao tác / Operation failed" trên màn hình người dùng.
+  2. `card_action_handler._execute_card_action` gọi `lark_svc.update_card_message(message_id, updated_card)` bằng singleton `default_lark_service` (App `.env` cũ) thay vì Custom App đã gửi thẻ, khiến Lark trả về `400 Bad Request / code=230001 (bot or user is not the message's sender)`.
+  3. Thẻ `build_draft_card` trong `chat_workflow.py` thiếu truyền `tenant_key=eff_tenant`, dẫn tới payload nút bấm gửi lên có `tenant_key: ""` rỗng.
+- Đã sửa:
+  1. `server/services/lark/messenger.py`: Chuẩn hóa phản hồi HTTP Callback theo đúng đặc tả Lark: `"card": {"type": "raw", "data": updated_card}`. Đồng thời tự động truy vấn `tenant_key` từ `admin_open_id` nếu payload callback bị khuyết.
+  2. `server/services/lark/handlers/card_action_handler.py`: Tự động phân giải `lark_svc` theo Custom App của tenant để lệnh cập nhật thẻ tại chỗ nếu gọi sẽ khớp chính xác Sender Bot của tin nhắn.
+  3. `server/services/workflows/chat_workflow.py`: Bổ sung `tenant_key=eff_tenant` khi gọi `build_draft_card`.
+- Verification:
+  1. Docker container rebuild và up healthy.
+  2. Kiểm tra serialization của Card Action callback: khớp 100% định dạng `{"type": "raw", "data": ...}`.
+
+## Current session update — Khắc phục lỗi Luồng Hỏi Đáp Chính Sách Toàn Công Ty bị Drop Chunks (Document Isolation Filter)
+- Vấn đề: Câu hỏi chính sách công ty (ví dụ: "À cho em xin số ngày nghỉ lễ") được JEV phân loại đúng domain `COMPANY_POLICY` và WeKnora trả về đúng các chunks chính sách, nhưng hệ thống lại báo KB rỗng, ép downgrade sang Draft và không trả lời được chính sách.
+- Nguyên nhân gốc:
+  1. Tại `server/services/workflows/chat_workflow.py` (dòng 1172), điều kiện kiểm tra `is_policy_doc` so sánh cứng `kb_id == str(settings.WEKNORA_POLICY_DATASET_ID)`. Trong mô hình Multi-Tenant, `policy_dataset_id` của tenant là một ID riêng (`f4f07033-8eab-4c22-a7c5-6cef2b9cc079`), hoàn toàn khác với ID trong `.env`.
+  2. Tên file khi sync từ Lark DocX là `Lark DocX (WzxDw72ILiBI1Ika862jGWE9pta).md` (không chứa các từ khóa filename như `chinh_sach`, `so_tay`...).
+  3. Dẫn đến `is_policy_doc = False`. Hệ thống tưởng đây là tài liệu dự án của nhóm khác và bộ lọc `[DOCUMENT ISOLATION DROP]` đã loại bỏ 100% chunks chính sách vừa tìm được.
+  4. Hệ thống rơi vào `[RAG GATE] REPLY_ONLY nhưng KB rỗng (0 chunks, 0 claims) -> Downgrade sang DRAFT_PENDING_APPROVAL`, khiến bot không lấy được nội dung quy định nội bộ để trả lời.
+- Đã sửa:
+  1. `server/services/workflows/chat_workflow.py`: Tập hợp `policy_kb_ids` từ `policy_dataset_id`, `wiki_dataset_id`, `global_policy_kbs` và `settings.WEKNORA_POLICY_DATASET_ID`.
+  2. Cập nhật `is_policy_doc = (kb_id in policy_kb_ids if kb_id else False) or any(kw in doc_name.lower() for kw in [...])`.
+- Verification:
+  1. Chạy kịch bản kiểm thử giả lập truy vấn "À cho em xin số ngày nghỉ lễ" trong context nhóm `oc_4a63905bd7a20fb15e03048e5e42b551` trực tiếp trong container `hilark-server`:
+     - `Policy KB IDs`: nhận diện đúng `f4f07033-8eab-4c22-a7c5-6cef2b9cc079`.
+     - `Retrieved`: 8 chunks từ WeKnora.
+     - `RESULT`: KEPT 8 chunks, DROPPED 0 chunks (100% pass, không còn bị isolation filter loại bỏ).
+  2. Container `hilark-server` đã rebuild và chạy healthy.
+
+## Current session update — Khắc phục lỗi Feedback Loop: Bot Reply as User bị nuốt ngược vào Staging & biến thành Claims trong Daily Digest
+- Vấn đề: Tin nhắn trả lời của Bot (nhân danh Sếp bằng User Access Token `as_user=True` hoặc duyệt Draft) bị Webhook bắt lại, không nhận diện được là tin nhắn do hệ thống gửi ra, dẫn tới bị lưu vào `conversation_staging` với tên "Thành viên". Sau đó Daily Digest quét và trích xuất câu trả lời của Bot thành các mục Milestone / Status Changes gán mác "Báo cáo bởi: Thành viên".
+- Nguyên nhân gốc:
+  1. `_sent_message_ids` lưu ở instance cục bộ của Custom App service; khi sự kiện Webhook `im.message.receive_v1` về router `/api/lark/events`, nó chạy qua singleton Dispatcher nên không tìm thấy message_id vừa gửi, không drop được.
+  2. `member_message_handler.py` lưu mọi tin nhắn vào staging; khi `is_owner=True`, do hàm lấy tên không tìm thấy tag mention nên fallback về `speaker = "Thành viên"`.
+  3. `digest_workflow.py` prompt chưa có chỉ dẫn loại trừ câu chat giữ nhịp giao tiếp ("để anh kiểm tra lại rồi nhắn sau...").
+- Đã sửa:
+  1. `server/services/lark/dispatcher.py`: Xây dựng `SHARED_SENT_MESSAGE_IDS` và các hàm `record_sent_message_id_global`, `is_sent_message_id_global` cấp process (thread-safe). Bất kể runtime nào gửi tin, `sent_mid` đều được lưu vào cache chung và Dispatcher sẽ DROP ngay tại chỗ (`[DROP] reason=self_sent`).
+  2. `server/services/lark/messenger.py`: Đồng bộ `_record_sent_message_id` vào `record_sent_message_id_global`, áp dụng cho cả reply, send và bot DM card.
+  3. `server/services/lark/handlers/member_message_handler.py`: Khi `is_owner=True`, gán đúng danh tính `speaker = responder_name or "Nguyễn Tiến"` / `"Lãnh đạo"`, không bao giờ fallback thành `"Thành viên"`.
+  4. `server/services/workflows/digest_workflow.py`: Bổ sung quy tắc loại trừ câu giao tiếp giữ nhịp trong `EXTRACTION_SYSTEM_PROMPT`.
+  5. MongoDB: Đã dọn dẹp 13 bản ghi bot reply bị lọt nhầm vào `conversation_staging` của nhóm `oc_4a63905bd7a20fb15e03048e5e42b551`.
+- Verification:
+  1. Chạy test giả lập quy trình gửi tin và bắt webhook trong container `hilark-server`:
+     - Test 1: `record_sent_message_id_global` ghi nhận đúng `test_msg_id`.
+     - Test 2: Dispatcher nhận diện và DROP thành công tin nhắn bot reply as_user.
+     - Test 3: Khi sếp gửi tin, `speaker_name` gán chuẩn "Nguyễn Tiến".
+     - Toàn bộ 3/3 test cases passed 100%.
+  2. Container `hilark-server` đã rebuild và chạy healthy.
+
+
+
+## Current session update — Khắc phục lỗi Lark Error Code 200341: "Đã có lỗi xảy ra. Vui lòng thử lại sau code: 200341" khi bấm Duyệt hoặc Hủy trên Thẻ bản nháp
+- Vấn đề: Khi Lãnh đạo bấm nút "Duyệt và gửi" hoặc "Hủy bỏ" trên Interactive Card bản nháp câu trả lời, trên giao diện Lark xuất hiện popup/toast lỗi màu đỏ: "Đã có lỗi xảy ra. Vui lòng thử lại sau code: 200341". Tuy nhiên, tin nhắn câu trả lời vẫn được gửi thành công vào nhóm chat và thẻ sau đó vẫn được cập nhật sang màu xanh "Đã duyệt và gửi".
+- Nguyên nhân gốc:
+  1. Lark Error Code `200341` là mã lỗi chính thức của Lark cho Callback Timeout (> 3 giây).
+  2. Trước đây trong `card_action_handler.py`: Khi xử lý `approve_draft` hoặc `discard_draft`, backend vừa gọi Lark OpenAPI `PATCH /open-apis/im/v1/messages/{message_id}` (`update_card_message`), vừa trả về `updated_card` trong gói tin Response của WebSocket / Webhook callback.
+  3. Thao tác gọi `apatch` qua internet làm phát sinh thêm 1.0 - 1.8 giây độ trễ mạng, đẩy tổng thời gian xử lý vượt quá ngưỡng 3 giây của Lark Card Server -> Lark Server phát lỗi `200341` về client.
+  4. Hơn nữa, việc gọi `apatch` sửa tin nhắn trước đó làm thay đổi version/revision của message trên Lark Server, khiến `resp.card` trả về sau đó bị xung đột phiên bản (Version Mismatch / Token Expired).
+- Đã sửa:
+  1. `server/services/lark/handlers/card_action_handler.py`: Loại bỏ toàn bộ các lệnh gọi `update_card_message` qua OpenAPI bên trong các action handler (`approve_draft`, `discard_draft`, `approve_claim`, `reject_claim`, `approve_digest`, `reject_digest`, `view_digest_detail`, `view_master_digest`, `view_tenant_status`, `view_owner_hub`, `view_weknora_info`). Chuẩn hóa 100% cập nhật thẻ đồng bộ (Sync In-place Response).
+  2. `server/services/lark/dispatcher.py`: Tối ưu hóa luồng gọi `handle_card_action`, không khởi tạo `ThreadPoolExecutor` mới trong mỗi request, giới hạn thời gian phản hồi an toàn < 2.8s để triệt tiêu vĩnh viễn nguy cơ timeout 3s của Lark.
+  3. `server/routers/policy.py`: Bổ sung import `Optional` còn thiếu từ `typing`.
+- Verification:
+  1. Toàn bộ **128/128** test cases trong `server/tests/final_test/` đã chạy qua `uv run pytest` và **PASS 100%**.
+  2. Docker image `hilark/server:latest` đã được rebuild sạch và container `hilark-server` đã restart, trạng thái healthy.
+
+
+## Current session update — Tinh giản Giao diện & Luồng Duyệt Bản Nháp: Loại bỏ hoàn toàn tính năng "Sửa AI"
+- Yêu cầu: Gỡ bỏ toàn bộ UI và logic liên quan đến tính năng "Nhờ AI sửa lại" (AI Rewrite) của thẻ duyệt bản nháp.
+- Đã thực hiện:
+  1. `server/services/lark/card_builder.py`: Xóa nút "Nhờ AI sửa lại" (`action: "ai_rewrite_draft"`), thẻ bản nháp giờ chỉ còn 3 nút tinh gọn: **[Duyệt và gửi]**, **[Tự sửa]**, **[Hủy bỏ]**. Xóa đoạn `/ Sửa AI: <yêu cầu>` trong note thao tác nhanh.
+  2. `server/services/lark/handlers/card_action_handler.py`: Gỡ bỏ khối xử lý `if action == "ai_rewrite_draft":`.
+  3. `server/services/ai/draft_rewriter.py`: Đã xóa file mã nguồn và gỡ bỏ import `rewrite_draft_with_llm` khỏi `server/services/ai/__init__.py`.
+  4. `server/tests/final_test/phase_2_chat_intent_safety/test_phase_2_chat_intent_safety.py`: Cập nhật test case sang kiểm thử nút `manual_edit_draft`.
+- Verification:
+  1. Toàn bộ **128/128** test cases trong `server/tests/final_test/` đã chạy qua `uv run pytest` và **PASS 100%**.
+  2. Docker image `hilark/server:latest` đã được build lại và container `hilark-server` đã được recreate/restart, trạng thái healthy.
+
+## Current session update — Triển khai Form Textarea Trực Tiếp Trên Lark Interactive Card (Card JSON 2.0) Cho Luồng Tự Sửa Bản Nháp (EDL-0063)
+- Yêu cầu:
+  1. Hỗ trợ component `textarea` nhiều dòng bên trong `form` container trên thẻ Lark Interactive Card (Card JSON 2.0).
+  2. Khi người dùng bấm "Tự sửa", thẻ chuyển sang chế độ soạn thảo:
+     - Ô nhập `textarea` (`name: "edited_content"`) được điền sẵn toàn bộ nội dung bản nháp gợi ý ban đầu (**A**) qua thuộc tính `default_value` để tiện chỉnh sửa trực tiếp.
+     - Nút submit: **[Lưu và gửi vào nhóm]** (`form_action_type: "submit"`).
+     - Nút quay lại: **[Quay lại]** (`cancel_manual_edit`) để hủy sửa và quay về thẻ duyệt nháp ban đầu.
+  3. Khi sếp bấm "Lưu và gửi vào nhóm", Lark callback gửi dữ liệu form (`form_value`), backend trích xuất nội dung `edited_content`, gửi vào nhóm chat qua `draft_svc.send_latest(open_id, approved_content=edited_content, tenant_key=tenant_key)` và cập nhật thẻ tại chỗ sang thẻ xanh "Đã duyệt và gửi".
+- Đã thực hiện:
+  1. `server/services/lark/card_builder.py`:
+     - Xây dựng hàm `build_draft_edit_form_card(draft_id, question, draft_content, group_name="Nhóm", sender_name="Thành viên", tenant_key=None)` với cấu trúc Card JSON 2.0: header màu xanh dương, container `form` chứa `textarea` có `default_value=draft_content`, và 2 nút hành động `[Lưu và gửi vào nhóm]` & `[Quay lại]`.
+  2. `server/services/lark/__init__.py`: Export `build_draft_edit_form_card`.
+  3. `server/services/lark/dispatcher.py`:
+     - Bóc tách `action.form_value` từ `CallBackAction` của Lark SDK và gộp vào payload `action_val["form_value"]`.
+  4. `server/services/lark/handlers/card_action_handler.py`:
+     - Cập nhật `parse_card_action_payload` trích xuất `form_value`.
+     - Xử lý hành động `manual_edit_draft`: lấy bản nháp đang chờ duyệt, chuyển đổi thẻ tại chỗ sang `build_draft_edit_form_card` có sẵn nội dung nháp ban đầu trong `default_value`.
+     - Xử lý hành động `submit_manual_edit`: lấy nội dung đã sửa từ `form_value.get("edited_content")`, gửi vào nhóm và cập nhật thẻ xanh hoàn tất.
+     - Xử lý hành động `cancel_manual_edit`: hoàn nguyên về thẻ bản nháp ban đầu `build_draft_card`.
+  5. `server/tests/final_test/phase_2_chat_intent_safety/test_phase_2_chat_intent_safety.py`:
+     - Bổ sung test kiểm tra `manual_edit_draft` trả về card có `tag: "textarea"`, `default_value` chứa câu trả lời nháp `85% lương chính thức`, và submit `submit_manual_edit` gửi đúng nội dung sửa đổi vào nhóm chat.
+- Verification:
+  1. Toàn bộ **128/128** test cases trong `server/tests/final_test/` đã chạy qua `uv run pytest` và **PASS 100% (42.80s)**.
+  2. Docker image `hilark/server:latest` đã được build lại và container `hilark-server` đã recreate/restart, trạng thái healthy. WebSocket Lark Client kết nối thành công với frontier gateway.
+
+## Current session update — Tối Ưu Hóa ThreadPoolExecutor, Caching Motor Client Per Loop & Tăng Timeout Card Action Lên 10s (EDL-0064)
+- Vấn đề: `TimeoutError` tại `dispatcher.py` khi sếp bấm nút trên thẻ tương tác do timeout đang set cứng ở mức `2.8s`.
+- Nguyên nhân gốc: Khi thao tác nút bấm chạy trong worker thread qua `asyncio.run()`, `get_async_client()` trong `db.py` thấy loop bị lệch nên hủy client cũ và thiết lập lại kết nối mới tới cụm MongoDB Atlas đám mây (DNS SRV + TLS handshake + auth mất ~2.5 - 3.0s), khiến `executor.result(timeout=2.8)` phát sinh `TimeoutError`.
+- Đã thực hiện:
+  1. `server/services/lark/dispatcher.py`:
+     - Tăng timeout từ `2.8s` lên `10.0s`.
+     - Sử dụng persistent `_card_action_executor` thay vì tạo/hủy `ThreadPoolExecutor` trên từng request.
+  2. `server/database/db.py`:
+     - Caching Motor Client theo từng event loop (`_async_clients: Dict[Any, AsyncIOMotorClient]`), ngăn ngừa triệt để tình trạng hủy client của loop chính khi worker thread tạo loop mới.
+  3. Rebuild và kiểm tra container `hilark-server`: Các bài test pass 100%, server khởi động healthy.
+
+

@@ -70,6 +70,7 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             file_key=file_key,
             file_name=file_name,
             resource_type=msg.message_type,
+            tenant_key=msg.tenant_key,
         )
 
         if not doc_res.success:
@@ -139,14 +140,14 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             handled_any = False
             for link in lark_links:
                 if link["type"] == "docx":
-                    doc_res = await doc_parser.parse_lark_docx(link["token"])
+                    doc_res = await doc_parser.parse_lark_docx(link["token"], tenant_key=msg.tenant_key)
                     doc_res_list = [doc_res] if doc_res else []
                 elif link["type"] == "wiki":
-                    doc_res = await doc_parser.parse_lark_wiki(link["token"])
+                    doc_res = await doc_parser.parse_lark_wiki(link["token"], tenant_key=msg.tenant_key)
                     doc_res_list = [doc_res] if doc_res else []
                 elif link["type"] == "folder":
                     print(f"📁 [FOLDER LINK] Bắt đầu phân giải toàn bộ tài liệu trong thư mục Lark Drive {link['token']}...")
-                    doc_res_list = await doc_parser.parse_lark_folder(link["token"])
+                    doc_res_list = await doc_parser.parse_lark_folder(link["token"], tenant_key=msg.tenant_key)
                 else:
                     continue
 

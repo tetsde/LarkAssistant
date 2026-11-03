@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional
@@ -39,14 +40,53 @@ from lark_oapi.api.drive.v1 import (
 )
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
+    P2CardActionTriggerData,
     P2CardActionTriggerResponse,
     CallBackToast,
     CallBackCard,
 )
 
+# Patch P2CardActionTriggerData to support form_value in Lark Card JSON 2.0 (Lark OpenAPI WebSocket)
+if "form_value" not in P2CardActionTriggerData._types:
+    P2CardActionTriggerData._types["form_value"] = dict
+    setattr(P2CardActionTriggerData, "form_value", None)
+
+from concurrent.futures import ThreadPoolExecutor
+
+from core.tenant_errors import TenantResolutionError
 from models.lark import LarkMessage
 
 logger = logging.getLogger("hilark.lark")
+
+# Persistent ThreadPoolExecutor cho các tương tác nút bấm trên Thẻ Lark (tránh overhead cấp phát liên tục)
+_card_action_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="card_action_worker")
+
+# =============================================================================
+# GLOBAL SHARED SENT MESSAGE CACHE (Chống vòng lặp Feedback Loop trên toàn server)
+# =============================================================================
+SHARED_SENT_MESSAGE_IDS: OrderedDict[str, float] = OrderedDict()
+_SHARED_SENT_LOCK = threading.Lock()
+
+
+def record_sent_message_id_global(message_id: str, ttl_seconds: float = 600.0, max_size: int = 2000) -> None:
+    """Ghi nhận message_id vừa gửi từ hệ thống vào cache dùng chung toàn server."""
+    if not message_id:
+        return
+    now = time.time()
+    with _SHARED_SENT_LOCK:
+        while SHARED_SENT_MESSAGE_IDS and (now - next(iter(SHARED_SENT_MESSAGE_IDS.values())) > ttl_seconds):
+            SHARED_SENT_MESSAGE_IDS.popitem(last=False)
+        SHARED_SENT_MESSAGE_IDS[message_id] = now
+        while len(SHARED_SENT_MESSAGE_IDS) > max_size:
+            SHARED_SENT_MESSAGE_IDS.popitem(last=False)
+
+
+def is_sent_message_id_global(message_id: str) -> bool:
+    """Kiểm tra xem message_id có phải do chính hệ thống vừa phát ra hay không."""
+    if not message_id:
+        return False
+    with _SHARED_SENT_LOCK:
+        return message_id in SHARED_SENT_MESSAGE_IDS
 
 
 class LarkDispatcherMixin:
@@ -290,8 +330,8 @@ class LarkDispatcherMixin:
             return
 
         # 2. Bỏ qua tin nhắn do chính hệ thống vừa phát ngôn gửi đi (tránh bắt lại tin nhắn reply của chính bot)
-        if lark_msg.message_id in self._sent_message_ids:
-            logger.debug("[DROP] msg=%s reason=self_sent", lark_msg.message_id)
+        if is_sent_message_id_global(lark_msg.message_id) or (lark_msg.message_id in self._sent_message_ids):
+            logger.info(f"🚫 [DROP] msg={lark_msg.message_id} reason=self_sent (bot reply as_user/bot)")
             return
 
         # 3. Bỏ qua tin nhắn trùng lặp (Idempotency)
@@ -468,18 +508,30 @@ class LarkDispatcherMixin:
             async def _async_bot_added_handler():
                 from contextlib import nullcontext
                 from database.scoped_query import tenant_context
-                from services.lark.bitable import lark_base_service
-                from services.lark.base_provision_service import base_provision_service
+                from services.lark.bitable import LarkBaseService
                 from services.knowledge.chat_scopes import scope_service
+                from services.tenancy.tenant_resolver import tenant_resolver
 
                 ctx = tenant_context(tenant_key) if tenant_key else nullcontext()
                 with ctx:
-                    # 1. Định tuyến đúng Lark Base cho tenant nếu có
-                    active_app_token, active_table_id = await base_provision_service.get_chat_scope_target(tenant_key=tenant_key)
-                    if active_app_token:
-                        lark_base_service.app_token = active_app_token
-                    if active_table_id:
-                        lark_base_service.table_id = active_table_id
+                    # 1. Định tuyến đúng Lark Base cho tenant bằng một service riêng.
+                    #    Không ghi `app_token`/`table_id` lên singleton: sự kiện của hai
+                    #    tenant có thể xen kẽ nhau và cùng ghi vào một đối tượng dùng chung.
+                    if not tenant_key:
+                        logger.error(
+                            "Sự kiện bot_added không có tenant_key trong header — bỏ qua ghi nhận Base "
+                            "thay vì đoán tenant (chat_id=%s).", chat_id,
+                        )
+                        return
+                    try:
+                        resources = await tenant_resolver.resolve(tenant_key)
+                    except TenantResolutionError as res_err:
+                        logger.warning(
+                            "Không thao tác Lark Base cho sự kiện bot_added của tenant '%s': %s",
+                            tenant_key, res_err,
+                        )
+                        return
+                    lark_base_service = LarkBaseService.for_tenant(resources)
 
                     base_record = None
                     try:
@@ -527,7 +579,9 @@ class LarkDispatcherMixin:
 
                         # Đồng bộ tức thì nhóm chat mới vào MongoDB (chat_scopes)
                         if base_record:
-                            await scope_service.sync_group_from_base_record(base_record)
+                            await scope_service.sync_group_from_base_record(
+                                base_record, tenant_key_override=tenant_key
+                            )
                     except Exception as b_err:
                         logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {b_err}", exc_info=True)
 
@@ -689,17 +743,51 @@ class LarkDispatcherMixin:
             message_id = getattr(context, "open_message_id", "") if context else ""
 
             action = getattr(event, "action", None)
-            action_val = getattr(action, "value", {}) if action else {}
+            raw_action_val = getattr(action, "value", None) if action else None
+            action_val: Dict[str, Any] = {}
+            if isinstance(raw_action_val, dict):
+                action_val = dict(raw_action_val)
+            elif isinstance(raw_action_val, str):
+                try:
+                    action_val = json.loads(raw_action_val)
+                except Exception:
+                    action_val = {"raw": raw_action_val}
+
+            form_val = (
+                getattr(action, "form_value", None)
+                or getattr(event, "form_value", None)
+            )
+            if form_val and isinstance(form_val, dict):
+                action_val["form_value"] = form_val
+            input_val = (
+                getattr(action, "input_value", None)
+                or getattr(event, "input_value", None)
+            )
+            if input_val:
+                action_val["input_value"] = input_val
+            btn_name = getattr(action, "name", None) or getattr(event, "name", None)
+            if btn_name:
+                action_val["name"] = btn_name
+            tag_name = getattr(action, "tag", None) or getattr(event, "tag", None)
+            if tag_name:
+                action_val["tag"] = tag_name
 
             logger.info(f"🔘 [LARK WS CARD ACTION] Nhận tương tác nút bấm từ {open_id} trên thẻ {message_id}: {action_val}")
 
             from services.lark.handlers.card_action_handler import handle_card_action
-            from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                ok, toast_msg, updated_card = executor.submit(
+            # Chạy an toàn trong context WebSocket thread (giới hạn timeout để kịp phản hồi Lark < 3s)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop and running_loop.is_running():
+                ok, toast_msg, updated_card = _card_action_executor.submit(
                     lambda: asyncio.run(handle_card_action(open_id, message_id, action_val))
-                ).result(timeout=10.0)
+                ).result(timeout=8.0)
+            else:
+                ok, toast_msg, updated_card = asyncio.run(handle_card_action(open_id, message_id, action_val))
 
             resp = P2CardActionTriggerResponse()
             if toast_msg:
@@ -715,7 +803,7 @@ class LarkDispatcherMixin:
             logger.error(f"Lỗi khi xử lý card action trigger trong WebSocket: {e}", exc_info=True)
             err_resp = P2CardActionTriggerResponse()
             err_resp.toast = CallBackToast()
-            err_resp.toast.type = "danger"
+            err_resp.toast.type = "error"
             err_resp.toast.content = "Đã xảy ra lỗi khi xử lý thao tác nút bấm."
             return err_resp
 

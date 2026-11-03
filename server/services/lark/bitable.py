@@ -48,6 +48,13 @@ from services.lark.cleaner import (
     inspect_bitable_token,
 )
 from services.auth.token_verifier import decode_jwt_token_payload
+from services.auth.tenant_token_manager import token_broker
+from services.tenancy.tenant_resolver import TenantResources
+from core.tenant_errors import (
+    AppCredentialMissing,
+    TenantConfigIncomplete,
+    TenantContextMissing,
+)
 
 logger = logging.getLogger("hilark.larkbase")
 if not logger.handlers:
@@ -75,6 +82,23 @@ FIELD_ALIASES = {
 
 
 # =============================================================================
+# HELPER: CREDENTIAL LOOKUP (STRICT, KHÔNG FALLBACK)
+# =============================================================================
+
+def _app_credentials_sync(tenant_key: Optional[str]) -> tuple[str, str]:
+    """
+    Lấy (app_id, app_secret) của CHÍNH tenant_key đó, qua resolver tập trung.
+
+    Bản cũ có ba tầng: tenant → "App mới nhất trong DB" → `.env`. Hai tầng sau khiến
+    một tenant vô tình dùng credential của tenant khác, nên bị bỏ hoàn toàn.
+    """
+    from services.tenancy.tenant_resolver import tenant_resolver
+
+    creds = tenant_resolver.resolve_credentials_sync(tenant_key)
+    return creds.app_id, creds.app_secret
+
+
+# =============================================================================
 # LARK BASE SERVICE CLASS
 # =============================================================================
 
@@ -85,66 +109,75 @@ class LarkBaseService:
       - Kiến trúc Tinh gọn: Đồng bộ (Sync) làm lõi xử lý, tích hợp Thread-based Async
         (asyncio.to_thread) non-blocking cho FastAPI endpoints & lifecycle mà không bị nhân đôi code.
       - Tái sử dụng HTTP connection pool, tự động bóc tách và chuẩn hóa dữ liệu.
+
+    Hợp đồng đa tenant (Giai đoạn 3):
+      - Một instance gắn với **một** tenant. `tenant_key` là tham số bắt buộc khi tạo.
+      - `app_token`/`table_id` đến từ `TenantResources` của chính tenant đó, không vay `.env`.
+      - Vì vậy không còn chuyện ghi đè field trên singleton dùng chung: hai request của hai
+        tenant từng ghi đè nhau và đọc/ghi nhầm Base của nhau.
     """
 
     def __init__(
         self,
+        tenant_key: Optional[str],
         app_token: Optional[str] = None,
         table_id: Optional[str] = None,
         user_access_token: Optional[str] = None,
         domain: Optional[str] = None,
         timeout: float = 30.0,
     ):
-        """Khởi tạo LarkBaseService với cấu hình từ tham số hoặc file .env."""
-        self.app_token = (
-            app_token
-            or getattr(settings, "LARK_BASE_APP_TOKEN", "")
-            or os.getenv("LARK_BASE_APP_TOKEN")
-            or os.getenv("app_token")
-            or ""
-        ).strip().strip("\"'")
+        """Khởi tạo service cho MỘT tenant. `tenant_key=None` chỉ dành cho object tương thích import."""
+        self.tenant_key = (tenant_key or "").strip() or None
 
-        self.table_id = (
-            table_id
-            or getattr(settings, "LARK_BASE_TABLE_ID", "")
-            or os.getenv("LARK_BASE_TABLE_ID")
-            or os.getenv("table_id")
-            or ""
-        ).strip().strip("\"'")
+        self.app_token = (app_token or "").strip().strip("\"'")
+        self.table_id = (table_id or "").strip().strip("\"'")
 
-        stored_user_token = ""
-        try:
-            from database.db import get_sync_db
-            db = get_sync_db()
-            doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
-            if doc and doc.get("access_token"):
-                stored_user_token = doc["access_token"]
-        except Exception:
-            pass
-
-        self.user_access_token = (
-            user_access_token
-            or stored_user_token
-            or getattr(settings, "LARK_USER_ACCESS_TOKEN", "")
-            or os.getenv("access_token_user")
-            or os.getenv("LARK_USER_ACCESS_TOKEN")
-            or ""
-        ).strip().strip("\"'")
+        # Token không còn đọc từ `.env` hay document `primary_user_token`: mọi lối lấy
+        # token đi qua broker theo (tenant_key, app_id, kind).
+        self.user_access_token = (user_access_token or "").strip().strip("\"'")
 
         raw_domain = (
             domain
             or getattr(settings, "LARK_DOMAIN", "")
-            or os.getenv("lark_domain")
             or "https://open.larksuite.com"
         ).strip().rstrip("/")
         self.domain = raw_domain
 
         self.timeout = timeout
-        self._tenant_token: Optional[str] = None
-        self._tenant_token_expires_at: float = 0.0
 
         # Persistent HTTP client (Connection Pooling)
         self._sync_client: Optional[httpx.Client] = None
+
+    @classmethod
+    def for_tenant(
+        cls,
+        resources: "TenantResources",
+        app_token: Optional[str] = None,
+        table_id: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> "LarkBaseService":
+        """
+        Tạo instance phục vụ RIÊNG tenant đã được resolver kiểm tra.
+
+        Mặc định lấy `base_app_token`/`chat_scope_table_id` từ `resources`; caller chỉ
+        truyền `app_token`/`table_id` khi muốn trỏ sang bảng khác **của cùng tenant**
+        (ví dụ bảng Chính sách).
+        """
+        return cls(
+            tenant_key=resources.tenant_key,
+            app_token=(app_token or resources.base_app_token),
+            table_id=(table_id or resources.chat_scope_table_id),
+            timeout=timeout,
+        )
+
+    @classmethod
+    def for_policy_table(cls, resources: "TenantResources") -> "LarkBaseService":
+        """Instance trỏ vào bảng Sổ tay chính sách của tenant."""
+        return cls(
+            tenant_key=resources.tenant_key,
+            app_token=resources.base_app_token,
+            table_id=resources.company_policy_table_id,
+        )
 
     # -------------------------------------------------------------------------
     # CLIENT & URL PROPERTIES
@@ -173,90 +206,82 @@ class LarkBaseService:
     # VALIDATION & AUTHENTICATION HEADERS
     # -------------------------------------------------------------------------
 
+    def _effective_tenant(self, tenant_key: Optional[str] = None) -> str:
+        """tenant_key theo thứ tự: tham số gọi -> instance -> ContextVar. Không có → raise."""
+        from database.db import get_current_tenant_key
+        eff = tenant_key or self.tenant_key or get_current_tenant_key()
+        if not eff:
+            raise TenantContextMissing(
+                "LarkBaseService không xác định được tenant; "
+                "truyền tenant_key tường minh hoặc chạy trong tenant context."
+            )
+        return eff
+
     def get_tenant_access_token(self, force_refresh: bool = False, tenant_key: Optional[str] = None) -> str:
         """
-        Lấy và tự động cache Bot Tenant Access Token từ Lark Cloud:
-          - Nếu có tenant_key hoặc IS_ISV_MODE=True: Gọi qua ISVTokenService.
-          - Ngược lại: Gọi endpoint /internal của Custom App (Single-Tenant).
+        Lấy Bot Tenant Access Token (sync), chờ trên token loop riêng.
+
+        Trước đây hàm này tự chế cache `self._tenant_token` trên singleton dùng chung,
+        nên tenant B nhận token của tenant A. Cache giờ thuộc broker, khoá đủ ba chiều.
         """
-        if getattr(settings, "IS_ISV_MODE", False) and tenant_key:
-            try:
-                from services.auth.isv_token_service import isv_token_service
-                token = isv_token_service.get_tenant_access_token_sync(
-                    tenant_key=tenant_key or "",
-                    force_refresh=force_refresh,
-                )
-                if token:
-                    return token
-            except Exception as e:
-                logger.warning(f"Không thể lấy ISV tenant token, fallback sang internal token: {e}")
+        eff_tenant = self._effective_tenant(tenant_key)
+        return token_broker.get_token_sync(eff_tenant, "bot", force_refresh=force_refresh)
 
-        now = time.time()
-        if not force_refresh and self._tenant_token and (now < self._tenant_token_expires_at - 120):
-            return self._tenant_token
+    def _validate_config(self, use_tenant_token: bool = False, tenant_key: Optional[str] = None) -> None:
+        """
+        Kiểm tra điều kiện bắt buộc của một thao tác Base.
 
-        app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
-        app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
-        if not app_id or not app_secret:
-            logger.warning("Chưa cấu hình LARK_APP_ID hoặc LARK_APP_SECRET để lấy tenant_access_token.")
-            return ""
-
-        url = f"{self.domain}/open-apis/auth/v3/tenant_access_token/internal"
-        try:
-            resp = self.sync_client.post(
-                url,
-                json={"app_id": app_id, "app_secret": app_secret},
-            )
-            data = resp.json()
-            if data.get("code") == 0 and data.get("tenant_access_token"):
-                self._tenant_token = data.get("tenant_access_token")
-                expire_sec = data.get("expire", 7200)
-                self._tenant_token_expires_at = now + expire_sec
-                return self._tenant_token
-            else:
-                logger.error(f"Lỗi khi lấy tenant_access_token: {data}")
-                return ""
-        except Exception as e:
-            logger.error(f"Exception khi lấy tenant_access_token: {e}")
-            return ""
-
-    def _validate_config(self, use_tenant_token: bool = False) -> None:
-        """Kiểm tra xem các thông số bắt buộc đã được cung cấp chưa."""
+        `user_access_token` không còn là điều kiện khởi tạo: token do broker cấp theo
+        tenant ngay trước mỗi request. Vì vậy thiếu token trong RAM không phải là lỗi
+        cấu hình, mà thiếu `app_token`/`table_id` của chính tenant mới là lỗi cấu hình.
+        """
         missing = []
-        if not use_tenant_token and not self.user_access_token:
-            missing.append("user_access_token (hoặc access_token_user trong .env)")
         if not self.app_token:
-            missing.append("app_token (hoặc LARK_BASE_APP_TOKEN trong .env)")
+            missing.append("app_token (bitable_app_token của tenant trong MongoDB)")
         if not self.table_id:
-            missing.append("table_id (hoặc LARK_BASE_TABLE_ID trong .env)")
+            missing.append("table_id (chat_scope_table_id / company_policy_table_id của tenant)")
+
+        # Nêu yêu cầu tenant ngay lúc validate để lỗi rõ ràng, không đợi tới bước lấy token.
+        from database.db import get_current_tenant_key
+
+        try:
+            self._effective_tenant(tenant_key)
+        except TenantContextMissing:
+            if not missing:
+                raise
 
         if missing:
             err_msg = (
-                f"Thiếu thông số bắt buộc để thao tác Lark Base: {', '.join(missing)}.\n"
-                f"Vui lòng kiểm tra lại file .env hoặc truyền trực tiếp vào hàm!"
+                f"Thiếu thông số bắt buộc để thao tác Lark Base của tenant "
+                f"'{self.tenant_key or get_current_tenant_key()}': {', '.join(missing)}.\n"
+                f"-> Tạo service qua `LarkBaseService.for_tenant(resources)` sau khi tenant "
+                f"đã ở trạng thái 'ready'; hệ thống không còn đọc các giá trị này từ .env."
             )
             logger.error(err_msg)
-            raise ValueError(err_msg)
+            raise TenantConfigIncomplete(self.tenant_key or "?", [m.split(" (")[0] for m in missing])
 
     def _get_headers(self, use_tenant_token: bool = False, tenant_key: Optional[str] = None) -> Dict[str, str]:
-        """Tạo header xác thực với User Access Token hoặc Tenant Access Token (hỗ trợ tenant_key cho ISV)."""
-        self._validate_config(use_tenant_token=use_tenant_token)
-        if use_tenant_token:
-            from database.db import get_current_tenant_key
-            eff_tenant = tenant_key or get_current_tenant_key()
-            token = self.get_tenant_access_token(tenant_key=eff_tenant)
-            if not token:
-                raise PermissionError(f"Không thể lấy tenant_access_token của Bot để truy cập Lark Base (tenant: {eff_tenant}).")
-            return {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json; charset=utf-8",
-                "User-Agent": "HiLark-Base-Service/1.0",
-            }
+        """Tạo header xác thực bằng User Access Token hoặc Bot Tenant Access Token."""
+        self._validate_config(use_tenant_token=use_tenant_token, tenant_key=tenant_key)
+        eff_tenant = self._effective_tenant(tenant_key)
+        kind = "bot" if use_tenant_token else "user"
+
+        # broker tự nhảy coroutine lên token loop riêng; không còn `asyncio.run(...)`
+        # trong ThreadPoolExecutor - con đường từng làm treo request khi có tranh chấp.
+        token = token_broker.get_token_sync(eff_tenant, kind)
+        if not token:
+            raise PermissionError(
+                f"Không lấy được {kind}_access_token cho tenant '{eff_tenant}'."
+            )
+
+        if not use_tenant_token:
+            # Giữ tương thích cho các chỗ đọc `self.user_access_token` (log, kiểm tra hạn).
+            self.user_access_token = token
 
         return {
-            "Authorization": f"Bearer {self.user_access_token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "HiLark-Base-Reader/1.0",
+            "User-Agent": "HiLark-Base-Service/1.0",
         }
 
     def check_token_status(self) -> Dict[str, Any]:
@@ -803,17 +828,37 @@ class LarkBaseService:
 # TOP-LEVEL CONVENIENCE FUNCTIONS
 # =============================================================================
 
-# Singleton instance mặc định khởi tạo từ file .env / settings
-lark_base_service = LarkBaseService()
+# Singleton tương thích import. Nó **không** mang cấu hình của tenant nào:
+# `app_token`/`table_id` rỗng và `tenant_key=None`, nên mọi thao tác gọi lên nó đều
+# raise TenantContextMissing/TenantConfigIncomplete thay vì âm thầm dùng dữ liệu cũ.
+# Code nghiệp vụ phải tạo service riêng qua `LarkBaseService.for_tenant(resources)`.
+lark_base_service = LarkBaseService(tenant_key=None)
+
+
+def base_service_for_current_tenant(
+    app_token: Optional[str] = None,
+    table_id: Optional[str] = None,
+    policy_table: bool = False,
+) -> LarkBaseService:
+    """Tạo LarkBaseService theo tenant của ngữ cảnh request hiện tại (đọc từ ContextVar)."""
+    from database.db import get_current_tenant_key
+    from services.tenancy.tenant_resolver import tenant_resolver
+
+    resources = tenant_resolver.resolve_sync(get_current_tenant_key())
+    if policy_table:
+        return LarkBaseService.for_policy_table(resources)
+    return LarkBaseService.for_tenant(resources, app_token=app_token, table_id=table_id)
 
 
 def find_lark_base_record_by_chat_id(chat_id: str) -> Optional[LarkBaseRecord]:
     """Hàm tiện ích tra cứu nhanh bản ghi theo chat_id."""
-    return lark_base_service.find_record_by_chat_id(chat_id)
+    return base_service_for_current_tenant().find_record_by_chat_id(chat_id)
+
 
 
 
 def read_lark_base_records(
+    tenant_key: Optional[str] = None,
     app_token: Optional[str] = None,
     table_id: Optional[str] = None,
     user_access_token: Optional[str] = None,
@@ -822,11 +867,18 @@ def read_lark_base_records(
     filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Hàm tiện ích nhanh nhất để đọc toàn bộ dữ liệu trong bảng Lark Base thành list of dicts (Sync)."""
-    svc = LarkBaseService(
+    from database.db import get_current_tenant_key
+    from services.tenancy.tenant_resolver import tenant_resolver
+
+    eff_tenant = tenant_key or get_current_tenant_key()
+    resources = tenant_resolver.resolve_sync(eff_tenant)
+    svc = LarkBaseService.for_tenant(
+        resources,
         app_token=app_token,
         table_id=table_id,
-        user_access_token=user_access_token,
     )
+    if user_access_token:
+        svc.user_access_token = user_access_token
     records = svc.get_all_records(max_records=max_records, filter=filter)
     return [r.to_dict(clean=clean) for r in records]
 
@@ -847,10 +899,28 @@ def start_bitable_ws_listener(service: LarkBaseService) -> None:
       - Lắng nghe sự kiện thay đổi dữ liệu bảng (Bitable) và sự kiện Bot tham gia nhóm theo thời gian thực.
     """
 
-    app_id = getattr(settings, "LARK_APP_ID", "") or os.getenv("LARK_APP_ID", "")
-    app_secret = getattr(settings, "LARK_APP_SECRET", "") or os.getenv("LARK_APP_SECRET", "")
-    encrypt_key = getattr(settings, "LARK_ENCRYPT_KEY", "") or os.getenv("LARK_ENCRYPT_KEY", "")
-    verification_token = getattr(settings, "LARK_VERIFICATION_TOKEN", "") or os.getenv("LARK_VERIFICATION_TOKEN", "")
+    # Listener này là công cụ dev chạy cho MỘT tenant. Trước đây nó lấy "App bất kỳ
+    # mới nhất trong DB" rồi fallback `.env`, nên có thể gắn nhầm App của tenant khác.
+    if not service.tenant_key:
+        raise TenantContextMissing(
+            "start_bitable_ws_listener() yêu cầu LarkBaseService được tạo kèm tenant_key."
+        )
+    app_id, app_secret = _app_credentials_sync(service.tenant_key)
+
+    from database.db import get_sync_db
+    from services.user_settings_service import user_settings_service
+
+    db = get_sync_db()
+    collection = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
+    app_record = db[collection].find_one(
+        {"tenant_key": service.tenant_key, "status": {"$ne": "revoked"}}
+    ) or {}
+    encrypt_key = user_settings_service.decrypt_key(app_record.get("encrypted_encrypt_key", ""))
+    verification_token = user_settings_service.decrypt_key(
+        app_record.get("encrypted_verification_token", "")
+    )
+    if not encrypt_key or not verification_token:
+        raise AppCredentialMissing(service.tenant_key)
 
     print("\n" + "=" * 70)
     print("⚡ HILARK - ĐỒNG BỘ VÀ LẮNG NGHE SỰ KIỆN LARK BASE REAL-TIME")
@@ -1018,6 +1088,12 @@ def main():
         description="HiLark - Script đọc dữ liệu hiện có trong Lark Base (Bitable) bằng User Access Token"
     )
     parser.add_argument(
+        "--tenant-key",
+        type=str,
+        default=None,
+        help="Tenant cần đọc (mặc định lấy theo biến môi trường HILARK_TENANT_KEY / ngữ cảnh đang chạy)",
+    )
+    parser.add_argument(
         "--app-token",
         type=str,
         default=None,
@@ -1064,17 +1140,25 @@ def main():
 
     args = parser.parse_args()
 
+    # CLI cũng phải đi qua resolver: một lần chạy chỉ phục vụ MỘT tenant, không vay `.env`.
+    from database.db import get_current_tenant_key
+    from services.tenancy.tenant_resolver import tenant_resolver
+
+    eff_tenant = args.tenant_key or get_current_tenant_key()
+    resources = tenant_resolver.resolve_sync(eff_tenant)
+
     if args.listen:
-        service = LarkBaseService(app_token=args.app_token, table_id=args.table_id)
+        service = LarkBaseService.for_tenant(resources, app_token=args.app_token, table_id=args.table_id)
         start_bitable_ws_listener(service)
         return
 
-    # Khởi tạo service với các tham số từ CLI hoặc .env
-    service = LarkBaseService(
+    service = LarkBaseService.for_tenant(
+        resources,
         app_token=args.app_token,
         table_id=args.table_id,
-        user_access_token=args.token,
     )
+    if args.token:
+        service.user_access_token = args.token
 
     print("\n" + "=" * 70)
     print("🚀 HILARK - TRÌNH ĐỌC DỮ LIỆU LARK BASE (BITABLE)")

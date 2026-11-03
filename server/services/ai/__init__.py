@@ -20,7 +20,6 @@ from services.ai.llm_extractor import (
     apply_and_save_extraction,
 )
 from services.ai.text_filter import TextFilter, text_filter
-from services.ai.draft_rewriter import rewrite_draft_with_llm
 
 __all__ = [
     "JEVError",
@@ -37,5 +36,4 @@ __all__ = [
     "apply_and_save_extraction",
     "TextFilter",
     "text_filter",
-    "rewrite_draft_with_llm",
 ]

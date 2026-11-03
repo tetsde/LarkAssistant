@@ -200,7 +200,7 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
             )
             # Chỉ tái kết nối WebSocket ngầm nếu App ID hoặc Secret thật sự thay đổi và có đủ cặp credentials
             current_secret = getattr(settings, "LARK_APP_SECRET", "")
-            if (old_app_id != app_id_clean or old_secret != current_secret) and app_id_clean and current_secret:
+            if getattr(settings, "ENABLE_LARK_WEBSOCKET", False) and (old_app_id != app_id_clean or old_secret != current_secret) and app_id_clean and current_secret:
                 # Dọn thread cũ nếu cần trước khi kết nối mới
                 if hasattr(lark_service, "_ws_thread"):
                     lark_service._ws_thread = None
@@ -345,6 +345,7 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
             llm_base_url=req.llm_base_url,
             llm_model=req.llm_model,
             llm_timeout=req.llm_timeout or 60.0,
+            policy_sync_interval_seconds=req.policy_sync_interval_seconds,
             tenant_key=req.tenant_key,
         )
 
@@ -372,13 +373,16 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
                 except Exception as te:
                     logger.debug(f"Không thể cập nhật admin_open_id vào tenant '{eff_tenant}': {te}")
 
-            # 3. Lưu cấu hình admin vào system_config để duy trì sau khởi động lại
+            # 3. Lưu cấu hình admin vào system_config để duy trì sau khởi động lại.
+            # Kèm `tenant_key` để document này chỉ được dùng cho đúng doanh nghiệp:
+            # `resolve_effective_owner_open_id()` bỏ qua bản ghi không khai nhận tenant.
             try:
                 coll = get_system_config_collection()
                 await coll.update_one(
                     {"config_key": "lark_admin_config"},
                     {"$set": {
                         "config_key": "lark_admin_config",
+                        "tenant_key": eff_tenant,
                         "admin_open_id": clean_open_id,
                         "user_name": req.user_name or getattr(record, "user_name", "") or "Lãnh đạo",
                         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
@@ -462,6 +466,7 @@ async def get_settings_endpoint(
                 "llm_timeout": 60.0,
                 "digest_schedule_time": "18:00",
                 "hitl_mode_enabled": True,
+                "policy_sync_interval_seconds": 3600,
                 "base_info": base_info,
                 "weknora_info": weknora_info,
                 "tenant_key": effective_tenant_key,
@@ -501,12 +506,40 @@ async def onboarding_wizard_page(
     request: Request,
     open_id: Optional[str] = Query(None, description="Lark Open ID của người dùng"),
     user_name: Optional[str] = Query(None, description="Tên người dùng"),
-    tenant_key: Optional[str] = Query(None, description="Mã tenant ISV nếu có"),
+    tenant_key: Optional[str] = Query(None, description="Mã tenant nếu có"),
+    view: Optional[str] = Query(None, description="Chế độ hiển thị: guide | settings | progress"),
 ):
-    """Render giao diện Screen Guide Wizard 4 bước mở trong Lark Applink Webview Modal."""
-    effective_open_id = open_id or settings.LARK_USER_OPEN_ID or "ou_user_default"
-    effective_user_name = user_name or settings.LARK_USER_NAME or "Lãnh đạo"
+    """
+    Render giao diện Unified Onboarding & Settings Portal:
+    - Nếu đã có tenant_key hợp lệ trong DB (hoặc view=settings): Mở Bảng Cấu Hình Trợ Lý.
+    - Nếu chưa có hoặc cài đặt lần đầu: Mở Slide Hướng Dẫn & Nhập Key.
+    """
+    from database.db import get_tenants_collection
+
+    effective_open_id = open_id or settings.LARK_USER_OPEN_ID or ""
+    effective_user_name = user_name or settings.LARK_USER_NAME or "Quản trị viên"
     effective_tenant_key = tenant_key or ""
+
+    initial_view = view or "guide"
+
+    # Tự động nhận diện tenant nếu đã tồn tại
+    if not effective_tenant_key and effective_open_id:
+        try:
+            t_col = get_tenants_collection()
+            doc = await t_col.find_one({"admin_open_id": effective_open_id})
+            if doc and doc.get("tenant_key"):
+                effective_tenant_key = doc["tenant_key"]
+        except Exception:
+            pass
+
+    if effective_tenant_key and not view:
+        try:
+            t_col = get_tenants_collection()
+            doc = await t_col.find_one({"tenant_key": effective_tenant_key})
+            if doc:
+                initial_view = "settings"
+        except Exception:
+            pass
 
     if not TEMPLATE_PATH.exists():
         raise HTTPException(
@@ -514,9 +547,15 @@ async def onboarding_wizard_page(
             detail=f"Template file không tồn tại: {TEMPLATE_PATH}",
         )
 
+    base_url = str(request.base_url).rstrip("/")
     template_content = TEMPLATE_PATH.read_text(encoding="utf-8")
     rendered_html = (
         template_content
+        .replace("{{TASK_ID}}", "")
+        .replace("{{INITIAL_VIEW}}", initial_view)
+        .replace("{{TENANT_KEY}}", effective_tenant_key)
+        .replace("{{OPEN_ID}}", effective_open_id)
+        .replace("{{BASE_URL}}", base_url)
         .replace("{{effective_open_id}}", effective_open_id)
         .replace("{{effective_user_name}}", effective_user_name)
         .replace("{{effective_tenant_key}}", effective_tenant_key)

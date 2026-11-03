@@ -59,11 +59,13 @@ class WeKnoraProvisionService:
         self.web_url = getattr(settings, "WEKNORA_WEB_URL", "http://localhost/login").rstrip("/")
         self.dry_run = bool(getattr(settings, "WEKNORA_PROVISION_DRY_RUN", False))
 
-    def _get_headers(self, tenant_id: Optional[int] = None) -> Dict[str, str]:
+    def _get_headers(self, tenant_id: Optional[int] = None, token: Optional[str] = None) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json; charset=utf-8",
         }
-        if self.api_key:
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        elif self.api_key:
             headers["X-API-Key"] = self.api_key
         if tenant_id:
             headers["X-Tenant-ID"] = str(tenant_id)
@@ -140,17 +142,19 @@ class WeKnoraProvisionService:
                 raise WeKnoraProvisionError(f"WeKnora login verification failed: HTTP {login_resp.status_code}")
 
             login_data = login_resp.json() or {}
+            auth_token = str(login_data.get("token") or (login_data.get("data") or {}).get("token") or "")
             user_obj = login_data.get("user") or (login_data.get("data") or {}).get("user") or {}
             active_tenant = login_data.get("active_tenant") or login_data.get("tenant") or {}
             raw_tenant_id = user_obj.get("tenant_id") or active_tenant.get("id")
             if raw_tenant_id is None:
                 raise WeKnoraProvisionError("WeKnora login response thiếu tenant_id")
             weknora_tenant_id = int(raw_tenant_id)
+            kb_headers = self._get_headers(tenant_id=weknora_tenant_id, token=auth_token)
 
             # 3.3 Tạo 3 KB trong tenant vừa xác minh.
             kb1_resp = await http_client.post(
                 f"{self.base_url}/knowledge-bases",
-                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                headers=kb_headers,
                 json={
                     "name": f"HiLark - {ent_name} - Chính Sách",
                     "description": "Kho quy định và chính sách dùng chung toàn công ty",
@@ -167,7 +171,7 @@ class WeKnoraProvisionService:
             # 3.4 Tạo KB 2 (Wiki & Digests): POST /api/v1/knowledge-bases
             kb2_resp = await http_client.post(
                 f"{self.base_url}/knowledge-bases",
-                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                headers=kb_headers,
                 json={
                     "name": f"HiLark - {ent_name} - Wiki & Digests",
                     "description": "Kho nhật ký công việc và Daily Digests chi tiết",
@@ -184,7 +188,7 @@ class WeKnoraProvisionService:
             # 3.5 Tạo KB 3 (Dự án chung mặc định)
             kb3_resp = await http_client.post(
                 f"{self.base_url}/knowledge-bases",
-                headers=self._get_headers(tenant_id=weknora_tenant_id),
+                headers=kb_headers,
                 json={
                     "name": f"HiLark - {ent_name} - Dự Án Mặc Định",
                     "description": "Kho tài liệu dự án mặc định cho các nhóm chat chưa cấu hình",

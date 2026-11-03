@@ -33,14 +33,23 @@ logger = logging.getLogger(__name__)
 
 # Singletons cho Async Motor client
 _async_client: Optional[AsyncIOMotorClient] = None
+_async_clients: Dict[Any, AsyncIOMotorClient] = {}
 # Singleton cho Sync PyMongo client
 _sync_client: Optional[MongoClient] = None
 
 
 async def close_mongo_connections() -> None:
     """Đóng sạch sẽ các kết nối MongoDB (Async Motor và Sync PyMongo) khi tắt server."""
-    global _async_client, _sync_client
+    global _async_client, _sync_client, _async_clients
     closed_any = False
+    for cl in list(_async_clients.values()):
+        try:
+            cl.close()
+            closed_any = True
+        except Exception:
+            pass
+    _async_clients.clear()
+
     if _async_client is not None:
         try:
             _async_client.close()
@@ -63,17 +72,31 @@ async def close_mongo_connections() -> None:
 
 
 def get_async_client() -> AsyncIOMotorClient:
-    """Khởi tạo hoặc trả về Async Motor Client an toàn với event loop."""
-    global _async_client
+    """Khởi tạo hoặc trả về Async Motor Client an toàn với từng event loop."""
+    global _async_client, _async_clients
     try:
         current_loop = asyncio.get_running_loop()
     except RuntimeError:
         current_loop = None
 
+    if current_loop is not None:
+        client = _async_clients.get(current_loop)
+        if client is not None:
+            try:
+                if not client.get_io_loop().is_closed():
+                    return client
+            except Exception:
+                pass
+        client = AsyncIOMotorClient(
+            settings.MONGO_URL,
+            serverSelectionTimeoutMS=5000,
+        )
+        _async_clients[current_loop] = client
+        return client
+
     if _async_client is not None:
         try:
-            client_loop = _async_client.get_io_loop()
-            if client_loop.is_closed() or (current_loop and client_loop != current_loop):
+            if _async_client.get_io_loop().is_closed():
                 _async_client = None
         except Exception:
             _async_client = None
@@ -179,6 +202,17 @@ def get_lark_apps_collection() -> AsyncIOMotorCollection:
     """Collection credential Lark Custom App theo từng tenant/registration."""
     db = get_async_db()
     return db[getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")]
+
+
+def get_oauth_states_collection() -> AsyncIOMotorCollection:
+    """
+    Collection state của luồng OAuth (/auth/lark/login).
+
+    Mỗi state gắn với MỘT (tenant_key, app_id) và chỉ dùng một lần, để callback biết
+    chắc code đang nhận thuộc về App nào thay phải đoán.
+    """
+    db = get_async_db()
+    return db[getattr(settings, "MONGO_OAUTH_STATES_COLLECTION", "oauth_states")]
 
 
 async def get_tenant_config(tenant_key: str) -> Optional[Dict[str, Any]]:

@@ -19,11 +19,12 @@ import logging
 import re
 import sys
 import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
 from database.scoped_query import get_current_tenant_key
-from services.lark.bitable import lark_base_service
+from models.memory import VIETNAM_TZ, get_vietnam_now_iso
 from services.knowledge.weknora_client import weknora_service
 
 logger = logging.getLogger("hilark.policy_sync")
@@ -160,6 +161,26 @@ class PolicySyncService:
         self._sync_locks: Dict[int, asyncio.Lock] = {}
         self._last_synced_tokens: Set[str] = set()
         self._last_sync_time: Optional[str] = None
+        self._recent_logs: Dict[str, List[str]] = {}
+
+    def get_recent_logs(self, tenant_key: Optional[str]) -> List[str]:
+        """Lấy danh sách nhật ký đồng bộ gần nhất của tenant."""
+        if not tenant_key:
+            return []
+        return list(self._recent_logs.get(str(tenant_key), []))
+
+    def _append_log(self, tenant_key: Optional[str], message: str) -> None:
+        """Thêm một dòng nhật ký có gắn nhãn thời gian Việt Nam vào bộ đệm của tenant."""
+        if not tenant_key:
+            return
+        tk = str(tenant_key)
+        if tk not in self._recent_logs:
+            self._recent_logs[tk] = []
+        now_vn = datetime.now(VIETNAM_TZ).strftime("%H:%M:%S")
+        entry = f"[{now_vn}] {message}"
+        self._recent_logs[tk].append(entry)
+        if len(self._recent_logs[tk]) > 50:
+            self._recent_logs[tk] = self._recent_logs[tk][-50:]
 
     def _get_sync_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -171,23 +192,41 @@ class PolicySyncService:
                 self._sync_locks[loop_id] = lock
             return lock
 
+    async def _policy_base_service(self, tenant_key: Optional[str]):
+        """
+        Dựng `LarkBaseService` trỏ đúng bảng Chính Sách của tenant đang sync.
+
+        Trước đây hàm này dùng singleton `lark_base_service` (app_token/table_id bị các
+        luồng khác ghi đè), nên doanh nghiệp B có thể đọc bảng chính sách của A.
+        """
+        from services.lark.bitable import LarkBaseService
+        from services.tenancy.tenant_resolver import tenant_resolver
+
+        resources = await tenant_resolver.resolve(tenant_key)
+        return LarkBaseService.for_policy_table(resources)
+
     async def fetch_policy_records_from_base(self, tenant_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Đọc toàn bộ các dòng từ bảng Chính Sách & Quy Định trên Lark Base.
-        Hỗ trợ phân giải token động qua base_provision_service.
+        Đọc toàn bộ các dòng từ bảng Chính Sách & Quy Định trên Lark Base của ĐÚNG tenant.
         """
         from services.lark.base_provision_service import base_provision_service
+
         app_token, table_id = await base_provision_service.get_policy_target(tenant_key=tenant_key)
-        domain = lark_base_service.domain
+        base_service = await self._policy_base_service(tenant_key)
+        domain = base_service.domain
 
         if not app_token or not table_id:
-            logger.warning("[PolicySync] Thiếu LARK_BASE_APP_TOKEN hoặc LARK_BASE_POLICY_TABLE_ID.")
+            logger.warning(
+                "[PolicySync] tenant=%s chưa có bảng Chính Sách (app_token/table_id trống) "
+                "trong cấu hình tenant - bỏ qua đọc Base.",
+                tenant_key,
+            )
             return []
 
         url = f"{domain}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
 
         def _do_request():
-            return lark_base_service._request(
+            return base_service._request(
                 "GET",
                 url,
                 params={
@@ -305,17 +344,31 @@ class PolicySyncService:
             return {"status": "disabled", "synced": False}
 
         eff_tenant = tenant_key or get_current_tenant_key()
-        tenant_cfg = None
-        if eff_tenant:
-            try:
-                from database.db import get_tenant_config
-                tenant_cfg = await get_tenant_config(eff_tenant)
-            except Exception:
-                pass
+        if not eff_tenant:
+            # Không có tenant thì không có Policy KB nào để sync. Trước đây hàm này
+            # viết thẳng vào `settings.WEKNORA_POLICY_DATASET_ID` - kho của một doanh
+            # nghiệp cụ thể - nên loop định kỳ có thể ghi chính sách công ty B vào
+            # kho của công ty A.
+            logger.warning(
+                "[PolicySync] Bỏ qua sync_policies(): không có tenant_key tường minh "
+                "(tham số hoặc ContextVar)."
+            )
+            return {"status": "missing_tenant", "synced": False}
 
-        target_policy_kb = (tenant_cfg.get("weknora_policy_dataset_id") if tenant_cfg else None) or settings.WEKNORA_POLICY_DATASET_ID
+        tenant_cfg = None
+        try:
+            from database.db import get_tenant_config
+            tenant_cfg = await get_tenant_config(eff_tenant)
+        except Exception as cfg_err:
+            logger.warning("[PolicySync] Không đọc được cấu hình tenant '%s': %s", eff_tenant, cfg_err)
+
+        target_policy_kb = (tenant_cfg.get("weknora_policy_dataset_id") if tenant_cfg else None) or None
         weknora_tenant_id = tenant_cfg.get("weknora_tenant_id") if tenant_cfg else None
-        ds_id = settings.WEKNORA_POLICY_DATASOURCE_ID
+        # Data Source là tài nguyên RIÊNG của từng doanh nghiệp trong WeKnora. Trước đây dòng này
+        # đọc `settings.WEKNORA_POLICY_DATASOURCE_ID` (một UUID hardcode của doanh nghiệp đầu tiên),
+        # nên `update_datasource_resources()` + `trigger_datasource_sync()` của tenant B lại nạp tài
+        # liệu vào data source của tenant A. Thiếu cấu hình => bỏ qua nhánh data source, chỉ nạp file.
+        ds_id = (tenant_cfg.get("weknora_policy_datasource_id") if tenant_cfg else None) or ""
 
         if not ds_id and not target_policy_kb:
             logger.warning("[PolicySync] Chưa cấu hình WEKNORA_POLICY_DATASOURCE_ID hoặc weknora_policy_dataset_id. Bỏ qua.")
@@ -323,12 +376,22 @@ class PolicySyncService:
 
         # Tránh xung đột các lần sync đồng thời
         async with self._get_sync_lock():
-            logger.info(f"🔄 [PolicySync] Bắt đầu kiểm tra đồng bộ chính sách (KB: {target_policy_kb}, Tenant: {eff_tenant})...")
+            run_logs: List[str] = []
+
+            def _log(msg: str):
+                self._append_log(eff_tenant, msg)
+                now_vn = datetime.now(VIETNAM_TZ).strftime("%H:%M:%S")
+                run_logs.append(f"[{now_vn}] {msg}")
+
+            _log(f"🔄 Bắt đầu kiểm tra đồng bộ chính sách (KB: {target_policy_kb}, Tenant: {eff_tenant})...")
 
             # 1. Đọc Base
             records = await self.fetch_policy_records_from_base(tenant_key=eff_tenant)
             if not records:
                 logger.warning("[PolicySync] Bảng chính sách trống hoặc không thể kết nối Base.")
+                _log("⚠️ Bảng chính sách trên Lark Base hiện chưa có bản ghi nào hoặc bảng trống.")
+            else:
+                _log(f"📄 Đã đọc thành công {len(records)} bản ghi từ bảng Chính sách trên Lark Base.")
 
             # 2. Bóc tách & Khử trùng lặp
             new_tokens, attachments = self.parse_policy_tokens_and_attachments(records)
@@ -339,6 +402,9 @@ class PolicySyncService:
                     for key, value in (record.get("fields") or {}).items()
                 }
                 logger.warning("[PolicySync] Không tìm thấy link/file trong fields; shapes=%s", shapes)
+                _log("⚠️ Không tìm thấy liên kết Docs hoặc tệp đính kèm trong các bản ghi.")
+            else:
+                _log(f"🔍 Trích xuất được {len(new_tokens)} liên kết Docs và {len(attachments)} tệp đính kèm.")
             logger.info(f"[PolicySync] Trích xuất được {len(new_tokens)} tokens và {len(attachments)} files đính kèm: {new_tokens}")
 
             active_weknora = _get_active_weknora()
@@ -357,39 +423,123 @@ class PolicySyncService:
 
                     if has_diff:
                         logger.info(f"⚡ [PolicySync] Phát hiện thay đổi tokens: {current_set} -> {new_set}. Đang cập nhật WeKnora...")
+                        _log(f"⚡ Phát hiện thay đổi tokens: Đang cập nhật Data Source WeKnora {ds_id}...")
                         await active_weknora.update_datasource_resources(ds_id, new_tokens)
                         await active_weknora.trigger_datasource_sync(ds_id)
                     elif force:
+                        _log(f"⚡ Kích hoạt WeKnora Data Source sync (force=True)...")
                         await active_weknora.trigger_datasource_sync(ds_id)
                 except Exception as ds_err:
                     logger.warning(f"[PolicySync] Đồng bộ qua Datasource {ds_id} gặp lỗi (sẽ tiếp tục nạp file trực tiếp): {ds_err}")
+                    _log(f"⚠️ Đồng bộ qua Datasource {ds_id} gặp lỗi (tiếp tục nạp trực tiếp): {ds_err}")
 
-            # 4. Tải nạp trực tiếp tài liệu vào WeKnora Policy Dataset
+            # 4. Tải nạp trực tiếp tài liệu vào WeKnora Policy Dataset của tenant (Cơ chế REBUILD tránh trùng lặp)
             uploaded_files = []
             if target_policy_kb:
+                import hashlib
+                import mimetypes
+
+                base_service = await self._policy_base_service(eff_tenant)
+
+                # Lấy danh sách tài liệu hiện có trong Policy KB để kiểm tra & rebuild (tránh tạo tài liệu trùng lặp)
+                existing_knowledges = await active_weknora.list_knowledges(
+                    dataset_id=target_policy_kb,
+                    page=1,
+                    page_size=500,
+                    tenant_id=weknora_tenant_id,
+                )
+                existing_doc_map: Dict[str, Dict[str, Any]] = {}
+                for k_item in existing_knowledges:
+                    k_id = k_item.get("id")
+                    if not k_id:
+                        continue
+                    fname = (k_item.get("file_name") or k_item.get("title") or "").strip().lower()
+                    if fname:
+                        existing_doc_map[fname] = k_item
+                        base_fname = fname.rsplit(".", 1)[0]
+                        if base_fname and base_fname not in existing_doc_map:
+                            existing_doc_map[base_fname] = k_item
+
+                async def _upload_or_rebuild(
+                    file_name: str,
+                    file_bytes: bytes,
+                    mime_type: str,
+                    item_type_label: str = "tài liệu",
+                ) -> Optional[str]:
+                    """
+                    Upload tài liệu vào WeKnora với cơ chế REBUILD:
+                    - Nếu tài liệu đã có trong WeKnora và nội dung không đổi (và không force): giữ nguyên.
+                    - Nếu nội dung đã cập nhật trên Lark Docs hoặc force=True: xoá bản cũ trên WeKnora và nạp lại để rebuild lại toàn bộ chunks/indexes.
+                    - Nếu tài liệu chưa có: upload mới.
+                    """
+                    clean_name = file_name.strip()
+                    name_key = clean_name.lower()
+                    base_key = name_key.rsplit(".", 1)[0] if "." in name_key else name_key
+                    cur_hash = hashlib.md5(file_bytes).hexdigest()
+
+                    existing_doc = existing_doc_map.get(name_key) or existing_doc_map.get(base_key)
+                    if existing_doc:
+                        old_id = existing_doc.get("id")
+                        old_hash = (existing_doc.get("file_hash") or "").strip().lower()
+                        # Nếu nội dung hoàn toàn không thay đổi và không force -> giữ nguyên
+                        if old_hash and old_hash == cur_hash.lower() and not force:
+                            logger.info(f"ℹ️ [PolicySync] '{clean_name}' không đổi nội dung (MD5 khớp). Giữ nguyên bản ghi WeKnora {old_id}.")
+                            _log(f"ℹ️ '{clean_name}' giữ nguyên (nội dung không đổi).")
+                            return clean_name
+
+                        # Nếu nội dung thay đổi hoặc người dùng bấm nút đồng bộ (force=True) -> REBUILD LẠI
+                        logger.info(f"🔄 [PolicySync] Rebuild '{clean_name}': Đang xoá bản cũ {old_id} trên WeKnora để nạp bản mới...")
+                        _log(f"🔄 Cập nhật '{clean_name}': Đang xoá bản cũ để rebuild lại chỉ mục...")
+                        await active_weknora.delete_knowledge(old_id, tenant_id=weknora_tenant_id)
+                        # Chờ worker của WeKnora hoàn tất dọn dẹp hàng đợi xóa trước khi nạp tệp mới (0.5s - 1.5s)
+                        for _ in range(6):
+                            await asyncio.sleep(0.5)
+                            doc_check = await active_weknora.get_document_info(target_policy_kb, old_id, tenant_id=weknora_tenant_id)
+                            if not doc_check:
+                                break
+                        existing_doc_map.pop(name_key, None)
+                        existing_doc_map.pop(base_key, None)
+
+                    up_res = await active_weknora.upload_file(
+                        file_name=clean_name,
+                        file_bytes=file_bytes,
+                        dataset_id=target_policy_kb,
+                        mime_type=mime_type,
+                        tenant_id=weknora_tenant_id,
+                    )
+                    if up_res.get("success"):
+                        k_id = up_res.get("knowledge_id", "")
+                        logger.info(f"✔ [PolicySync] Đã nạp thành công {item_type_label} '{clean_name}' vào KB {target_policy_kb} (k_id={k_id})")
+                        _log(f"✔ Đã nạp & rebuild thành công {item_type_label} '{clean_name}'.")
+                        new_item = {"id": k_id, "file_name": clean_name, "file_hash": cur_hash}
+                        existing_doc_map[name_key] = new_item
+                        existing_doc_map[base_key] = new_item
+                        return clean_name
+                    else:
+                        err_msg = up_res.get("error", "Lỗi không xác định")
+                        logger.error(f"❌ [PolicySync] Lỗi khi nạp '{clean_name}': {err_msg}")
+                        _log(f"❌ Lỗi khi nạp '{clean_name}': {err_msg}")
+                        return None
+
                 # 4.1 Tải tệp đính kèm
                 for att in attachments:
                     try:
                         file_token = att["file_token"]
                         fname = att["name"]
                         file_bytes = await asyncio.to_thread(
-                            lark_base_service.download_attachment,
+                            base_service.download_attachment,
                             file_token,
                             use_tenant_token=True,
                         )
                         if file_bytes:
-                            up_res = await active_weknora.upload_file(
-                                file_name=fname,
-                                file_bytes=file_bytes,
-                                dataset_id=target_policy_kb,
-                                mime_type="application/pdf",
-                                tenant_id=weknora_tenant_id,
-                            )
-                            if up_res.get("success"):
-                                uploaded_files.append(fname)
-                                logger.info(f"✔ [PolicySync] Đã nạp chính sách '{fname}' vào KB {target_policy_kb}")
+                            guessed_mime, _ = mimetypes.guess_type(fname)
+                            mime_type = guessed_mime or "application/pdf"
+                            saved = await _upload_or_rebuild(fname, file_bytes, mime_type, "tệp đính kèm")
+                            if saved:
+                                uploaded_files.append(saved)
                     except Exception as e:
                         logger.error(f"[PolicySync] Lỗi khi upload tệp chính sách '{att.get('name')}': {e}")
+                        _log(f"❌ Lỗi khi tải tệp '{att.get('name')}': {e}")
 
                 # 4.2 Tải Lark Doc tokens
                 from services.knowledge.doc_parser import doc_parser_service
@@ -415,28 +565,70 @@ class PolicySyncService:
 
                     for tok in new_tokens:
                         try:
-                            doc_res = await doc_parser_service.parse_lark_docx(tok)
+                            # 1. Thử phân giải dạng Lark DocX (với tenant_key cô lập)
+                            doc_res = await doc_parser_service.parse_lark_docx(tok, tenant_key=eff_tenant)
+                            
+                            # 2. Nếu không phải DocX, thử phân giải dạng Lark Wiki
                             if not doc_res or not doc_res.success:
-                                doc_res = await doc_parser_service.parse_lark_wiki(tok)
+                                doc_res = await doc_parser_service.parse_lark_wiki(tok, tenant_key=eff_tenant)
+
+                            # 3. Nếu là DocX hoặc Wiki hợp lệ
                             if doc_res and doc_res.success and doc_res.markdown_content:
                                 doc_bytes = doc_res.markdown_content.encode("utf-8")
                                 safe_name = f"{doc_res.doc_name or f'Policy_{tok}'}.md"
-                                up_res = await active_weknora.upload_file(
-                                    file_name=safe_name,
-                                    file_bytes=doc_bytes,
-                                    dataset_id=target_policy_kb,
-                                    mime_type="text/markdown",
-                                    tenant_id=weknora_tenant_id,
-                                )
-                                if up_res.get("success"):
-                                    uploaded_files.append(safe_name)
-                                    logger.info(f"✔ [PolicySync] Đã nạp Lark Doc '{safe_name}' vào KB {target_policy_kb}")
+                                saved = await _upload_or_rebuild(safe_name, doc_bytes, "text/markdown", "văn bản Lark")
+                                if saved:
+                                    uploaded_files.append(saved)
+                            
+                            # 4. Nếu không phải DocX/Wiki, kiểm tra xem có phải Thư mục Lark Drive (Folder) không
+                            elif not doc_res or not doc_res.success:
+                                logger.info(f"[PolicySync] Thử quét token '{tok}' dưới dạng Thư mục Lark Drive (tenant={eff_tenant})...")
+                                folder_docs = await doc_parser_service.parse_lark_folder(tok, tenant_key=eff_tenant)
+                                if folder_docs:
+                                    success_folder_docs = [d for d in folder_docs if d and d.success and d.markdown_content]
+                                    _log(f"📁 Phát hiện thư mục Lark Drive ({tok}): Tìm thấy {len(folder_docs)} tệp ({len(success_folder_docs)} tệp hợp lệ).")
+                                    for fdoc in success_folder_docs:
+                                        doc_bytes = fdoc.markdown_content.encode("utf-8")
+                                        raw_name = fdoc.doc_name or f"Doc_{tok}"
+                                        safe_name = raw_name if raw_name.endswith(".md") else f"{raw_name}.md"
+                                        saved = await _upload_or_rebuild(safe_name, doc_bytes, "text/markdown", "tệp từ thư mục")
+                                        if saved:
+                                            uploaded_files.append(saved)
                         except Exception as tok_err:
                             logger.warning(f"[PolicySync] Lỗi khi nạp token '{tok}': {tok_err}")
+                            _log(f"❌ Lỗi khi nạp token '{tok}': {tok_err}")
                 finally:
                     if runtime_context_token is not None:
                         from services.lark.runtime import reset_current_lark_service
                         reset_current_lark_service(runtime_context_token)
+
+            now_iso = get_vietnam_now_iso()
+            self._last_sync_time = now_iso
+            summary_msg = f"✔ Hoàn tất đồng bộ: Đã xử lý {len(records)} dòng, nạp {len(uploaded_files)} tài liệu mới."
+            _log(summary_msg)
+
+            # Lưu lại trạng thái & nhật ký đồng bộ vào collection tenants để hiển thị trên UI
+            try:
+                from database.db import get_tenants_collection
+                recent_logs_to_save = self.get_recent_logs(eff_tenant)[-20:]
+                await get_tenants_collection().update_one(
+                    {"tenant_key": eff_tenant},
+                    {
+                        "$set": {
+                            "last_policy_sync": {
+                                "synced_at": now_iso,
+                                "status": "success",
+                                "records_count": len(records),
+                                "tokens_count": len(new_tokens),
+                                "attachments_count": len(attachments),
+                                "uploaded_files": uploaded_files,
+                                "logs": recent_logs_to_save,
+                            }
+                        }
+                    },
+                )
+            except Exception as up_err:
+                logger.debug(f"Không thể lưu last_policy_sync vào tenant doc: {up_err}")
 
             return {
                 "status": "success",
@@ -444,38 +636,7 @@ class PolicySyncService:
                 "dataset_id": target_policy_kb,
                 "uploaded_files": uploaded_files,
                 "resource_ids": new_tokens,
-            }
-
-            self._last_synced_tokens = new_set
-
-            # 7. Xử lý tải các tệp đính kèm trực tiếp (nếu có)
-            uploaded_files = []
-            if attachments and settings.WEKNORA_POLICY_DATASET_ID:
-                for att in attachments:
-                    try:
-                        file_token = att["file_token"]
-                        fname = att["name"]
-                        file_bytes = await asyncio.to_thread(
-                            lark_base_service.download_attachment, file_token, True
-                        )
-                        if file_bytes:
-                            up_res = await active_weknora.upload_file(
-                                file_bytes=file_bytes,
-                                filename=fname,
-                                dataset_id=settings.WEKNORA_POLICY_DATASET_ID,
-                            )
-                            uploaded_files.append({"filename": fname, "res": up_res})
-                    except Exception as e:
-                        logger.warning(f"[PolicySync] Lỗi khi upload attachment {att.get('name')}: {e}")
-
-            return {
-                "status": "success",
-                "synced": True,
-                "previous_count": len(current_set),
-                "new_count": len(new_set),
-                "resource_ids": new_tokens,
-                "sync_trigger_result": sync_res,
-                "uploaded_attachments_count": len(uploaded_files),
+                "logs": run_logs,
             }
 
     async def start_loop(self) -> None:
@@ -486,34 +647,93 @@ class PolicySyncService:
 policy_sync_service = PolicySyncService()
 
 
+async def _ready_tenants() -> List[Dict[str, Any]]:
+    """Danh sách tenant đang được phục vụ kèm cấu hình interval & lần sync cuối."""
+    from database.db import get_tenants_collection
+
+    docs: List[Dict[str, Any]] = []
+    col = get_tenants_collection()
+    async for doc in col.find(
+        {"status": "ready"},
+        {"tenant_key": 1, "policy_sync_interval_seconds": 1, "last_policy_sync": 1, "_id": 0}
+    ):
+        if doc.get("tenant_key"):
+            docs.append(doc)
+    return docs
+
+
+async def _ready_tenant_keys() -> List[str]:
+    """Tương thích ngược trả về danh sách tenant_key."""
+    tenants = await _ready_tenants()
+    return [str(t["tenant_key"]) for t in tenants if t.get("tenant_key")]
+
+
 async def start_policy_sync_loop() -> None:
     """
-    Background worker chạy định kỳ mỗi POLICY_SYNC_INTERVAL_SECONDS
-    để tự động đồng bộ chính sách từ Lark Base sang WeKnora.
+    Background worker chạy định kỳ để tự động đồng bộ chính sách từ Lark Base
+    sang WeKnora CHO TỪNG TENANT dựa trên chu kỳ `policy_sync_interval_seconds` riêng.
+
+    Sử dụng vòng lặp tick 60 giây để kiểm tra và kích hoạt đúng lịch cho từng tenant
+    mà không cần restart server khi người dùng đổi lịch trên giao diện UI.
     """
     if not settings.POLICY_SYNC_ENABLED:
         logger.info("[PolicySync Loop] POLICY_SYNC_ENABLED = false. Không khởi động loop.")
         return
 
-    interval = max(60, settings.POLICY_SYNC_INTERVAL_SECONDS)
-    logger.info(f"⏰ [PolicySync Loop] Khởi động worker đồng bộ định kỳ (Chu kỳ {interval}s).")
+    logger.info("⏰ [PolicySync Loop] Khởi động worker đồng bộ định kỳ theo từng tenant (Tick 60s).")
 
     # Lần đầu: Chờ 5 giây sau khi server khởi động để hệ thống ổn định
     await asyncio.sleep(5)
-    try:
-        await policy_sync_service.sync_policies(force=True)
-    except Exception as e:
-        logger.error(f"[PolicySync Loop] Lỗi đồng bộ ban đầu: {e}", exc_info=True)
+    await _sync_all_tenants_once(force=False)
 
-    # Vòng lặp định kỳ
+    # Vòng lặp định kỳ (tick mỗi 60s)
     while True:
         try:
-            await asyncio.sleep(interval)
-            await policy_sync_service.sync_policies(force=True)
+            await asyncio.sleep(60)
+            await _sync_all_tenants_once(force=False)
         except asyncio.CancelledError:
             logger.info("[PolicySync Loop] Đã nhận tín hiệu dừng worker.")
             break
         except Exception as e:
             logger.error(f"[PolicySync Loop] Lỗi trong vòng lặp đồng bộ: {e}", exc_info=True)
             await asyncio.sleep(60)
+
+
+async def _sync_all_tenants_once(force: bool = False) -> None:
+    """Quét các tenant 'ready'; chỉ kích hoạt khi đã đến chu kỳ hoặc khi force=True."""
+    try:
+        tenants = await _ready_tenants()
+    except Exception as list_err:
+        logger.warning("[PolicySync Loop] Không đọc được danh sách tenant: %s", list_err)
+        return
+
+    now = datetime.now(VIETNAM_TZ)
+    for t_doc in tenants:
+        tk = str(t_doc["tenant_key"])
+        interval = int(t_doc.get("policy_sync_interval_seconds") or settings.POLICY_SYNC_INTERVAL_SECONDS or 3600)
+        last_sync_raw = (t_doc.get("last_policy_sync") or {}).get("synced_at")
+
+        should_sync = force or not last_sync_raw
+        if not should_sync and last_sync_raw:
+            try:
+                last_dt = datetime.fromisoformat(str(last_sync_raw))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=VIETNAM_TZ)
+                elapsed = (now - last_dt).total_seconds()
+                if elapsed >= interval:
+                    should_sync = True
+            except Exception:
+                should_sync = True
+
+        if should_sync:
+            try:
+                logger.info(f"⏰ [PolicySync Loop] Kích hoạt đồng bộ định kỳ cho tenant={tk} (Chu kỳ {interval}s).")
+                # force=False: chỉ upload khi hash thay đổi thực sự.
+                # force=True chỉ dùng khi user bấm "Đồng bộ ngay" trên UI hoặc có Bitable webhook event.
+                await policy_sync_service.sync_policies(force=False, tenant_key=tk)
+            except Exception as e:
+                logger.warning("[PolicySync Loop] tenant=%s sync lỗi: %s", tk, e)
+
+    if not tenants:
+        logger.info("[PolicySync Loop] Chưa có tenant 'ready' nào để đồng bộ chính sách.")
 

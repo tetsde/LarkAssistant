@@ -24,6 +24,7 @@ from cryptography.fernet import Fernet
 
 from core.config import settings
 from database.db import get_user_settings_collection
+from database.scoped_query import get_current_tenant_key
 from models.memory import get_vietnam_now_iso
 from models.user_settings import UserSettingsRecord
 
@@ -204,6 +205,7 @@ class UserSettingsService:
         llm_base_url: Optional[str] = None,
         llm_model: Optional[str] = None,
         llm_timeout: float = 60.0,
+        policy_sync_interval_seconds: Optional[int] = None,
         tenant_key: Optional[str] = None,
     ) -> UserSettingsRecord:
         """Lưu hoặc cập nhật cấu hình người dùng vào MongoDB."""
@@ -244,6 +246,7 @@ class UserSettingsService:
             llm_timeout=llm_timeout if llm_timeout is not None else (existing.llm_timeout if existing else 60.0),
             digest_schedule_time=normalized_digest_time,
             hitl_mode_enabled=hitl_mode_enabled,
+            policy_sync_interval_seconds=int(policy_sync_interval_seconds) if policy_sync_interval_seconds is not None else (getattr(existing, "policy_sync_interval_seconds", 3600) if existing else 3600),
             created_at=existing.created_at if existing else now_iso,
             updated_at=now_iso,
         )
@@ -256,6 +259,15 @@ class UserSettingsService:
             {"$set": record.to_dict()},
             upsert=True,
         )
+        if record.tenant_key and policy_sync_interval_seconds is not None:
+            try:
+                from database.db import get_tenants_collection
+                await get_tenants_collection().update_one(
+                    {"tenant_key": record.tenant_key},
+                    {"$set": {"policy_sync_interval_seconds": int(policy_sync_interval_seconds)}},
+                )
+            except Exception as t_up_err:
+                logger.debug(f"Không thể cập nhật policy_sync_interval_seconds vào tenant: {t_up_err}")
         logger.info(f"Đã lưu cấu hình người dùng cho open_id={open_id} (BYOK={is_byok_enabled})")
         return record
 
@@ -265,9 +277,10 @@ class UserSettingsService:
         chat_id: Optional[str] = None,
         request_api_key: Optional[str] = None,
         open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> str:
         """
-        Thuật toán phân giải Key 3 tầng:
+        Thuật toán phân giải Key 4 tầng (có cô lập theo tenant_key):
           1. Request Override Key: Nếu được truyền tường minh qua tham số.
           2. User BYOK: Nếu user cấu hình key riêng và bật is_byok_enabled.
           3. Scope/Project BYOK: Nếu nhóm chat có key riêng trên Lark Base / MongoDB.
@@ -278,23 +291,25 @@ class UserSettingsService:
             logger.debug("🔑 [BYOK] Sử dụng Request Override Key")
             return request_api_key.strip()
 
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         target_user = user_id or open_id
         # Tầng 2: Khóa cá nhân của người dùng
         if target_user:
-            user_settings = await self.get_user_settings(target_user)
+            user_settings = await self.get_user_settings(target_user, tenant_key=eff_tenant)
             if user_settings and user_settings.is_byok_enabled and user_settings.encrypted_gemini_api_key:
                 decrypted = self.decrypt_key(user_settings.encrypted_gemini_api_key)
                 if decrypted:
-                    logger.debug(f"🔑 [BYOK] Sử dụng API Key cá nhân của user: {target_user}")
+                    logger.debug(f"🔑 [BYOK] Sử dụng API Key cá nhân của user: {target_user} (tenant={eff_tenant})")
                     return decrypted
 
         # Tầng 3: Khóa nhóm dự án (chat_scopes)
         if chat_id:
             try:
                 from services.knowledge.chat_scopes import scope_service
-                scope = await scope_service.get_scope_by_chat_id(chat_id)
+                scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
                 if scope and hasattr(scope, "custom_gemini_key") and getattr(scope, "custom_gemini_key"):
-                    logger.debug(f"🔑 [BYOK] Sử dụng API Key riêng của nhóm dự án: {chat_id}")
+                    logger.debug(f"🔑 [BYOK] Sử dụng API Key riêng của nhóm dự án: {chat_id} (tenant={eff_tenant})")
                     return getattr(scope, "custom_gemini_key")
             except Exception as e:
                 logger.debug(f"Không thể kiểm tra key theo chat_id: {e}")
@@ -308,6 +323,7 @@ class UserSettingsService:
         chat_id: Optional[str] = None,
         open_id: Optional[str] = None,
         request_api_key: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ):
         """
         Phân giải và khởi tạo LLMClient hoàn chỉnh theo cấu hình cá nhân hóa của User hoặc Hệ thống:
@@ -316,15 +332,17 @@ class UserSettingsService:
         """
         from services.ai.gemini_client import LLMClient, llm_client
 
+        eff_tenant = tenant_key or get_current_tenant_key()
+
         target_user = user_id or open_id
         if target_user:
-            settings_rec = await self.get_user_settings(target_user)
+            settings_rec = await self.get_user_settings(target_user, tenant_key=eff_tenant)
             if settings_rec and settings_rec.is_byok_enabled and settings_rec.encrypted_gemini_api_key:
                 user_api_key = self.decrypt_key(settings_rec.encrypted_gemini_api_key)
                 if user_api_key:
                     default_models = [settings_rec.llm_model] if settings_rec.llm_model else None
                     logger.info(
-                        f"🤖 [BYOK CLIENT] Sử dụng cấu hình LLM riêng của User {target_user}: "
+                        f"🤖 [BYOK CLIENT] Sử dụng cấu hình LLM riêng của User {target_user} (tenant={eff_tenant}): "
                         f"provider={settings_rec.llm_provider}, model={settings_rec.llm_model or 'default'}"
                     )
                     return LLMClient(
@@ -338,7 +356,7 @@ class UserSettingsService:
         if chat_id:
             try:
                 from services.knowledge.chat_scopes import scope_service
-                scope = await scope_service.get_scope_by_chat_id(chat_id)
+                scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
                 if scope and getattr(scope, "custom_gemini_key", None):
                     return LLMClient(api_key=getattr(scope, "custom_gemini_key"))
             except Exception:
@@ -360,6 +378,7 @@ async def resolve_effective_llm_key(
     user_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     request_api_key: Optional[str] = None,
+    tenant_key: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """
     Hàm phân giải khóa cấp module: trả về bộ (effective_key, is_byok).
@@ -369,6 +388,7 @@ async def resolve_effective_llm_key(
         chat_id=chat_id,
         request_api_key=request_api_key,
         open_id=open_id,
+        tenant_key=tenant_key,
     )
     sys_key = settings.GEMINI_API_KEY or settings.gemini_api or ""
     is_byok = bool(key and key != sys_key)

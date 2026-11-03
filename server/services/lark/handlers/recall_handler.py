@@ -112,23 +112,41 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
     except Exception as e:
         logger.error(f"[LARK RECALL] Lỗi khi hủy drafts cho tin {message_id}: {e}", exc_info=True)
 
-    # ── [TẦNG 4: BOT REPLY CASCADE RECALL] ──
+    # ── [TẦNG 4: USER/BOT REPLY CASCADE RECALL] ──
     bot_reply_recalled = False
-    bot_reply_id = recalled_stg.get("bot_reply_message_id") if recalled_stg else None
-    if bot_reply_id:
-        print(f"🤖 [TẦNG 4 - BOT REPLY CASCADE] Tin nhắn gốc từng được Bot reply qua {bot_reply_id}. Tiến hành thu hồi...")
+    reply_id = recalled_stg.get("bot_reply_message_id") if recalled_stg else None
+    eff_tenant = recalled_stg.get("tenant_key") if recalled_stg else None
+
+    # Fallback: Tra cứu trong draft_logs nếu staging chưa kịp lưu hoặc không có
+    if not reply_id:
         try:
-            recall_resp = await lark_service.arecall_message(bot_reply_id)
+            from database.db import get_draft_logs_collection
+            d_col = get_draft_logs_collection()
+            d_doc = await d_col.find_one({
+                "message_id": message_id,
+                "bot_reply_message_id": {"$exists": True, "$ne": None},
+            })
+            if d_doc:
+                reply_id = d_doc.get("bot_reply_message_id")
+                if not eff_tenant:
+                    eff_tenant = d_doc.get("tenant_key")
+        except Exception as ex:
+            logger.debug(f"Không thể tra cứu bot_reply_message_id từ draft_logs: {ex}")
+
+    if reply_id:
+        print(f"🔄 [TẦNG 4 - CASCADE RECALL] Tin nhắn gốc đã có câu trả lời đại diện (as_user: {reply_id}). Tiến hành thu hồi...")
+        try:
+            recall_resp = await lark_service.arecall_message(reply_id, tenant_key=eff_tenant)
             if isinstance(recall_resp, dict) and recall_resp.get("success"):
                 bot_reply_recalled = True
-                print(f"✔ [TẦNG 4 - BOT REPLY CASCADE] Đã thu hồi thành công tin nhắn reply của Bot ({bot_reply_id}).")
+                print(f"✔ [TẦNG 4 - CASCADE RECALL] Đã thu hồi thành công tin nhắn trả lời đại diện ({reply_id}).")
             else:
                 err_msg = recall_resp.get("msg") or recall_resp.get("error") if isinstance(recall_resp, dict) else str(recall_resp)
-                print(f"⚠️ [TẦNG 4 - BOT REPLY CASCADE] Không thể thu hồi tin reply {bot_reply_id}: {err_msg}")
+                print(f"⚠️ [TẦNG 4 - CASCADE RECALL] Không thể thu hồi tin nhắn trả lời {reply_id}: {err_msg}")
         except Exception as e:
-            logger.error(f"[LARK RECALL] Lỗi khi gọi arecall_message cho {bot_reply_id}: {e}", exc_info=True)
+            logger.error(f"[LARK RECALL] Lỗi khi gọi arecall_message cho {reply_id}: {e}", exc_info=True)
     else:
-        print(f"ℹ️ [TẦNG 4 - BOT REPLY CASCADE] Bot không có tin nhắn reply trực tiếp cho {message_id}.")
+        print(f"ℹ️ [TẦNG 4 - CASCADE RECALL] Không có tin nhắn trả lời nào gắn với tin {message_id}.")
 
     print("=" * 65 + "\n")
 

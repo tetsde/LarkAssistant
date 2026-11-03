@@ -98,6 +98,11 @@ Nhiệm vụ của bạn là đọc các tin nhắn trao đổi trong ngày từ
      * "milestone": Đạt được cột mốc hoặc dời mốc quan trọng (VD: Hoàn thành đợt deploy Sprint 2).
      * "blocker": Điểm nghẽn, vướng mắc, rủi ro làm đình trệ công việc (VD: Bị nghẽn do chờ API ngân hàng, thiếu server).
 
+4. LOẠI TRỪ CÁC CÂU GIAO TIẾP GIỮ NHỊP & HẸN THÔNG THƯỜNG:
+   - KHÔNG trích xuất các câu trả lời giữ nhịp hội thoại, câu hẹn xem xét thông thường (ví dụ: "để anh kiểm tra lại với bên phụ trách rồi nhắn em sau", "chờ anh tí", "anh đang xem", "anh chưa có thông tin... có gì nhắn sau nhé") thành Tiến độ (progress) hay Điểm nghẽn (blocker).
+   - Chỉ ghi nhận Blocker khi có sự cố kỹ thuật, thiếu hụt tài nguyên hoặc tắc nghẽn thật sự được các thành viên báo cáo gây đình trệ công việc.
+   - BỎ QUA hoàn toàn các câu trả lời của Trợ lý AI / Bot hoặc câu chào hỏi, tán gẫu.
+
 QUY TẮC BẮT BUỘC VỀ TRUY VẾT (PROVENANCE):
 - Mỗi mục trích xuất (quyết định, cam kết, thay đổi trạng thái) BẮT BUỘC PHẢI CÓ nguồn tin:
   * message_id: ID tin nhắn phát sinh (lấy từ dữ liệu input).
@@ -588,12 +593,31 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         eff_tenant = tenant_key or getattr(digest, "tenant_key", None) or get_current_tenant_key()
 
         scoped_wiki_kb = await scope_service.get_wiki_kb_for_chat(digest.chat_id, tenant_key=eff_tenant)
-        target_kb = dataset_id or digest.weknora_kb_id or scoped_wiki_kb or settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID
+        # Bỏ hai tầng fallback `settings.WEKNORA_WIKI_DATASET_ID` / `settings.WEKNORA_DATASET_ID`:
+        # kho mặc định trong .env thuộc về MỘT doanh nghiệp, nên digest của tenant khác sẽ bị
+        # nạp sang kho của tenant kia. Thiếu kho của chính tenant là một lỗi có tên, không phải
+        # lý do để mượn kho của người khác.
+        target_kb = dataset_id or digest.weknora_kb_id or scoped_wiki_kb
+        if not target_kb and eff_tenant:
+            try:
+                from services.tenancy.tenant_resolver import tenant_resolver
+
+                resources = await tenant_resolver.resolve(eff_tenant)
+                target_kb = resources.weknora_wiki_dataset_id
+            except Exception as res_err:
+                logger.warning(
+                    "[Digest Sync] Không phân giải được wiki KB của tenant '%s': %s",
+                    eff_tenant, res_err,
+                )
         if target_kb and "," in target_kb:
             target_kb = target_kb.split(",")[0].strip()
 
         if not target_kb:
-            logger.warning(f"Không tìm thấy wiki_dataset_id để đồng bộ sang WeKnora cho tenant '{eff_tenant}'.")
+            logger.warning(
+                "⚠️ Không tìm thấy wiki KB riêng cho tenant '%s' - bỏ qua đồng bộ digest "
+                "sang WeKnora thay vì ghi vào kho của doanh nghiệp khác.",
+                eff_tenant,
+            )
             digest.sync_status = "failed"
             return False
 

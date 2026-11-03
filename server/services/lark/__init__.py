@@ -94,6 +94,7 @@ from services.lark.handlers import (
 )
 from services.lark.card_builder import (
     build_draft_card,
+    build_draft_edit_form_card,
     build_claim_card,
     build_digest_approval_card,
     build_project_digest_detail_card,
@@ -127,6 +128,7 @@ __all__ = [
     "handle_owner_dm_command",
     "handle_member_message",
     "build_draft_card",
+    "build_draft_edit_form_card",
     "build_claim_card",
     "build_digest_approval_card",
     "build_project_digest_detail_card",

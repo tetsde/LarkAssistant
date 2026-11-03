@@ -50,7 +50,11 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
 
         # 2. MEMORIES (Thực thể & Bí danh)
         settings.MONGO_MEMORY_COLLECTION: [
-            IndexModel([("id", ASCENDING)], unique=True, name="idx_memories_id_unique"),
+            # ⚠️ B4 fix (2026-11-03): Thay thế unique index chỉ trên "id" bằng compound
+            # unique index (tenant_key, id) để tránh va chạm entity ID giữa các tenant.
+            # Xem migration script: server/scripts/migrate_entity_index.py
+            # Xem: docs/project-memory/DECISIONS.md — B4 fix
+            IndexModel([("tenant_key", ASCENDING), ("id", ASCENDING)], unique=True, name="idx_memories_tenant_id_unique"),
             IndexModel([("workspace_id", ASCENDING)], name="idx_memories_workspace_id"),
             IndexModel([("name", ASCENDING)], name="idx_memories_name"),
             IndexModel([("tenant_key", ASCENDING), ("name", ASCENDING)], name="idx_memories_tenant_name"),
@@ -180,6 +184,12 @@ async def ensure_database_indexes(db_instance: Any = None) -> Dict[str, List[str
                 # Migration an toàn cho index cũ từng ép open_id global-unique.
                 try:
                     await col.drop_index("idx_user_settings_open_id_unique")
+                except Exception:
+                    pass
+            elif col_name == settings.MONGO_MEMORY_COLLECTION:
+                # Migration an toàn cho index cũ từng ép id global-unique (B4 fix - 2026-11-03)
+                try:
+                    await col.drop_index("idx_memories_id_unique")
                 except Exception:
                     pass
             created_names = await col.create_indexes(index_models)

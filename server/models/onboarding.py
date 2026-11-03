@@ -36,6 +36,7 @@ class SaveSettingsRequest(BaseModel):
     llm_timeout: Optional[float] = Field(default=60.0, description="Timeout (giây)")
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
+    policy_sync_interval_seconds: Optional[int] = Field(default=3600, description="Chu kỳ quét định kỳ chính sách doanh nghiệp (giây)")
     tenant_key: Optional[str] = Field(default=None, description="Mã tenant ISV nếu có")
     app_id: Optional[str] = Field(default=None, description="Lark App ID (cli_xxx)")
     app_secret: Optional[str] = Field(default=None, description="Lark App Secret")

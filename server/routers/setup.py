@@ -51,12 +51,19 @@ async def setup_landing_page(
     app_id = getattr(settings, "LARK_APP_ID", "")
     base_url = str(request.base_url).rstrip("/")
     initial_task_id = task_id or ""
+    initial_view = "progress" if task_id else "guide"
 
     html_content = (
         html_content
         .replace("{{APP_ID}}", app_id)
         .replace("{{BASE_URL}}", base_url)
         .replace("{{TASK_ID}}", initial_task_id)
+        .replace("{{INITIAL_VIEW}}", initial_view)
+        .replace("{{TENANT_KEY}}", "")
+        .replace("{{OPEN_ID}}", "")
+        .replace("{{effective_open_id}}", "")
+        .replace("{{effective_user_name}}", "")
+        .replace("{{effective_tenant_key}}", "")
     )
 
     return HTMLResponse(content=html_content)
@@ -66,15 +73,23 @@ async def setup_landing_page(
 async def start_install_redirect(
     request: Request,
     registration_id: Optional[str] = Query(None, description="Mã đăng ký Custom App theo tenant/setup"),
+    redirect_uri: Optional[str] = Query(None, description="Tùy chọn redirect_uri được truyền trực tiếp từ client"),
 ):
     """
     Khởi tạo phiên cài đặt mới và chuyển hướng sang Lark OAuth.
-    Ưu tiên sử dụng LARK_OAUTH_REDIRECT_URI đã đăng ký trong Lark Developer Console
-    (mặc định: http://localhost:8000/auth/lark/callback) để tránh lỗi 20029.
+    Tự động nhận diện host/proxy (ngrok/https) để tạo redirect_uri chính xác khớp với Lark Console.
     """
     app_record = await lark_app_service.get_registration(registration_id) if registration_id else None
-    app_id = app_record.get("app_id") if app_record else getattr(settings, "LARK_APP_ID", "")
-    app_secret = app_record.get("app_secret") if app_record else getattr(settings, "LARK_APP_SECRET", "")
+    # GĐ2/GĐ4: không vay App credential từ `.env` nữa. Phiên cài đặt phải gắn với một
+    # registration đã lưu trong DB, nếu không thì URL ủy quyền sẽ trỏ vào App của
+    # người khác và toàn bộ pipeline setup đổi code bằng secret sai.
+    if not app_record:
+        raise HTTPException(
+            status_code=400,
+            detail="Cần đăng ký Custom App (register-app) trước khi bắt đầu OAuth user.",
+        )
+    app_id = app_record.get("app_id") or ""
+    app_secret = app_record.get("app_secret") or ""
     if not app_id or not app_secret:
         raise HTTPException(
             status_code=400,
@@ -84,20 +99,24 @@ async def start_install_redirect(
     task_id = one_click_setup_service.create_task(app_registration_id=registration_id)
 
     configured_redirect_uri = getattr(settings, "LARK_OAUTH_REDIRECT_URI", "")
-    if configured_redirect_uri:
-        redirect_uri = configured_redirect_uri
+    if redirect_uri:
+        final_redirect_uri = redirect_uri
+    elif configured_redirect_uri:
+        final_redirect_uri = configured_redirect_uri
     else:
-        base_url = str(request.base_url).rstrip("/")
-        redirect_uri = f"{base_url}/auth/lark/callback"
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        base_url = f"{proto}://{host}".rstrip("/") if host else str(request.base_url).rstrip("/")
+        final_redirect_uri = f"{base_url}/setup/callback"
 
     auth_state = f"setup_{task_id}"
     await one_click_setup_service.persist_task(task_id, oauth_state=auth_state)
     auth_url = token_service.get_authorize_url(
-        redirect_uri=redirect_uri,
+        redirect_uri=final_redirect_uri,
         state=auth_state,
         app_id=app_id,
     )
-    logger.info(f"🚀 [ONE-CLICK SETUP] Khởi tạo task '{task_id}', redirect_uri='{redirect_uri}', auth_url='{auth_url}'")
+    logger.info(f"🚀 [ONE-CLICK SETUP] Khởi tạo task '{task_id}', redirect_uri='{final_redirect_uri}', auth_url='{auth_url}'")
     return RedirectResponse(url=auth_url)
 
 

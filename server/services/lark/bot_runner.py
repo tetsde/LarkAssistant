@@ -30,8 +30,12 @@ from services.workflows.chat_queue import chat_queue_service
 from services.workflows.digest_formatters import get_current_digest_date
 from services.knowledge.doc_parser import doc_parser_service
 from services.lark import lark_service
-from services.lark.bitable import lark_base_service
 from services.knowledge.chat_scopes import scope_service
+
+# `lark_base_service` chi được import ở đây để giữ tương thích với các module/test cũ
+# tham chiếu `services.lark.bot_runner.lark_base_service`; bot_runner không còn ghi
+# field lên singleton này.
+from services.lark.bitable import lark_base_service  # noqa: F401 (import-compat)
 
 # Modular Handlers (EDL-0009 Phase 3 Refactoring)
 from services.lark.handlers import (
@@ -162,50 +166,42 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                             active_tenants = []
                             try:
                                 t_col = get_tenants_collection()
-                                async for t_doc in t_col.find({"status": {"$ne": "uninstalled"}}):
+                                # Chỉ tenant `ready` được tổng hợp digest: provisioning chưa có
+                                # dataset/table, còn inactive/uninstalled đã ngừng nhận báo cáo.
+                                async for t_doc in t_col.find({"status": "ready"}):
                                     tk = t_doc.get("tenant_key")
                                     if tk:
                                         active_tenants.append(tk)
                             except Exception as te:
                                 logger.debug(f"Không thể tra cứu danh sách tenant cho scheduler: {te}")
 
-                            if active_tenants:
-                                for tk in active_tenants:
-                                    try:
-                                        target_hm = default_target_hm
-                                        t_doc = await get_tenant_config(tk)
-                                        admin_id = t_doc.get("admin_open_id") if t_doc else None
-                                        if admin_id:
-                                            from services.user_settings_service import user_settings_service
-                                            user_cfg = await user_settings_service.get_user_settings(admin_id, tenant_key=tk)
-                                            if user_cfg and user_cfg.digest_schedule_time:
-                                                target_hm = user_cfg.digest_schedule_time
+                            # Không còn nhánh "single-tenant fallback": chạy digest mà không có
+                            # tenant_key sẽ lấy KB/dataset của doanh nghiệp khác (GĐ2/GĐ5).
+                            for tk in active_tenants:
+                                try:
+                                    target_hm = default_target_hm
+                                    t_doc = await get_tenant_config(tk)
+                                    admin_id = t_doc.get("admin_open_id") if t_doc else None
+                                    if admin_id:
+                                        from services.user_settings_service import user_settings_service
+                                        user_cfg = await user_settings_service.get_user_settings(admin_id, tenant_key=tk)
+                                        if user_cfg and user_cfg.digest_schedule_time:
+                                            target_hm = user_cfg.digest_schedule_time
 
-                                        if current_hm != target_hm or last_run_dates.get(tk) == today_str:
-                                            continue
+                                    if current_hm != target_hm or last_run_dates.get(tk) == today_str:
+                                        continue
 
-                                        m = await digest_service.run_scheduled_daily_digests(
-                                            date=today_str,
-                                            require_approval=settings.DIGEST_REQUIRE_APPROVAL,
-                                            tenant_key=tk,
-                                        )
-                                        last_run_dates[tk] = today_str
-                                        logger.info("[SCHEDULER] tenant=%s time=%s digest=started", tk, target_hm)
-                                        if m and m.total_groups > 0:
-                                            logger.info("[SCHEDULER] tenant=%s digest=completed groups=%d messages=%d", tk, m.total_groups, m.total_messages)
-                                    except Exception as ex:
-                                        logger.error(f"Lỗi khi chạy scheduled digest cho tenant {tk}: {ex}")
-                            else:
-                                # Fallback Single-Tenant
-                                if current_hm != default_target_hm or last_run_dates.get("__single__") == today_str:
-                                    return
-                                m = await digest_service.run_scheduled_daily_digests(
-                                    date=today_str,
-                                    require_approval=settings.DIGEST_REQUIRE_APPROVAL,
-                                )
-                                last_run_dates["__single__"] = today_str
-                                if m and m.total_groups > 0:
-                                    logger.info("[SCHEDULER] digest=completed groups=%d messages=%d", m.total_groups, m.total_messages)
+                                    m = await digest_service.run_scheduled_daily_digests(
+                                        date=today_str,
+                                        require_approval=settings.DIGEST_REQUIRE_APPROVAL,
+                                        tenant_key=tk,
+                                    )
+                                    last_run_dates[tk] = today_str
+                                    logger.info("[SCHEDULER] tenant=%s time=%s digest=started", tk, target_hm)
+                                    if m and m.total_groups > 0:
+                                        logger.info("[SCHEDULER] tenant=%s digest=completed groups=%d messages=%d", tk, m.total_groups, m.total_messages)
+                                except Exception as ex:
+                                    logger.error(f"Lỗi khi chạy scheduled digest cho tenant {tk}: {ex}")
 
                         loop.run_until_complete(_run_all_tenants())
                     finally:
@@ -244,24 +240,16 @@ def start_bot_service() -> None:
     print(f"App ID : {lark_service.app_id}")
     print(f"Domain : {lark_service.domain}")
 
-    # 0. Đồng bộ User Token mới nhất từ MongoDB vào lark_service (nếu có)
-    try:
-        from database.db import get_sync_db
-        db = get_sync_db()
-        doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
-        if doc and doc.get("access_token"):
-            lark_service.user_access_token = doc["access_token"]
-            lark_service._last_token_check = None
-            if doc.get("open_id"):
-                lark_service.known_user_open_id = doc["open_id"]
-            if not lark_service._current_user_profile:
-                lark_service._current_user_profile = {}
-            lark_service._current_user_profile["name"] = doc.get("user_name", "User")
-            lark_service._current_user_profile["open_id"] = doc.get("open_id", "")
-            if lark_base_service:
-                lark_base_service.user_access_token = doc["access_token"]
-    except Exception as e:
-        logger.debug(f"Không thể nạp token sync từ MongoDB: {e}")
+    # 0. Không nạp `primary_user_token` legacy vào singleton nữa.
+    #    Document đó thuộc về MỘT App/tenant cụ thể. Nạp vào `lark_service`/
+    #    `lark_base_service` dùng chung sẽ khiến doanh nghiệp B trả lời tin nhắn bằng
+    #    danh tính của doanh nghiệp A. User token giờ chỉ đi qua token broker theo
+    #    `(tenant_key, app_id, "user")`; sweeper giữ cho các tenant 'ready' còn hạn.
+    if getattr(settings, "LARK_USER_ACCESS_TOKEN", ""):
+        logger.info(
+            "ℹ️ Bỏ qua LARK_USER_ACCESS_TOKEN trong .env khi startup: token khởi chạy "
+            "được cấp theo tenant qua broker, không nạp vào singleton."
+        )
 
     # 1. Đăng ký Message Handler vào Lark Service
     lark_service.register_handler(handle_lark_incoming_message)
@@ -291,103 +279,146 @@ def start_bot_service() -> None:
 
     enable_polling = getattr(settings, "ENABLE_DM_POLLING", False)
     poll_interval = getattr(settings, "DM_POLL_INTERVAL", 60.0)
+    enable_ws = getattr(settings, "ENABLE_LARK_WEBSOCKET", False)
 
-    if enable_polling:
-        print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ {poll_interval}s)")
-        print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
+    if enable_ws:
+        if enable_polling:
+            print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ {poll_interval}s)")
+            print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
+        else:
+            print(f"   - Group & DM        : ⚡ Pure WebSocket Real-time (0 Quota used!)")
+            print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
     else:
-        print(f"   - Group & DM        : ⚡ Pure WebSocket Real-time (0 Quota used!)")
-        print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
+        print("   - Event Delivery    : 🌐 HTTP Webhook Gateway (Multi-Tenant Routing)")
+        print("   - WebSocket Mode    : ⚪ Tắt (Sử dụng Webhook)")
 
     print("-" * 65)
     print(f"💡 Danh tính phản hồi: {user_info.get('name') or settings.LARK_USER_NAME or 'User'}")
     print("=" * 65)
 
-    # 4. Khởi động WebSocket Client ở background thread
-    if enable_polling:
-        _ws_thread = threading.Thread(
-            target=lark_service.start_hybrid_runner,
-            kwargs={"dm_poll_interval": poll_interval},
-            daemon=True,
-            name="LarkHybridRunner",
-        )
-        _ws_thread.start()
+    # 4. Khởi động WebSocket Client ở background thread (chỉ khi ENABLE_LARK_WEBSOCKET=True)
+    if enable_ws:
+        if scoped_apps_mode:
+            # Multi-tenant: start WebSocket cho từng Custom App đã đăng ký trong MongoDB
+            # thay vì singleton .env (app_id khác → WebSocket nhận sai event)
+            print("🚀 Đang kết nối Lark WebSocket cho từng Custom App (Multi-Tenant Mode)...")
+
+            async def _async_start_ws_for_custom_apps():
+                try:
+                    from services.lark_app_service import lark_app_service
+                    from services.lark.runtime import get_or_create_lark_service
+                    registrations = await lark_app_service.list_registrations()
+                    for app_rec in registrations:
+                        if not app_rec.get("app_id"):
+                            continue
+                        try:
+                            svc = await get_or_create_lark_service(app_rec)
+                            svc.start_ws_client(background=True)
+                            print(f"  ✔ WebSocket connected for App {app_rec['app_id']} (tenant: {app_rec.get('tenant_key', 'N/A')})")
+                        except Exception as ws_err:
+                            logger.error(f"  ✗ WebSocket failed for App {app_rec.get('app_id')}: {ws_err}")
+                except Exception as e:
+                    logger.error(f"Lỗi khởi động WebSocket multi-tenant: {e}", exc_info=True)
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.create_task(_async_start_ws_for_custom_apps())
+
+        elif enable_polling:
+            _ws_thread = threading.Thread(
+                target=lark_service.start_hybrid_runner,
+                kwargs={"dm_poll_interval": poll_interval},
+                daemon=True,
+                name="LarkHybridRunner",
+            )
+            _ws_thread.start()
+        else:
+            print("🚀 Đang kết nối Lark WebSocket Client (Pure WebSocket Mode)...")
+            _ws_thread = lark_service.start_ws_client(background=True)
     else:
-        print("🚀 Đang kết nối Lark WebSocket Client (Pure WebSocket Mode)...")
-        _ws_thread = lark_service.start_ws_client(background=True)
+        logger.info("ℹ️ Chế độ Lark WebSocket đang tắt (ENABLE_LARK_WEBSOCKET=False). Mọi sự kiện và tương tác nhận qua Webhook Gateway (/api/lark/events).")
 
     # 5. Khởi động Lark Base (Bitable) Sync & Subscribe Service
     try:
+        from services.knowledge.chat_scopes import scope_service
         # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
         lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
 
-        # E. Non-blocking Bootstrap: Chuyển các network call đồng bộ lúc startup sang background task
+        # E. Non-blocking Bootstrap: mọi thao tác Base chạy theo TỪNG tenant, trên
+        #    instance `LarkBaseService.for_tenant()` riêng. Trước đây hàm này ghi
+        #    `lark_base_service.app_token/table_id` từ "config đang hoạt động" rồi dùng
+        #    singleton đó cho tất cả tenant -> Base của tenant A bị tenant B đọc/ghi.
         async def _async_bitable_bootstrap():
+            from database.db import get_tenants_collection
+            from services.lark.bitable import LarkBaseService
+            from services.lark.base_provision_service import base_provision_service
+            from services.knowledge.policy_sync import policy_sync_service
+            from services.tenancy.tenant_resolver import tenant_resolver
+            from core.tenant_errors import TenantResolutionError
+
+            tenant_keys: list[str] = []
             try:
-                from services.lark.base_provision_service import base_provision_service
-                from database.db import get_tenants_collection
+                t_col = get_tenants_collection()
+                async for t_doc in t_col.find(
+                    {"status": {"$nin": ["uninstalled"]}}, {"tenant_key": 1}
+                ):
+                    tk = t_doc.get("tenant_key")
+                    if tk:
+                        tenant_keys.append(str(tk))
+            except Exception as t_err:
+                logger.debug(f"Không thể đọc danh sách tenants để bootstrap Base: {t_err}")
 
-                # 1. Phân giải cấu hình Base đang hoạt động (MongoDB system_config / tenants)
-                active_cfg = await base_provision_service.get_active_base_config()
-                if active_cfg and active_cfg.app_token:
-                    lark_base_service.app_token = active_cfg.app_token
-                    lark_base_service.table_id = active_cfg.chat_scope_table_id
-
-                # A. Tập hợp tất cả các Base app_token cần subscribe
-                base_tokens = set()
-                if lark_base_service.app_token:
-                    base_tokens.add(lark_base_service.app_token)
-                if active_cfg and active_cfg.app_token:
-                    base_tokens.add(active_cfg.app_token)
-
-                tenant_keys = []
+            for tk in tenant_keys:
                 try:
-                    t_col = get_tenants_collection()
-                    async for t_doc in t_col.find({"bitable_app_token": {"$exists": True, "$ne": ""}}):
-                        btok = t_doc.get("bitable_app_token")
-                        if btok:
-                            base_tokens.add(btok)
-                        tk = t_doc.get("tenant_key")
-                        if tk:
-                            tenant_keys.append(tk)
-                except Exception as t_err:
-                    logger.debug(f"Không thể đọc danh sách tenants để subscribe Base: {t_err}")
+                    resources = await tenant_resolver.resolve(tk)
+                except TenantResolutionError as res_err:
+                    logger.info(
+                        "ℹ️ [LARK BASE] Bỏ bootstrap cho tenant '%s' (%s): %s",
+                        tk, type(res_err).__name__, res_err,
+                    )
+                    continue
 
-                # Đăng ký subscribe tất cả các Base trên Lark Cloud
-                for btok in base_tokens:
-                    sub_ok = await asyncio.to_thread(lark_base_service.subscribe_events, btok)
+                # Mỗi tenant một service riêng, gắn đúng app_token/table_id của nó.
+                base_service = LarkBaseService.for_tenant(resources)
+                try:
+                    sub_ok = await asyncio.to_thread(
+                        base_service.subscribe_events, resources.base_app_token
+                    )
                     if sub_ok:
-                        print(f"📊 [LARK BASE] Đã đăng ký theo dõi sự kiện Bitable (App: {btok})")
+                        print(f"📊 [LARK BASE] tenant={tk} đã đăng ký theo dõi Bitable (App: {resources.base_app_token})")
+                except Exception as sub_err:
+                    logger.warning("⚠️ [LARK BASE] tenant=%s subscribe_events lỗi: %s", tk, sub_err)
 
-                # C. Dọn dẹp và chuẩn hóa schema cho các Base doanh nghiệp
-                from services.lark.base_provision_service import base_provision_service
-                for tk in tenant_keys:
-                    try:
-                        await base_provision_service.repair_enterprise_base_schema(tk)
-                    except Exception as rep_err:
-                        logger.debug(f"repair schema error cho tenant {tk}: {rep_err}")
+                try:
+                    await base_provision_service.repair_enterprise_base_schema(tk)
+                except Exception as rep_err:
+                    logger.debug(f"repair schema error cho tenant {tk}: {rep_err}")
 
-                # D. Đồng bộ chính sách ban đầu cho từng tenant
-                from services.knowledge.policy_sync import policy_sync_service
-                for tk in tenant_keys:
-                    try:
-                        await policy_sync_service.sync_policies(force=True, tenant_key=tk)
-                    except Exception as pol_err:
-                        logger.debug(f"policy sync error cho tenant {tk}: {pol_err}")
+                try:
+                    # force=False: dùng hash so sánh, chỉ upload khi doc thực sự thay đổi.
+                    # force=True chỉ nên dùng khi user bấm nút "Đồng bộ ngay" trên UI.
+                    await policy_sync_service.sync_policies(force=False, tenant_key=tk)
+                except Exception as pol_err:
+                    logger.debug(f"policy sync error cho tenant {tk}: {pol_err}")
 
-                # B. Quét và đồng bộ các nhóm chat bot ban đầu vào Base trong threadpool
-                sync_res = await asyncio.to_thread(lark_base_service.sync_bot_chats)
-                items = sync_res.get("added", []) + sync_res.get("updated", [])
-                if items:
-                    print(f"🔄 [LARK BASE] Đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
-            except Exception as ex:
-                logger.warning(f"Lỗi trong background bitable bootstrap: {ex}")
+                try:
+                    sync_res = await asyncio.to_thread(base_service.sync_bot_chats)
+                    items = sync_res.get("added", []) + sync_res.get("updated", [])
+                    if items:
+                        print(f"🔄 [LARK BASE] tenant={tk} đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
+                except Exception as sync_err:
+                    logger.warning("⚠️ [LARK BASE] tenant=%s sync_bot_chats lỗi: %s", tk, sync_err)
 
-            # Quét và đồng bộ ban đầu các tài liệu và phân quyền nhóm từ Base sang WeKnora & MongoDB
-            try:
-                await scope_service.sync_all_groups_from_base()
-            except Exception as ex:
-                logger.warning(f"Lỗi trong sync_all_groups_from_base: {ex}")
+                try:
+                    await scope_service.sync_all_groups_from_base(tenant_key=tk)
+                except Exception as ex:
+                    logger.warning(f"Lỗi trong sync_all_groups_from_base cho tenant {tk}: {ex}")
+
+            if not tenant_keys:
+                print("ℹ️ [LARK BASE] Chưa có tenant nào trong DB — bỏ qua Base bootstrap.")
 
         try:
             loop = asyncio.get_running_loop()
@@ -395,8 +426,14 @@ def start_bot_service() -> None:
             if getattr(settings, "POLICY_SYNC_ENABLED", True):
                 from services.knowledge_service import policy_sync_service
                 loop.create_task(policy_sync_service.start_loop())
-            from services.auth_service import start_token_refresh_loop
-            loop.create_task(start_token_refresh_loop())
+            # Background loop định kỳ đồng bộ Chat Scopes & Nhãn từ Lark Base.
+            # Interval 1800s (30 phút) — trước đây hardcode 30s gây 480 Lark Drive
+            # requests/giờ + trigger rebuild WeKnora liên tục. Fix: EDL-0073.
+            loop.create_task(scope_service.start_loop(interval_seconds=1800))
+            # Sweeper tenant-scoped thay cho `start_token_refresh_loop` cũ (vốn còn
+            # nhánh fallback đọc legacy token).
+            from services.auth.tenant_refresh_sweeper import start_tenant_token_sweeper
+            loop.create_task(start_tenant_token_sweeper())
         except RuntimeError:
             pass
     except Exception as e:

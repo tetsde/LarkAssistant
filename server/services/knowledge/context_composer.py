@@ -376,7 +376,7 @@ class ContextComposer:
                     created_at=f.get("created_at") or f.get("updated_at"),
                     chat_id=f.get("chat_id"),
                     project_tag=f.get("project_tag"),
-                    tenant_key=f.get("tenant_key") or tenant_key,
+                    tenant_key=f.get("tenant_key"),
                 )
             )
 
@@ -701,9 +701,12 @@ class ContextComposer:
         claims = self.normalize_claims_data(claims_data, entity_map=entity_map, tenant_key=eff_tenant)
 
         # 1.1. Lọc bảo vệ nghiêm ngặt đa doanh nghiệp (Defense-in-depth Cross-Tenant Isolation):
-        # Nếu có tenant_key, loại bỏ mọi claim thuộc về tenant khác
+        # Nếu có tenant_key, loại bỏ mọi claim KHÔNG thuộc đúng tenant này.
+        # ⚠️ Strict mode: không có escape hatch "not c.tenant_key" nữa.
+        # Claim legacy không có tenant_key sẽ bị loại bỏ để tránh rò rỉ cross-tenant.
+        # Xem: docs/project-memory/DECISIONS.md — B3 fix (2026-11-03)
         if eff_tenant:
-            claims = [c for c in claims if not c.tenant_key or c.tenant_key == eff_tenant]
+            claims = [c for c in claims if c.tenant_key == eff_tenant]
 
         # 2. Tự động so khớp chéo Thực thể (Entity Alignment) nếu bật auto_align và có (chunks or query)
         if auto_align and claims and (chunks or query):

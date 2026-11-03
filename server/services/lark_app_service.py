@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from database.db import get_lark_apps_collection
 from services.user_settings_service import user_settings_service
+
+logger = logging.getLogger("hilark.lark_app_service")
+
+
+async def _invalidate_tenant_caches(tenant_key: Optional[str]) -> None:
+    """
+    Credential của App vừa thay đổi -> resolver và token broker không được giữ bản cũ.
+
+    Nếu bỏ bước này, một lần `register_app` thay secret vẫn có thể bị token/request cũ
+    phục vụ trong 60s (RAM cache của resolver) hoặc tới hết hạn (token đã cache).
+    """
+    if not tenant_key:
+        return
+    try:
+        from services.tenancy.tenant_state import tenant_state
+
+        await tenant_state.invalidate_caches(str(tenant_key))
+    except Exception as exc:  # pragma: no cover - cache không được làm hỏng luồng ghi DB
+        logger.warning("Không invalidate được cache cho tenant '%s': %s", tenant_key, exc)
 
 
 def _now() -> str:
@@ -51,23 +71,26 @@ class LarkAppService:
             "created_at": existing.get("created_at", now) if existing else now,
         }
         await col.update_one({"app_id": app_id}, {"$set": doc}, upsert=True)
+        await _invalidate_tenant_caches(doc.get("tenant_key"))
+        from services.lark.runtime import invalidate_lark_service
+        invalidate_lark_service(app_id)
         return {"registration_id": registration_id, "app_id": app_id, "status": doc["status"]}
 
     async def get_registration(self, registration_id: str) -> Optional[Dict[str, Any]]:
-        if not registration_id:
+        if not isinstance(registration_id, str) or not registration_id.strip():
             return None
         doc = await get_lark_apps_collection().find_one({"registration_id": registration_id})
         return self._decrypt(doc) if doc else None
 
     async def get_by_app_id(self, app_id: str) -> Optional[Dict[str, Any]]:
-        if not app_id:
+        if not isinstance(app_id, str) or not app_id.strip():
             return None
         doc = await get_lark_apps_collection().find_one({"app_id": app_id})
         return self._decrypt(doc) if doc else None
 
     async def get_by_tenant_key(self, tenant_key: str) -> Optional[Dict[str, Any]]:
         """Lấy Custom App đã liên kết với tenant để gửi/nhận đúng app identity."""
-        if not tenant_key:
+        if not isinstance(tenant_key, str) or not tenant_key.strip():
             return None
         doc = await get_lark_apps_collection().find_one(
             {"tenant_key": tenant_key, "status": {"$ne": "revoked"}},
@@ -88,7 +111,14 @@ class LarkAppService:
             {"registration_id": registration_id},
             {"$set": {"tenant_key": tenant_key, "admin_open_id": admin_open_id, "status": "active", "updated_at": _now()}},
         )
-        return await self.get_registration(registration_id)
+        # Tenant vừa được gắn vào một App cụ thể: mọi phân giải token/config cũ của nó
+        # (có thể đang trỏ sang App khác) phải bị loại ngay.
+        await _invalidate_tenant_caches(tenant_key)
+        reg = await self.get_registration(registration_id)
+        if reg and reg.get("app_id"):
+            from services.lark.runtime import invalidate_lark_service
+            invalidate_lark_service(reg["app_id"])
+        return reg
 
     @staticmethod
     def _decrypt(doc: Dict[str, Any]) -> Dict[str, Any]:

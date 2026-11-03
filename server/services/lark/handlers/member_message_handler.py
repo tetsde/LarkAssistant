@@ -18,6 +18,7 @@ import sys
 from typing import Optional
 
 from core.config import settings
+from core.tenant_errors import TenantResolutionError, TokenUnavailable
 from database.db import (
     get_staging_collection,
     promote_claims_by_message_id,
@@ -28,6 +29,7 @@ from services.ai.jev_classifier import jev_service
 from services.chat_service import process_chat_pipeline
 from services.digest_service import digest_service
 from services.lark import lark_service as default_lark_service
+from services.lark.tenant_error_reply import notify_tenant_error
 from services.workflows.chat_queue import chat_queue_service
 
 logger = logging.getLogger("hilark.bot.member_message_handler")
@@ -73,7 +75,15 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
     # Tự động lưu tin nhắn vào staging cho Daily Digest
     if msg.chat_type == "group" and msg.text:
         try:
-            speaker = target_user_name if target_user_name != "bạn" else "Thành viên"
+            if is_owner:
+                speaker = (
+                    responder_name
+                    or user_info.get("name")
+                    or (target_user_name if target_user_name != "bạn" else None)
+                    or "Lãnh đạo"
+                )
+            else:
+                speaker = target_user_name if target_user_name != "bạn" else "Thành viên"
             await digest_service.add_staging_message(
                 message_id=msg.message_id,
                 chat_id=msg.chat_id,
@@ -83,7 +93,7 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 chat_name=msg.chat_id,
                 tenant_key=msg.tenant_key,
             )
-            logger.debug("[STORE] msg=%s staging=yes", msg.message_id)
+            logger.debug("[STORE] msg=%s staging=yes speaker=%s", msg.message_id, speaker)
         except Exception as e:
             logger.warning("[STORE] msg=%s staging=failed error=%s", msg.message_id, e)
 
@@ -174,6 +184,16 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 is_owner=True,
                 tenant_key=msg.tenant_key,
             )
+        except (TenantResolutionError, TokenUnavailable) as e:
+            # Doanh nghiệp chưa ready / thiếu credential / cần uỷ quyền lại: nói rõ
+            # trong chat thay vì chỉ log (GĐ5 hợp đồng phản hồi người dùng).
+            logger.warning(
+                "[DROP] msg=%s reason=%s error=%s", msg.message_id, e.error_code, e
+            )
+            await notify_tenant_error(
+                e, message_id=msg.message_id, chat_id=msg.chat_id, tenant_key=msg.tenant_key
+            )
+            return
         except Exception as e:
             logger.error(f"Lỗi pipeline: {e}", exc_info=True)
             return

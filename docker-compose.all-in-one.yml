@@ -1,0 +1,276 @@
+# ==============================================================================
+# HiLark + WeKnora Enterprise AI Assistant - Unified All-in-One Compose Stack
+# ==============================================================================
+# Khởi chạy toàn bộ hệ thống sản xuất trong 1 lệnh duy nhất:
+#   docker compose -f docker-compose.all-in-one.yml up -d
+#
+# Hệ thống bao gồm 7 dịch vụ kết nối liền mạch qua mạng nội bộ 'hilark-network':
+#   1. hilark-server     : FastAPI Backend, Lark Bot Engine, RAG Orchestrator (:8000)
+#   2. mongodb           : MongoDB 7.0 nội bộ (Lưu Staging, Chat Scopes, Claims, BYOK) (:27017)
+#   3. weknora-app       : WeKnora Go Core Engine & Vector RAG API (:8080)
+#   4. weknora-docreader : WeKnora DocReader gRPC Engine (Bóc tách DocX/PDF/Wiki) (:50051)
+#   5. weknora-postgres  : ParadeDB / pgvector Database (Lưu trữ Vector & Full-text) (:5432)
+#   6. weknora-redis     : Redis Cache & Asynq Background Queue (:6379)
+#   7. weknora-frontend  : WeKnora Web UI Dashboard (Quản trị Knowledge Base) (:8081/80)
+# ==============================================================================
+
+networks:
+  hilark-network:
+    name: hilark-network
+    driver: bridge
+
+volumes:
+  # HiLark Persistent Storage
+  hilark-mongo-data:
+    name: hilark-mongo-data
+  hilark-logs:
+    name: hilark-logs
+
+  # WeKnora Persistent Storage
+  weknora-postgres-data:
+    name: weknora-postgres-data
+  weknora-redis-data:
+    name: weknora-redis-data
+  weknora-data-files:
+    name: weknora-data-files
+  weknora-docreader-tmp:
+    name: weknora-docreader-tmp
+
+services:
+  # ============================================================================
+  # PHẦN 1: HỆ THỐNG CƠ SỞ DỮ LIỆU NỀN TẢNG (DATABASES)
+  # ============================================================================
+
+  # 1. MongoDB 7.0 Cục bộ (HiLark State, Staging, Scopes, Claims, BYOK Settings)
+  mongodb:
+    image: mongo:7.0
+    container_name: hilark-mongodb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MONGO_PORT:-27018}:27017"
+    volumes:
+      - hilark-mongo-data:/data/db
+    networks:
+      - hilark-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # 2. PostgreSQL 17 + ParadeDB / pgvector (WeKnora Vector & Knowledge Store)
+  weknora-postgres:
+    image: paradedb/paradedb:v0.22.6-pg17
+    container_name: WeKnora-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${WEKNORA_DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${WEKNORA_DB_PASSWORD:-postgres123!@#}
+      - POSTGRES_DB=${WEKNORA_DB_NAME:-WeKnora}
+    volumes:
+      - weknora-postgres-data:/var/lib/postgresql/data
+    networks:
+      - hilark-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WEKNORA_DB_USER:-postgres} -d ${WEKNORA_DB_NAME:-WeKnora}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 1m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # 3. Redis Cache & Queue (WeKnora Asynq Queue)
+  weknora-redis:
+    image: redis:7.0-alpine
+    container_name: WeKnora-redis
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - weknora-redis-data:/data
+    networks:
+      - hilark-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+
+  # ============================================================================
+  # PHẦN 2: BỘ NÃO WEKNORA RAG VAULT & DOCREADER
+  # ============================================================================
+
+  # 4. WeKnora DocReader gRPC Engine (Chuyên trách parse PDF, DocX, Wiki, Markdown)
+  weknora-docreader:
+    image: wechatopenai/weknora-docreader:${WEKNORA_VERSION:-latest}
+    container_name: WeKnora-docreader
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:50051:50051"
+    volumes:
+      - weknora-docreader-tmp:/tmp/docreader
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      - DOCREADER_IMAGE_OUTPUT_DIR=/tmp/docreader
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+      - DOCREADER_GRPC_PORT=50051
+      - DOCREADER_GRPC_MAX_WORKERS=${DOCREADER_GRPC_MAX_WORKERS:-4}
+    networks:
+      - hilark-network
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # 5. WeKnora Go Core Engine (REST API, RAG Hybrid Search, Workspace Management)
+  weknora-app:
+    image: wechatopenai/weknora-app:${WEKNORA_VERSION:-latest}
+    container_name: WeKnora-app
+    restart: unless-stopped
+    ports:
+      - "${WEKNORA_APP_PORT:-8080}:8080"
+    volumes:
+      - weknora-data-files:/data/files
+      - weknora-docreader-tmp:/tmp/docreader:ro
+      - ./WeKnora/config/config.yaml:/app/config/config.yaml:ro
+      - ./WeKnora/config/prompt_templates:/app/config/prompt_templates:ro
+    environment:
+      - GIN_MODE=release
+      - TZ=Asia/Ho_Chi_Minh
+      - LOG_LEVEL=${WEKNORA_LOG_LEVEL:-info}
+      - AUTO_MIGRATE=true
+      # Kết nối Database nội bộ
+      - DB_DRIVER=postgres
+      - DB_HOST=weknora-postgres
+      - DB_PORT=5432
+      - DB_USER=${WEKNORA_DB_USER:-postgres}
+      - DB_PASSWORD=${WEKNORA_DB_PASSWORD:-postgres123!@#}
+      - DB_NAME=${WEKNORA_DB_NAME:-WeKnora}
+      - RETRIEVE_DRIVER=postgres
+      # Kết nối Redis & DocReader nội bộ
+      - REDIS_ADDR=weknora-redis:6379
+      - DOCREADER_ADDR=weknora-docreader:50051
+      - DOCREADER_TRANSPORT=grpc
+      # Lưu trữ tài liệu
+      - STORAGE_TYPE=local
+      - LOCAL_STORAGE_BASE_DIR=/data/files
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+      # Bảo mật & RBAC
+      - DISABLE_REGISTRATION=false
+      - WEKNORA_AUTH_DEFAULT_TENANT_MODE=create_personal
+      - WEKNORA_TENANT_ENABLE_CROSS_TENANT_ACCESS=false
+    depends_on:
+      weknora-postgres:
+        condition: service_healthy
+      weknora-docreader:
+        condition: service_healthy
+      weknora-redis:
+        condition: service_started
+    networks:
+      - hilark-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # 6. WeKnora Web UI Frontend (Giao diện trực quan xem/tải tri thức & quản trị KB)
+  weknora-frontend:
+    image: wechatopenai/weknora-ui:${WEKNORA_VERSION:-latest}
+    container_name: WeKnora-frontend
+    restart: unless-stopped
+    ports:
+      # Mặc định mở port 8081 để không đụng port 80 của Nginx Reverse Proxy
+      - "${WEKNORA_FRONTEND_PORT:-8081}:80"
+    environment:
+      - APP_HOST=weknora-app
+      - APP_PORT=8080
+      - APP_SCHEME=http
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+    depends_on:
+      weknora-app:
+        condition: service_healthy
+    networks:
+      - hilark-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+
+  # ============================================================================
+  # PHẦN 3: HILARK FASTAPI BACKEND & LARK BOT ORCHESTRATOR
+  # ============================================================================
+
+  # 7. HiLark Application Server (Lark Bot, Multi-tenant Dispatcher, Claims, BYOK)
+  hilark-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: hilark/server:latest
+    container_name: hilark-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 1. MongoDB: Tự động fallback về container 'mongodb' nếu không set MONGO_URL trong .env
+      - MONGO_URL=${MONGO_URL:-mongodb://mongodb:27017}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongodb:27017}
+      - MONGO_DB=${MONGO_DB:-LarkAssistant}
+
+      # 2. Móc nối trực tiếp với WeKnora Core qua mạng nội bộ Docker
+      - BASE_URL=${DOCKER_WEKNORA_BASE_URL:-http://weknora-app:8080/api/v1}
+      - DOCREADER_GRPC_HOST=weknora-docreader
+      - DOCREADER_GRPC_PORT=50051
+      - WEKNORA_API_KEY=${WEKNORA_API_KEY:-${api_weknora:-}}
+      - api_weknora=${api_weknora:-${WEKNORA_API_KEY:-}}
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
+
+      # 3. Chế độ WebSocket & Webhook Gateway
+      - ENABLE_LARK_WEBSOCKET=${ENABLE_LARK_WEBSOCKET:-false}
+    volumes:
+      - hilark-logs:/app/logs
+    networks:
+      - hilark-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      weknora-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+

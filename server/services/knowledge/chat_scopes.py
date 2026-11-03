@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
+from core.tenant_errors import TenantContextMissing, TenantResolutionError
 from database.db import get_chat_scopes_collection
 from database.scoped_query import inject_tenant_filter, get_current_tenant_key
 from models.chat_scope import ChatScopeRecord
@@ -266,16 +267,24 @@ class ScopeService:
             except Exception:
                 pass
 
-        # Fallback về KB mặc định từ .env
-        default_id = settings.WEKNORA_DATASET_ID or ""
-        if "," in default_id:
-            default_id = default_id.split(",")[0].strip()
-        return default_id, "Knowledge Base Mặc Định"
+        # Fallback .env đã bỏ (Giai đoạn 2): thiếu tenant là lỗi ngữ cảnh, không phải
+        # trường hợp "chạy bằng KB chung của hệ thống".
+        if not eff_tenant:
+            raise TenantContextMissing(
+                "get_default_kb_for_chat() cần tenant_key để trả về Knowledge Base đúng doanh nghiệp."
+            )
+        # Tenant config không có dataset_id → warn; resolver sẽ chặn ở bước dùng thực tế.
+        logger.warning(
+            "⚠️ [ChatScope] Tenant '%s' chưa cấu hình weknora_default_dataset_id. "
+            "Cần hoàn tất setup để gán dataset cho tenant.",
+            eff_tenant,
+        )
+        return "", "Chưa cấu hình KB"
 
     async def get_wiki_kb_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> str:
         """
         Tra cứu Wiki Knowledge Base ID cho một nhóm chat để lưu trữ digest & diễn biến dự án.
-        Ưu tiên: Chat Scope riêng -> Tenant Wiki KB -> Biến môi trường .env.
+        Ưu tiên: Chat Scope riêng -> Wiki KB của tenant. Không có tầng `.env`.
         """
         eff_tenant = tenant_key or get_current_tenant_key()
 
@@ -294,10 +303,17 @@ class ScopeService:
             except Exception:
                 pass
 
-        default_wiki_id = settings.WEKNORA_WIKI_DATASET_ID or settings.WEKNORA_DATASET_ID or ""
-        if "," in default_wiki_id:
-            default_wiki_id = default_wiki_id.split(",")[0].strip()
-        return default_wiki_id
+        # Không có tầng `.env`: thiếu tenant là lỗi ngữ cảnh, thiếu wiki KB của tenant
+        # là lỗi cấu hình và được báo bằng warning để caller thấy rõ nguyên nhân.
+        if not eff_tenant:
+            raise TenantContextMissing(
+                "get_wiki_kb_for_chat() cần tenant_key để trả về Wiki KB đúng doanh nghiệp."
+            )
+        logger.warning(
+            "⚠️ [ChatScope] Tenant '%s' chưa cấu hình weknora_wiki_dataset_id.",
+            eff_tenant,
+        )
+        return ""
 
     async def set_chat_kb(
         self,
@@ -514,8 +530,8 @@ class ScopeService:
                 url = link.get("url", "")
 
                 if ltype == "folder":
-                    logger.info(f"📁 [Scope Ingest] Phân giải thư mục Lark Drive {token}...")
-                    folder_docs = await doc_parser_service.parse_lark_folder(token)
+                    logger.info(f"📁 [Scope Ingest] Phân giải thư mục Lark Drive {token} [tenant={eff_tk}]...")
+                    folder_docs = await doc_parser_service.parse_lark_folder(token, tenant_key=eff_tk)
                     for doc_res in folder_docs:
                         if not doc_res.success:
                             continue
@@ -574,9 +590,9 @@ class ScopeService:
 
                 elif ltype in ("docx", "wiki"):
                     if ltype == "docx":
-                        doc_res = await doc_parser_service.parse_lark_docx(token)
+                        doc_res = await doc_parser_service.parse_lark_docx(token, tenant_key=eff_tk)
                     else:
-                        doc_res = await doc_parser_service.parse_lark_wiki(token)
+                        doc_res = await doc_parser_service.parse_lark_wiki(token, tenant_key=eff_tk)
 
                     if doc_res and doc_res.success:
                         doc_key = f"lark_{ltype}_{token}"
@@ -742,17 +758,15 @@ class ScopeService:
         if not tenant_cfg and eff_tenant:
             tenant_cfg = await get_tenant_config(eff_tenant)
 
-        # Nếu chưa có tenant_cfg từ context, tra cứu theo Base app_token hoặc Chat ID
-        if not tenant_cfg:
+        # Nếu chưa có tenant_cfg từ context, tra cứu theo chính scope đã có trong DB.
+        # Không còn đo ván "singleton `lark_base_service.app_token` thuộc về tenant nào":
+        # giá trị đó do request khác ghi vào và có thể là Base của doanh nghiệp khác.
+        if not tenant_cfg and not eff_tenant:
             try:
-                t_col = get_tenants_collection()
-                from services.lark.bitable import lark_base_service
-                if lark_base_service.app_token:
-                    tenant_cfg = await t_col.find_one({"bitable_app_token": lark_base_service.app_token})
-                if not tenant_cfg and chat_id:
-                    existing_s = await self.get_scope_by_chat_id(chat_id)
-                    if existing_s and existing_s.tenant_key:
-                        tenant_cfg = await get_tenant_config(existing_s.tenant_key)
+                existing_s = await self.get_scope_by_chat_id(chat_id)
+                if existing_s and existing_s.tenant_key:
+                    eff_tenant = existing_s.tenant_key
+                    tenant_cfg = await get_tenant_config(eff_tenant)
             except Exception as t_err:
                 logger.debug(f"Không thể tra cứu tenant_cfg phụ: {t_err}")
 
@@ -767,23 +781,25 @@ class ScopeService:
                 "❌ [ChatScope Sync] Thiếu weknora_tenant_id cho chat=%s, dataset=%s; "
                 "WeKnora sẽ từ chối upload bằng TENANT_REQUIRED.",
                 chat_id,
-                target_dataset_id or settings.WEKNORA_DATASET_ID,
+                target_dataset_id,
             )
         else:
             logger.info(
                 "🔐 [ChatScope Sync] WeKnora routing: tenant_id=%s, dataset=%s, lark_tenant=%s",
                 weknora_tenant_id,
-                target_dataset_id or settings.WEKNORA_DATASET_ID,
-                eff_tenant or "<resolved-from-base>",
+                target_dataset_id,
+                eff_tenant or "<chưa xác định>",
             )
 
+        # Ưu tiên: cột trong bản ghi -> KB đã resolve của tenant -> rỗng.
+        # Tầng `.env` bị bỏ vì nó đưa dataset của đơn vị khác vào một tenant chưa cấu hình.
         raw_kb_field = _extract_text_field(_get_base_field(raw_fields, "dataset_id") or _get_base_field(raw_fields, "knowledge_base_id"))
-        effective_dataset_id = raw_kb_field or target_dataset_id or settings.WEKNORA_DATASET_ID or ""
+        effective_dataset_id = raw_kb_field or target_dataset_id or ""
         if "," in effective_dataset_id:
             effective_dataset_id = effective_dataset_id.split(",")[0].strip()
 
         raw_wiki = _extract_text_field(_get_base_field(raw_fields, "wiki_dataset_id"))
-        wiki_dataset_id = raw_wiki or (tenant_cfg.get("weknora_wiki_dataset_id") if tenant_cfg else None) or settings.WEKNORA_WIKI_DATASET_ID or ""
+        wiki_dataset_id = raw_wiki or (tenant_cfg.get("weknora_wiki_dataset_id") if tenant_cfg else None) or ""
 
         # 6. Đọc tài liệu đính kèm & liên kết Lark Docs từ trường Documents
         docs_val = _get_base_field(raw_fields, "documents")
@@ -870,15 +886,31 @@ class ScopeService:
             if not token:
                 continue
 
-            # 6.2.1. Xử lý Thư mục Lark Drive (Drive Folder)
+            # 6.2.1. Xử lý Thư mục Lark Drive (Drive Folder - đệ quy và deduplicate trước khi tải)
             if link_type == "folder":
-                logger.info(f"📁 [ChatScope Sync] Phát hiện liên kết thư mục Lark Drive ({token}) từ Base...")
+                logger.info(f"📁 [ChatScope Sync] Bắt đầu duyệt danh mục thư mục Lark Drive ({token}) từ Base (tenant={eff_tenant})...")
                 try:
                     from services.lark import lark_service
-                    folder_files = await lark_service.alist_drive_folder_files(token)
-                    logger.info(f"📁 [ChatScope Sync] Thư mục {token} chứa {len(folder_files)} tệp/thư mục.")
+                    import mimetypes
 
-                    for item in folder_files:
+                    async def _collect_folder_items(f_token: str, depth: int = 0) -> List[Dict[str, Any]]:
+                        if not f_token or depth > 3:
+                            return []
+                        raw_items = await lark_service.alist_drive_folder_files(f_token, tenant_key=eff_tenant)
+                        collected: List[Dict[str, Any]] = []
+                        for it in raw_items:
+                            itype = it.get("type", "").lower()
+                            if itype == "folder":
+                                sub_collected = await _collect_folder_items(it.get("token", ""), depth=depth + 1)
+                                collected.extend(sub_collected)
+                            else:
+                                collected.append(it)
+                        return collected
+
+                    folder_items = await _collect_folder_items(token)
+                    logger.info(f"📁 [ChatScope Sync] Thư mục {token} chứa {len(folder_items)} tệp (sau khi quét đệ quy).")
+
+                    for item in folder_items:
                         itoken = item.get("token", "")
                         iname = item.get("name", "")
                         itype = item.get("type", "").lower()
@@ -893,10 +925,11 @@ class ScopeService:
                         doc_name = existing_doc.get("name") if existing_doc else None
                         doc_size = existing_doc.get("size", 0) if existing_doc else 0
 
+                        # DEDUPLICATION: Nếu tài liệu đã được nạp vào WeKnora ở lần trước -> BỎ QUA NGAY
                         if not k_id:
                             try:
                                 if itype == "docx":
-                                    doc_res = await doc_parser_service.parse_lark_docx(document_id=itoken, title=iname)
+                                    doc_res = await doc_parser_service.parse_lark_docx(document_id=itoken, title=iname, tenant_key=eff_tenant)
                                     if doc_res and doc_res.success and doc_res.markdown_content:
                                         safe_name = _sanitize_filename(doc_res.doc_name or iname or f"DocX_{itoken}")
                                         if not safe_name.lower().endswith(".md"):
@@ -913,8 +946,10 @@ class ScopeService:
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
+                                        if k_id:
+                                            logger.info(f"✔ [ChatScope Sync] Đã nạp Lark DocX '{doc_name}' vào KB {effective_dataset_id}")
                                 elif itype == "wiki":
-                                    doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=itoken)
+                                    doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=itoken, tenant_key=eff_tenant)
                                     if doc_res and doc_res.success and doc_res.markdown_content:
                                         safe_name = _sanitize_filename(doc_res.doc_name or iname or f"Wiki_{itoken}")
                                         if not safe_name.lower().endswith(".md"):
@@ -931,21 +966,32 @@ class ScopeService:
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
+                                        if k_id:
+                                            logger.info(f"✔ [ChatScope Sync] Đã nạp Lark Wiki '{doc_name}' vào KB {effective_dataset_id}")
                                 elif itype == "file":
-                                    file_bytes = await lark_service.adownload_drive_file(itoken)
+                                    # Tệp ngoài (PDF, Word, Excel, CSV, MD...): Tải binary và bắn thẳng sang WeKnora
+                                    # WeKnora tự động sử dụng container DocReader nội bộ của nó
+                                    logger.info(f"📥 [ChatScope Sync] Đang tải tệp ngoài '{iname}' ({itoken}) từ Lark Drive...")
+                                    file_bytes = await lark_service.adownload_drive_file(itoken, tenant_key=eff_tenant)
                                     if file_bytes:
                                         doc_name = iname or f"file_{itoken}"
                                         doc_size = len(file_bytes)
+                                        guessed_mime, _ = mimetypes.guess_type(doc_name)
+                                        mime_type = guessed_mime or "application/octet-stream"
+                                        logger.info(f"📤 [ChatScope Sync] Đang nạp tệp ngoài '{doc_name}' ({doc_size} bytes, mime={mime_type}) sang WeKnora...")
                                         upload_res = await _get_active_weknora().upload_file(
                                             file_name=doc_name,
                                             file_bytes=file_bytes,
                                             dataset_id=effective_dataset_id,
+                                            mime_type=mime_type,
                                             tenant_id=weknora_tenant_id,
                                         )
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
+                                        if k_id:
+                                            logger.info(f"✔ [ChatScope Sync] Đã nạp tệp ngoài '{doc_name}' thành công vào KB {effective_dataset_id}: k_id={k_id}")
                             except Exception as file_err:
-                                logger.error(f"❌ [ChatScope Sync] Lỗi khi nạp file '{iname}' ({itoken}) trong thư mục: {file_err}")
+                                logger.error(f"❌ [ChatScope Sync] Lỗi khi nạp file '{iname}' ({itoken}): {file_err}")
 
                         if k_id and not doc_summary:
                             try:
@@ -983,9 +1029,9 @@ class ScopeService:
                 try:
                     logger.info(f"📥 [ChatScope Sync] Đang phân giải liên kết Lark {link_type.upper()} ({token}) từ Base...")
                     if link_type == "docx":
-                        doc_res = await doc_parser_service.parse_lark_docx(document_id=token, title=title)
+                        doc_res = await doc_parser_service.parse_lark_docx(document_id=token, title=title, tenant_key=eff_tenant)
                     elif link_type == "wiki":
-                        doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=token)
+                        doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=token, tenant_key=eff_tenant)
                     else:
                         doc_res = None
 
@@ -1085,30 +1131,40 @@ class ScopeService:
         )
         return scope_rec
 
-    async def sync_all_groups_from_base(self) -> List[ChatScopeRecord]:
-        """Quét và đồng bộ toàn bộ bảng Lark Base sang MongoDB và WeKnora."""
+    async def sync_all_groups_from_base(self, tenant_key: Optional[str] = None) -> List[ChatScopeRecord]:
+        """
+        Quét và đồng bộ toàn bộ bảng Lark Base của MỘT tenant sang MongoDB và WeKnora.
+
+        Không còn ghi đè `app_token`/`table_id` lên singleton dùng chung: mỗi lần chạy
+        tạo một `LarkBaseService` riêng từ `TenantResources` của tenant đang xử lý.
+        """
+        from database.db import get_current_tenant_key
+        from services.lark.bitable import LarkBaseService
+        from services.tenancy.tenant_resolver import tenant_resolver
+
+        eff_tenant = tenant_key or get_current_tenant_key()
+        if not eff_tenant:
+            logger.warning("[ChatScope Sync] Bỏ qua quét toàn bảng Base: không có tenant_key nào.")
+            return []
         try:
-            from services.lark.bitable import lark_base_service
-            from services.lark.base_provision_service import base_provision_service
-            
-            # Phân giải động app_token và table_id
-            active_app_token, active_table_id = await base_provision_service.get_chat_scope_target()
-            if active_app_token:
-                lark_base_service.app_token = active_app_token
-            if active_table_id:
-                lark_base_service.table_id = active_table_id
+            resources = await tenant_resolver.resolve(eff_tenant)
+        except TenantResolutionError as exc:
+            logger.warning("[ChatScope Sync] Bỏ qua tenant '%s': %s", eff_tenant, exc)
+            return []
 
-            if not lark_base_service.app_token:
-                logger.debug("[ChatScope Sync] LARK_BASE_APP_TOKEN chưa được cấu hình, bỏ qua sync toàn bảng.")
-                return []
-
-            records = await lark_base_service.aget_all_records(use_tenant_token=True)
+        try:
+            base_service = LarkBaseService.for_tenant(resources)
+            records = await base_service.aget_all_records(use_tenant_token=True)
             results = []
             for r in records:
-                rec = await self.sync_group_from_base_record(r)
+                rec = await self.sync_group_from_base_record(
+                    r,
+                    tenant_key_override=eff_tenant,
+                    tenant_config_override=None,
+                )
                 if rec:
                     results.append(rec)
-            logger.info(f"🎉 [ChatScope Sync] Đã quét và đồng bộ thành công {len(results)} nhóm từ Lark Base!")
+            logger.info(f"🎉 [ChatScope Sync] Đã quét và đồng bộ thành công {len(results)} nhóm từ Lark Base của tenant '{eff_tenant}'!")
             return results
         except Exception as e:
             logger.error(f"Lỗi khi đồng bộ toàn bộ Lark Base: {e}", exc_info=True)
@@ -1135,6 +1191,10 @@ class ScopeService:
                 return
 
             # Tra cứu tenant sở hữu file_token hoặc table_id này
+            header = getattr(event_data, "header", None)
+            tenant_key = getattr(header, "tenant_key", "") if header else ""
+            app_id = getattr(header, "app_id", "") if header else ""
+
             tenant = None
             try:
                 from database.db import get_tenants_collection
@@ -1144,14 +1204,15 @@ class ScopeService:
                     {"company_policy_table_id": table_id},
                     {"chat_scope_table_id": table_id},
                 ]})
+                if not tenant and tenant_key:
+                    tenant = await t_col.find_one({"tenant_key": tenant_key})
+                if not tenant and app_id:
+                    tenant = await t_col.find_one({"app_id": app_id})
             except Exception as t_lookup_err:
                 logger.debug(f"Không thể tra cứu tenant cho bitable change: {t_lookup_err}")
 
             is_policy_table = False
-            if table_id and (
-                table_id == settings.LARK_BASE_POLICY_TABLE_ID
-                or (tenant and tenant.get("company_policy_table_id") == table_id)
-            ):
+            if table_id and tenant and tenant.get("company_policy_table_id") == table_id:
                 is_policy_table = True
 
             # Kiểm tra nếu sự kiện xuất phát từ Bảng Chính Sách Công Ty
@@ -1164,16 +1225,33 @@ class ScopeService:
                 )
                 return
 
-            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}'), tiến hành đồng bộ: {record_ids}")
-            from services.lark.bitable import lark_base_service
-            if file_token:
-                lark_base_service.app_token = file_token
-            if table_id:
-                lark_base_service.table_id = table_id
+            if not tenant:
+                # Không xác định được chủ sở hữu Base thì dừng: đọc tiếp sẽ phải đoán,
+                # mà đoán sai là ghi dữ liệu nhóm của doanh nghiệp này vào hệ thống của doanh nghiệp khác.
+                logger.warning(
+                    "⚠️ [Bitable Realtime Event] Không tìm thấy tenant sở hữu Base '%s' (table '%s') — bỏ qua sự kiện.",
+                    file_token,
+                    table_id,
+                )
+                return
+
+            print(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}') của tenant '{tenant.get('tenant_key')}', tiến hành đồng bộ: {record_ids}")
+            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}') của tenant '{tenant.get('tenant_key')}', tiến hành đồng bộ: {record_ids}")
+            from services.lark.bitable import LarkBaseService
+
+            eff_tk = tenant.get("tenant_key") if tenant else tenant_key
+            app_token = file_token or (tenant.get("bitable_app_token") if tenant else "")
+            target_table_id = table_id or (tenant.get("chat_scope_table_id") if tenant else "")
+
+            base_service = LarkBaseService(
+                tenant_key=eff_tk,
+                app_token=app_token,
+                table_id=target_table_id,
+            )
 
             target_ds_id = tenant.get("weknora_default_dataset_id") if tenant else None
 
-            records = await lark_base_service.aget_all_records(use_tenant_token=True)
+            records = await base_service.aget_all_records(use_tenant_token=True)
             record_map = {r.record_id: r for r in records}
 
             for rid in record_ids:
@@ -1182,7 +1260,7 @@ class ScopeService:
                     await self.sync_group_from_base_record(
                         target_record,
                         target_dataset_id=target_ds_id,
-                        tenant_key_override=tenant.get("tenant_key") if tenant else None,
+                        tenant_key_override=eff_tk,
                         tenant_config_override=tenant,
                     )
                 else:
@@ -1194,13 +1272,45 @@ class ScopeService:
         except Exception as e:
             logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
 
+    async def start_loop(self, interval_seconds: int = 30) -> None:
+        """
+        Vòng lặp chạy nền định kỳ đồng bộ Chat Scopes & Nhãn từ Lark Base cho các tenant 'ready'.
+        Đảm bảo tính nhất quán (Eventual Consistency) ngay cả khi webhook bị trễ hoặc ngắt kết nối.
+        """
+        import asyncio
+        logger.info(f"⏰ [ScopeSync Loop] Khởi động worker đồng bộ Chat Scopes định kỳ (Chu kỳ {interval_seconds}s).")
+        # Chờ 15s sau khi server khởi động để hệ thống bootstrap ổn định
+        await asyncio.sleep(15)
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+                from database.db import get_tenants_collection
+                t_col = get_tenants_collection()
+                async for t_doc in t_col.find({"status": "ready"}, {"tenant_key": 1}):
+                    tk = t_doc.get("tenant_key")
+                    if tk:
+                        try:
+                            await self.sync_all_groups_from_base(tenant_key=tk)
+                        except Exception as sync_err:
+                            logger.debug(f"[ScopeSync Loop] Lỗi sync tenant {tk}: {sync_err}")
+            except asyncio.CancelledError:
+                logger.info("[ScopeSync Loop] Đã nhận tín hiệu dừng worker.")
+                break
+            except Exception as e:
+                logger.warning(f"[ScopeSync Loop] Lỗi worker: {e}")
+                await asyncio.sleep(15)
 
-from services.lark.cleaner import clean_field_value
-from services.knowledge.rule_engine import parse_labels
+
+# Hai import bên dưới phải là import lười (bên trong hàm), không được đặt ở mức module:
+# `services.lark.cleaner` kích hoạt `services/lark/__init__.py` -> `bot_runner` ->
+# `chat_workflow` -> `from services.knowledge.chat_scopes import scope_service`, và
+# `scope_service` chưa kịp tồn tại vì file này đang được thực thi tới dòng 1251.
 
 
 def _extract_text_field(val: Any) -> str:
     """Trích xuất chuỗi văn bản sạch từ các kiểu dữ liệu của Lark Base."""
+    from services.lark.cleaner import clean_field_value
+
     cleaned = clean_field_value(val)
     if cleaned is None:
         return ""
@@ -1209,7 +1319,11 @@ def _extract_text_field(val: Any) -> str:
     return str(cleaned).strip()
 
 
-_extract_labels = parse_labels
+def _extract_labels(*args: Any, **kwargs: Any):
+    """Wrapper lười của `rule_engine.parse_labels` để không kéo theo `services.knowledge`."""
+    from services.knowledge.rule_engine import parse_labels
+
+    return parse_labels(*args, **kwargs)
 
 
 # Singleton instance

@@ -44,6 +44,33 @@ class DraftStore:
         )
         return PendingDraft.from_document(document) if document else None
 
+    async def claim_draft(
+        self,
+        owner_id: str,
+        draft_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> Optional[PendingDraft]:
+        eff_tenant = tenant_key or get_current_tenant_key()
+        filters: Dict[str, Any] = {"status": "pending"}
+        if draft_id:
+            filters["$or"] = [{"id": draft_id}, {"message_id": draft_id}]
+        else:
+            filters["owner_id"] = owner_id
+        query = inject_tenant_filter(filters, eff_tenant)
+        document = await _get_collection().find_one_and_update(
+            query,
+            {
+                "$set": {
+                    "status": "sending",
+                    "updated_at": get_vietnam_now_iso(),
+                    "last_error": None,
+                }
+            },
+            sort=[("created_at", -1)],
+            return_document=ReturnDocument.AFTER,
+        )
+        return PendingDraft.from_document(document) if document else None
+
     async def claim_latest_pending(
         self,
         owner_id: str,
@@ -84,19 +111,25 @@ class DraftStore:
         )
         return result.modified_count == 1
 
-    async def mark_sent(self, draft_id: str, content: str) -> bool:
+    async def mark_sent(
+        self,
+        draft_id: str,
+        content: str,
+        bot_reply_message_id: Optional[str] = None,
+    ) -> bool:
         now = get_vietnam_now_iso()
+        update_fields: Dict[str, Any] = {
+            "status": "sent",
+            "approved_content": content,
+            "sent_at": now,
+            "updated_at": now,
+            "last_error": None,
+        }
+        if bot_reply_message_id:
+            update_fields["bot_reply_message_id"] = bot_reply_message_id
         result = await _get_collection().update_one(
             {"id": draft_id, "status": "sending"},
-            {
-                "$set": {
-                    "status": "sent",
-                    "approved_content": content,
-                    "sent_at": now,
-                    "updated_at": now,
-                    "last_error": None,
-                }
-            },
+            {"$set": update_fields},
         )
         return result.modified_count == 1
 

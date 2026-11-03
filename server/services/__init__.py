@@ -1,5 +1,5 @@
 from .ai import jev_service, JevService, llm_client, LLMClient, GeminiClient
-from .auth import token_service, LarkTokenService, start_token_refresh_loop
+from .auth import token_service, LarkTokenService, start_tenant_token_sweeper
 from .knowledge import (
     weknora_service,
     WeKnoraService,
@@ -52,7 +52,7 @@ __all__ = [
     # Auth Domain
     "token_service",
     "LarkTokenService",
-    "start_token_refresh_loop",
+    "start_tenant_token_sweeper",
     # Knowledge Domain
     "weknora_service",
     "WeKnoraService",

@@ -1,11 +1,17 @@
 import os
 from dotenv import load_dotenv
 
-# Tìm file .env ở thư mục gốc (HiLark)
-# config.py nằm ở: HiLark/server/core/config.py
-# Nên lùi 3 cấp để về HiLark
-env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
-load_dotenv(dotenv_path=env_path, override=True)
+# Tìm file .env ở thư mục gốc (HiLark) hoặc /app/.env
+env_candidates = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env'),
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'),
+    os.path.join(os.getcwd(), '.env'),
+    "/.env",
+]
+for p in env_candidates:
+    if os.path.exists(p):
+        load_dotenv(dotenv_path=p, override=False)
+        break
 
 class Settings:
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
@@ -18,8 +24,13 @@ class Settings:
     JEV_API_KEY: str = os.getenv("JEV_API_KEY") or os.getenv("jev_api", "")
     WEKNORA_DATASET_ID: str = os.getenv("WEKNORA_DATASET_ID") or os.getenv("dataset_id", "")
     WEKNORA_WIKI_DATASET_ID: str = os.getenv("wiki_dataset_id") or os.getenv("WEKNORA_WIKI_DATASET_ID", "")
-    WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "d715d7ee-1853-4bd9-b22d-779b1ec1e28f")
-    WEKNORA_POLICY_DATASOURCE_ID: str = os.getenv("policy_datasource_id") or os.getenv("WEKNORA_POLICY_DATASOURCE_ID", "c853ff6e-68c7-4767-998f-df8eb7820b1d")
+    # Ba giá trị dưới đây TỪNG có default hardcode thuộc về MỘT doanh nghiệp cụ thể.
+    # Default đã bị xoá theo GĐ2 của kế hoạch "Tenant Resolution & Token Fix": thiếu là chuỗi rỗng,
+    # và chuỗi rỗng nghĩa là "chưa cấu hình cho tenant này", không phải "dùng kho của công ty khác".
+    # Nguồn đúng: collection `tenants` (weknora_policy_dataset_id, weknora_wiki_dataset_id,
+    # weknora_policy_datasource_id, company_policy_table_id) qua `services.tenancy.tenant_resolver`.
+    WEKNORA_POLICY_DATASET_ID: str = os.getenv("policy_dataset_id") or os.getenv("WEKNORA_POLICY_DATASET_ID", "")
+    WEKNORA_POLICY_DATASOURCE_ID: str = os.getenv("policy_datasource_id") or os.getenv("WEKNORA_POLICY_DATASOURCE_ID", "")
     WEKNORA_WEB_URL: str = os.getenv("WEKNORA_WEB_URL") or "http://localhost/login"
     WEKNORA_PROVISION_DRY_RUN: bool = (os.getenv("WEKNORA_PROVISION_DRY_RUN", "false").lower() in ("true", "1", "yes"))
     POLICY_SYNC_ENABLED: bool = (os.getenv("policy_sync_enabled") or os.getenv("POLICY_SYNC_ENABLED", "true")).lower() in ("true", "1", "yes")
@@ -42,13 +53,15 @@ class Settings:
     MONGO_DRAFT_LOGS_COLLECTION: str = os.getenv("mongo_draft_logs_collection", "draft_logs")
     MONGO_MASTER_DIGEST_COLLECTION: str = os.getenv("mongo_master_digest_collection", "master_daily_digests")
     MONGO_AUTH_COLLECTION: str = os.getenv("mongo_auth_collection", "lark_auth")
+    # state OAuth do server phát hành (GĐ4): {_id: state, tenant_key, app_id, purpose}
+    MONGO_OAUTH_STATES_COLLECTION: str = os.getenv("mongo_oauth_states_collection", "oauth_states")
     MONGO_TELEMETRY_COLLECTION: str = os.getenv("mongo_telemetry_collection", "cost_telemetry")
     MONGO_USER_SETTINGS_COLLECTION: str = os.getenv("mongo_user_settings_collection", "user_settings")
     MONGO_SYSTEM_CONFIG_COLLECTION: str = os.getenv("mongo_system_config_collection", "system_config")
     MONGO_SETUP_SESSIONS_COLLECTION: str = os.getenv("mongo_setup_sessions_collection", "setup_sessions")
     MONGO_LARK_APPS_COLLECTION: str = os.getenv("mongo_lark_apps_collection", "lark_app_credentials")
     APP_BASE_URL: str = os.getenv("APP_BASE_URL", "http://localhost:8000")
-    LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "http://localhost:8000/auth/lark/callback")
+    LARK_OAUTH_REDIRECT_URI: str = os.getenv("lark_oauth_redirect_uri", "")
     ENCRYPTION_SECRET_KEY: str = os.getenv("ENCRYPTION_SECRET_KEY", "hilark-secret-key-32bytes-aes256!!")
 
     # Lark Settings
@@ -72,7 +85,7 @@ class Settings:
     # Lark Base (Bitable) Settings
     LARK_BASE_APP_TOKEN: str = os.getenv("LARK_BASE_APP_TOKEN") or os.getenv("app_token", "")
     LARK_BASE_TABLE_ID: str = os.getenv("LARK_BASE_TABLE_ID") or os.getenv("table_id", "")
-    LARK_BASE_POLICY_TABLE_ID: str = os.getenv("policy_table_id") or os.getenv("LARK_BASE_POLICY_TABLE_ID", "tblZphzEZPLQAy24")
+    LARK_BASE_POLICY_TABLE_ID: str = os.getenv("policy_table_id") or os.getenv("LARK_BASE_POLICY_TABLE_ID", "")
 
     # Daily Digest & Approval Settings
     DIGEST_SCHEDULE_TIME: str = os.getenv("digest_schedule_time", "23:00")
@@ -80,6 +93,7 @@ class Settings:
     DIGEST_REQUIRE_APPROVAL: bool = os.getenv("digest_require_approval", "true").lower() in ("true", "1")
 
     # Polling & Real-time Settings
+    ENABLE_LARK_WEBSOCKET: bool = (os.getenv("ENABLE_LARK_WEBSOCKET") or os.getenv("enable_lark_websocket", "false")).lower() in ("true", "1", "yes")
     ENABLE_DM_POLLING: bool = (os.getenv("ENABLE_DM_POLLING") or os.getenv("enable_dm_polling", "false")).lower() in ("true", "1", "yes")
     DM_POLL_INTERVAL: float = float(os.getenv("DM_POLL_INTERVAL") or os.getenv("dm_poll_interval", "60.0"))
 
