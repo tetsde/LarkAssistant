@@ -153,6 +153,7 @@ services:
       - ./WeKnora/config/prompt_templates:/app/config/prompt_templates:ro
     environment:
       - GIN_MODE=release
+      - WEKNORA_BOOTSTRAP_SYSTEM_ADMIN_EMAIL=tphn26.work@gmail.com
       - TZ=Asia/Ho_Chi_Minh
       - LOG_LEVEL=${WEKNORA_LOG_LEVEL:-info}
       - AUTO_MIGRATE=true

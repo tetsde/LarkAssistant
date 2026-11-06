@@ -2353,8 +2353,22 @@
         fb.textContent = "";
         fb.className = "save-feedback";
 
+        // Không lưu cấu hình nếu chưa nhận được OpenID thật từ OAuth.
+        if (
+            !currentAdminOpenId ||
+            !currentAdminOpenId.trim() ||
+            currentAdminOpenId.trim() === "ou_default_admin" ||
+            !currentAdminOpenId.trim().startsWith("ou_")
+        ) {
+            fb.className = "save-feedback error";
+            fb.textContent = "Chưa xác định được tài khoản Lark. Vui lòng hoàn tất OAuth và chờ đồng bộ trước khi lưu.";
+            btn.disabled = false;
+            btn.textContent = "Lưu Thay Đổi Cấu Hình";
+            return;
+        }
+
         const payload = {
-            open_id: currentAdminOpenId || "ou_default_admin",
+            open_id: currentAdminOpenId.trim(),
             tenant_key: currentTenantKey || undefined,
             is_byok_enabled: isByokEnabled,
             raw_gemini_key: isByokEnabled ? document.getElementById("geminiKeyInput").value.trim() : undefined,

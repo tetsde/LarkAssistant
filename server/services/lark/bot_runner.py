@@ -142,7 +142,7 @@ def start_digest_scheduler_daemon() -> threading.Thread:
     _scheduler_stop_event.clear()
 
     def _worker():
-        last_run_dates: Dict[str, str] = {}
+        last_run_slots: Dict[str, str] = {}
         default_target_hm = (settings.DIGEST_SCHEDULE_TIME or "23:00").strip()
         logger.info("[SCHEDULER] Digest scheduler started default_time=%s", default_target_hm)
 
@@ -188,7 +188,8 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                                         if user_cfg and user_cfg.digest_schedule_time:
                                             target_hm = user_cfg.digest_schedule_time
 
-                                    if current_hm != target_hm or last_run_dates.get(tk) == today_str:
+                                    schedule_key = f"{today_str}|{target_hm}"
+                                    if current_hm != target_hm or last_run_slots.get(tk) == schedule_key:
                                         continue
 
                                     m = await digest_service.run_scheduled_daily_digests(
@@ -196,7 +197,7 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                                         require_approval=settings.DIGEST_REQUIRE_APPROVAL,
                                         tenant_key=tk,
                                     )
-                                    last_run_dates[tk] = today_str
+                                    last_run_slots[tk] = schedule_key
                                     logger.info("[SCHEDULER] tenant=%s time=%s digest=started", tk, target_hm)
                                     if m and m.total_groups > 0:
                                         logger.info("[SCHEDULER] tenant=%s digest=completed groups=%d messages=%d", tk, m.total_groups, m.total_messages)

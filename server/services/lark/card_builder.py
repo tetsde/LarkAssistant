@@ -1305,8 +1305,16 @@ def build_marketplace_welcome_card(
     elif not password:
         password = "HLK@Default2026!"
 
-    # Chuẩn hóa web_url trỏ thẳng vào cổng Web trực tiếp (loại bỏ cổng 8080 hoặc domain mẫu)
-    if not web_url or ":8080" in web_url or "yourdomain.com" in web_url:
+    # Loại bỏ URL nội bộ/placeholder để tránh gửi localhost cho người dùng bên ngoài.
+    invalid_web_url = (
+        not web_url
+        or ":8080" in str(web_url).lower()
+        or "yourdomain.com" in str(web_url).lower()
+        or "localhost" in str(web_url).lower()
+        or "127.0.0.1" in str(web_url).lower()
+        or "0.0.0.0" in str(web_url).lower()
+    )
+    if invalid_web_url:
         web_url = getattr(settings, "WEKNORA_WEB_URL", "http://localhost/login")
 
     app_base = getattr(settings, "APP_BASE_URL", "http://localhost:8000").rstrip("/")

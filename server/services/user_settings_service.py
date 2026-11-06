@@ -280,41 +280,35 @@ class UserSettingsService:
         tenant_key: Optional[str] = None,
     ) -> str:
         """
-        Thuật toán phân giải Key 4 tầng (có cô lập theo tenant_key):
-          1. Request Override Key: Nếu được truyền tường minh qua tham số.
-          2. User BYOK: Nếu user cấu hình key riêng và bật is_byok_enabled.
-          3. Scope/Project BYOK: Nếu nhóm chat có key riêng trên Lark Base / MongoDB.
-          4. System Default: settings.GEMINI_API_KEY trong .env.
+        Phân giải API key theo thứ tự:
+          1. User BYOK nếu được bật và giải mã thành công.
+          2. System Default từ settings/.env.
+
+        chat_id và request_api_key được giữ để tương thích ngược,
+        nhưng không tham gia lựa chọn key.
         """
-        # Tầng 1: Khóa ghi đè theo yêu cầu (Request Override)
-        if request_api_key and request_api_key.strip():
-            logger.debug("🔑 [BYOK] Sử dụng Request Override Key")
-            return request_api_key.strip()
-
         eff_tenant = tenant_key or get_current_tenant_key()
-
         target_user = user_id or open_id
-        # Tầng 2: Khóa cá nhân của người dùng
+
         if target_user:
-            user_settings = await self.get_user_settings(target_user, tenant_key=eff_tenant)
-            if user_settings and user_settings.is_byok_enabled and user_settings.encrypted_gemini_api_key:
-                decrypted = self.decrypt_key(user_settings.encrypted_gemini_api_key)
+            user_settings = await self.get_user_settings(
+                target_user, tenant_key=eff_tenant
+            )
+            if (
+                user_settings
+                and user_settings.is_byok_enabled
+                and user_settings.encrypted_gemini_api_key
+            ):
+                decrypted = self.decrypt_key(
+                    user_settings.encrypted_gemini_api_key
+                )
                 if decrypted:
-                    logger.debug(f"🔑 [BYOK] Sử dụng API Key cá nhân của user: {target_user} (tenant={eff_tenant})")
+                    logger.info(
+                        f"[BYOK] Sử dụng User BYOK: {target_user} "
+                        f"(tenant={eff_tenant})"
+                    )
                     return decrypted
 
-        # Tầng 3: Khóa nhóm dự án (chat_scopes)
-        if chat_id:
-            try:
-                from services.knowledge.chat_scopes import scope_service
-                scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
-                if scope and hasattr(scope, "custom_gemini_key") and getattr(scope, "custom_gemini_key"):
-                    logger.debug(f"🔑 [BYOK] Sử dụng API Key riêng của nhóm dự án: {chat_id} (tenant={eff_tenant})")
-                    return getattr(scope, "custom_gemini_key")
-            except Exception as e:
-                logger.debug(f"Không thể kiểm tra key theo chat_id: {e}")
-
-        # Tầng 4: Khóa mặc định của hệ thống
         return settings.GEMINI_API_KEY or settings.gemini_api or ""
 
     async def resolve_effective_llm_client(
@@ -353,18 +347,8 @@ class UserSettingsService:
                         default_models=default_models,
                     )
 
-        if chat_id:
-            try:
-                from services.knowledge.chat_scopes import scope_service
-                scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
-                if scope and getattr(scope, "custom_gemini_key", None):
-                    return LLMClient(api_key=getattr(scope, "custom_gemini_key"))
-            except Exception:
-                pass
-
-        if request_api_key:
-            return LLMClient(api_key=request_api_key)
-
+        # Không sử dụng Project BYOK hoặc Request Override.
+        # Nếu User BYOK không hợp lệ, dùng client mặc định của hệ thống.
         return llm_client
 
 

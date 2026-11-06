@@ -1015,8 +1015,9 @@ class LLMExtractor:
       - Nhánh 2: Facts (Mệnh đề thông tin, audit trail, replaces, trạng thái)
     """
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.client = GeminiClient(api_key=api_key)
+    def __init__(self, api_key: Optional[str] = None, client: Any = None):
+        # Ưu tiên client được truyền vào (BYOK); giữ tương thích api_key cũ.
+        self.client = client if client is not None else GeminiClient(api_key=api_key)
 
     def extract_entities(
         self,
@@ -1257,6 +1258,7 @@ async def extract_async(
     existing_claims: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
     tenant_key: str = "",
+    client: Any = None,
 ) -> Dict[str, Any]:
     """Hàm tiện ích cấp module: bóc tách toàn diện 2 nhánh (Async)."""
     # Khả năng tương thích ngược: nếu unittest patch utils.llm_extractor.extract_async
@@ -1285,7 +1287,11 @@ async def extract_async(
                 return await res
             return res
 
-    extractor = LLMExtractor(api_key=api_key) if api_key else llm_extractor
+    extractor = (
+        LLMExtractor(api_key=api_key, client=client)
+        if client is not None or api_key
+        else llm_extractor
+    )
     return await extractor.extract_async(
         query=query,
         workspace_id=workspace_id,

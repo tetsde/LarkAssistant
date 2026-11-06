@@ -978,27 +978,89 @@ Yêu cầu:
         approver_open_id: Optional[str] = None,
         tenant_key: Optional[str] = None,
     ) -> bool:
-        """Gửi Thẻ tin nhắn tương tác Master Daily Digest tới Chủ nhân để duyệt (hỗ trợ tenant_key)."""
-        from services.lark import lark_service
+        """Gửi Master Daily Digest tới người đã OAuth trong đúng tenant."""
         from services.lark.runtime import get_or_create_lark_service
         from services.lark_app_service import lark_app_service
+        from services.auth.token_service import token_service
         from services.lark.card_builder import build_digest_approval_card
         from services.claim_service import claim_service
 
-        eff_tenant = tenant_key or getattr(master_digest, "tenant_key", None) or get_current_tenant_key()
+        eff_tenant = (
+            tenant_key
+            or getattr(master_digest, "tenant_key", None)
+            or get_current_tenant_key()
+        )
 
-        target_approver = approver_open_id
-        if not target_approver and eff_tenant:
-            try:
-                from database.db import get_tenant_config
-                t_cfg = await get_tenant_config(eff_tenant)
-                if t_cfg and t_cfg.get("admin_open_id"):
-                    target_approver = t_cfg["admin_open_id"]
-            except Exception as te:
-                logger.debug(f"Không thể tra cứu admin_open_id cho tenant {eff_tenant}: {te}")
+        if not eff_tenant:
+            logger.error("Không thể gửi Master Digest: thiếu tenant_key.")
+            return False
 
-        if not target_approver:
-            target_approver = settings.DIGEST_APPROVER_ID or lark_service.owner_open_id
+        # Không dùng approver_open_id, admin_open_id hoặc global owner.
+        # Người nhận phải được lấy từ OAuth record theo đúng App + tenant.
+        try:
+            app_record = await lark_app_service.get_by_tenant_key(eff_tenant)
+
+            if not app_record:
+                logger.error(
+                    "Không tìm thấy Custom App cho tenant %s. Dừng gửi Digest.",
+                    eff_tenant,
+                )
+                return False
+
+            app_id = (app_record.get("app_id") or "").strip()
+
+            if not app_id or app_record.get("tenant_key") != eff_tenant:
+                logger.error(
+                    "Custom App không hợp lệ hoặc không khớp tenant %s.",
+                    eff_tenant,
+                )
+                return False
+
+            oauth_record = await token_service.get_stored_token_data(
+                tenant_key=eff_tenant,
+                app_id=app_id,
+            )
+
+            if not oauth_record:
+                logger.error(
+                    "Không tìm thấy OAuth record cho app_id=%s, tenant=%s.",
+                    app_id,
+                    eff_tenant,
+                )
+                return False
+
+            if (
+                oauth_record.get("tenant_key") != eff_tenant
+                or oauth_record.get("app_id") != app_id
+            ):
+                logger.error(
+                    "OAuth record không khớp App/Tenant. Dừng gửi Digest."
+                )
+                return False
+
+            target_approver = (oauth_record.get("open_id") or "").strip()
+
+            if (
+                not target_approver.startswith("ou_")
+                or target_approver in {
+                    "ou_default_admin",
+                    "ou_admin_fallback",
+                }
+            ):
+                logger.error(
+                    "OAuth Open ID không hợp lệ cho tenant %s. Dừng gửi Digest.",
+                    eff_tenant,
+                )
+                return False
+
+        except Exception as e:
+            logger.error(
+                "Lỗi tra cứu OAuth recipient cho tenant %s: %s",
+                eff_tenant,
+                e,
+                exc_info=True,
+            )
+            return False
 
         pending_claims = []
         try:
@@ -1007,14 +1069,23 @@ Yêu cầu:
                 tenant_key=eff_tenant,
             )
         except Exception as e:
-            logger.warning(f"Không thể lấy danh sách thông tin đề xuất trong ngày cho digest: {e}")
+            logger.warning(
+                "Không thể lấy danh sách thông tin đề xuất trong ngày "
+                "cho digest: %s",
+                e,
+            )
 
         cost_summary = None
         try:
             from decorators.cost_telemetry import get_cost_telemetry_summary
+
             cost_summary = await get_cost_telemetry_summary(hours=24)
         except Exception as e:
-            logger.warning(f"Không thể lấy tổng hợp chi phí telemetry cho master digest: {e}")
+            logger.warning(
+                "Không thể lấy tổng hợp chi phí telemetry "
+                "cho master digest: %s",
+                e,
+            )
 
         card_payload = build_digest_approval_card(
             master_digest,
@@ -1022,34 +1093,41 @@ Yêu cầu:
             cost_summary=cost_summary,
             tenant_key=eff_tenant,
         )
+
         try:
-            if target_approver:
-                sender_service = lark_service
-                if eff_tenant:
-                    app_record = await lark_app_service.get_by_tenant_key(eff_tenant)
-                    if app_record:
-                        sender_service = await get_or_create_lark_service(app_record)
-                    else:
-                        logger.warning(
-                            "Không tìm thấy Custom App mapping cho tenant %s; fallback Lark client mặc định",
-                            eff_tenant,
-                        )
-                res = await sender_service.send_bot_card_to_owner(
-                    card_payload,
-                    target_open_id=target_approver,
-                    tenant_key=eff_tenant,
+            # Dùng Bot của Custom App thuộc đúng tenant.
+            # Không fallback sang Lark singleton mặc định.
+            sender_service = await get_or_create_lark_service(app_record)
+
+            res = await sender_service.send_bot_card_to_owner(
+                card_payload,
+                target_open_id=target_approver,
+                tenant_key=eff_tenant,
+            )
+
+            if not res.get("success"):
+                logger.error(
+                    "Thất bại khi gửi thẻ duyệt Master Digest tới %s: %s",
+                    target_approver,
+                    res.get("msg") or res.get("error"),
                 )
-                if not res.get("success"):
-                    logger.error(
-                        f"Thất bại khi gửi thẻ duyệt Master Digest: {res.get('msg') or res.get('error')}"
-                    )
-                    return False
-                logger.info(f"Đã gửi thẻ duyệt Master Digest tới {target_approver} (tenant: {eff_tenant})")
-                return True
-            logger.warning("Không tìm thấy target_approver!")
-            return False
+                return False
+
+            logger.info(
+                "Đã gửi thẻ duyệt Master Digest tới OAuth recipient "
+                "%s (app_id=%s, tenant=%s)",
+                target_approver,
+                app_id,
+                eff_tenant,
+            )
+            return True
+
         except Exception as e:
-            logger.error(f"Lỗi gửi thẻ duyệt Master Digest: {e}", exc_info=True)
+            logger.error(
+                "Lỗi gửi thẻ duyệt Master Digest: %s",
+                e,
+                exc_info=True,
+            )
             return False
 
     async def generate_master_daily_digest(

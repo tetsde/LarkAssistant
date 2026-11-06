@@ -333,9 +333,22 @@ async def test_key_endpoint(req: TestKeyRequest):
 @router.post("/api/save")
 async def save_settings_endpoint(req: SaveSettingsRequest):
     """Lưu cấu hình sau khi người dùng hoàn thành 4 bước trên Screen Guide."""
+    clean_open_id = (req.open_id or "").strip()
+
+    # Không cho phép lưu cấu hình vào tài khoản mặc định hoặc OpenID không hợp lệ.
+    if (
+        not clean_open_id
+        or clean_open_id == "ou_default_admin"
+        or not clean_open_id.startswith("ou_")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="OpenID Lark không hợp lệ. Vui lòng hoàn tất OAuth trước khi lưu cấu hình.",
+        )
+
     try:
         record = await user_settings_service.save_user_settings(
-            open_id=req.open_id,
+            open_id=clean_open_id,
             is_byok_enabled=req.is_byok_enabled,
             raw_gemini_key=req.raw_gemini_key,
             digest_schedule_time=req.digest_schedule_time,

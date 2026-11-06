@@ -337,6 +337,7 @@ async def process_memory_extraction(
     is_owner: bool = False,
     notify_realtime: bool = False,
     tenant_key: Optional[str] = None,
+    llm_client_override: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Helper xử lý trích xuất Entities & Facts và lưu trực tiếp vào MongoDB có gắn scope & tenant_key."""
     eff_tenant = tenant_key or get_current_tenant_key()
@@ -365,6 +366,7 @@ async def process_memory_extraction(
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         tenant_key=eff_tenant,
+        client=llm_client_override,
     )
 
     # Phân loại quyền lực tri thức:
@@ -868,6 +870,46 @@ async def process_chat_pipeline(
             "message": "Tin nhắn rác hoặc tán gẫu không quan trọng. Không lưu, không trả lời.",
         }
 
+    # Resolve BYOK theo chủ bot của tenant, tuyệt đối không theo thành viên gửi tin.
+    effective_client = None
+    try:
+        owner_open_id = await resolve_effective_owner_open_id(
+            lark_svc=_lark,
+            tenant_key=eff_tenant,
+            chat_scope_record=scope_record,
+            sender_open_id=None,
+        )
+
+        if owner_open_id and owner_open_id != "ou_admin_fallback":
+            from services.user_settings_service import user_settings_service
+
+            effective_client = await user_settings_service.resolve_effective_llm_client(
+                user_id=owner_open_id,
+                tenant_key=eff_tenant,
+            )
+            from services.ai.gemini_client import llm_client
+
+            is_byok = effective_client is not llm_client
+
+            logger.info(
+                "[BYOK RESOLVER] owner=%s tenant=%s mode=%s provider=%s model=%s",
+                owner_open_id,
+                eff_tenant,
+                "BYOK" if is_byok else "SYSTEM",
+                getattr(effective_client, "provider", "unknown"),
+                getattr(effective_client, "model_name", None) or "default",
+            )
+        else:
+            logger.warning(
+                "[BYOK RESOLVER] Không xác định được chủ bot tenant=%s; dùng LLM mặc định.",
+                eff_tenant,
+            )
+    except Exception as key_err:
+        logger.warning(
+            "[BYOK RESOLVER] Resolve thất bại, dùng LLM mặc định: %s",
+            key_err,
+        )
+
     # Xác định thẩm quyền người phát ngôn
     speaker_role = "owner" if is_owner else "member"
     asserted_by = {
@@ -888,6 +930,7 @@ async def process_chat_pipeline(
             scope_type="chat" if chat_id else "global",
             is_owner=is_owner,
             tenant_key=eff_tenant,
+            llm_client_override=effective_client,
         )
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
@@ -1338,18 +1381,7 @@ async def process_chat_pipeline(
         composed.get("metadata", {}).get("num_chunks", 0),
     )
 
-    # 4. Sinh câu trả lời Grounded QA từ LLM (hỗ trợ xưng hô đích danh & BYOK Resolver)
-    effective_client = None
-    try:
-        from services.user_settings_service import user_settings_service
-        effective_client = await user_settings_service.resolve_effective_llm_client(
-            user_id=sender,
-            chat_id=chat_id,
-            tenant_key=eff_tenant,
-        )
-    except Exception as key_err:
-        logger.debug(f"Không thể resolve BYOK client: {key_err}")
-
+    # 4. Sinh câu trả lời Grounded QA bằng cùng client đã resolve ở đầu pipeline.
     target_user = user_name or (sender if sender and sender not in ("User", "api", "system") else None)
     answer = await _generate_answer(
         query=clean_query,
