@@ -1,0 +1,109 @@
+# ====================
+# Python
+# ====================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# ====================
+# Virtual Environment & Environment Variables
+# ====================
+.venv/
+venv/
+env/
+
+.env
+.env.*
+*.env
+atlas-credentials.env
+
+# ====================
+# Jupyter Notebook
+# ====================
+.ipynb_checkpoints/
+*_executed.ipynb
+
+# ====================
+# Data & Sensitive Files
+# ====================
+*.xlsx
+*.xls
+*.csv
+*.json
+!package.json
+*.parquet
+*.pkl
+*.db
+*.sqlite
+*.sqlite3
+
+# ====================
+# Media Files
+# ====================
+*.mp4
+
+# ====================
+# OS
+# ====================
+.DS_Store
+**/.DS_Store
+Thumbs.db
+desktop.ini
+
+# ====================
+# Git & Config
+# ====================
+.gitignore
+gitignore
+gitigonore
+
+# ====================
+# Agent Tooling
+# ====================
+.agent/
+.agents/
+.Agent/
+.Agents/
+**/.agent/
+**/.agents/
+**/.Agent/
+**/.Agents/
+
+# ====================
+# Tests
+# ====================
+test/
+tests/
+**/test/
+**/tests/
+.pytest_cache/
+
+# ====================
+# IDE / Editor
+# ====================
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ====================
+# Logs & Temp
+# ====================
+*.log
+*.tmp
+*.cache
+
+
+# Sensitive credentials
+*.pem
+*.key
+
+# Media
+*.mp4
