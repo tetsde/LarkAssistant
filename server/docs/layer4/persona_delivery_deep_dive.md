@@ -1,138 +1,126 @@
-# 📘 SPEC KỸ THUẬT LAYER 4: SINH CÂU TRẢ LỜI & ĐÓNG VAI NGƯỜI ĐIỀU HÀNH
-> **Dự án HiLark Server** — Bản đặc tả kỹ thuật chi tiết (Spec), đối chiếu mã nguồn thực tế, ưu tiên tiếng Việt, không dùng từ ngữ bóng bẩy.
+# Đặc tả Kỹ thuật Lớp 4: Sinh câu trả lời & Phê duyệt điều hành
+
+Tài liệu này ghi lại chi tiết luồng xử lý kỹ thuật, động cơ Đa Nhà Cung Cấp LLM, thuật toán làm sạch đầu ra và cơ chế phê duyệt Human-in-the-Loop (HITL) qua Thẻ tương tác của Lớp 4 trong HiLark Server.
+
+Mã nguồn liên quan:
+- Điều phối LLM: [`server/services/ai/gemini_client.py`](file:///Users/hoainam/Desktop/HiLark/server/services/ai/gemini_client.py)
+- Quy trình hội thoại: [`server/services/workflows/chat_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/chat_workflow.py)
+- Quản lý bản nháp: [`server/services/workflows/draft_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/draft_workflow.py)
+- Dựng thẻ tương tác: [`server/services/lark/card_builder.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/card_builder.py)
+- Xử lý tương tác thẻ: [`server/services/lark/handlers/card_action_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/card_action_handler.py)
+- Điều hành quản trị DM: [`server/services/lark/handlers/owner_command_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/owner_command_handler.py)
 
 ---
 
-## 🧭 1. TỔNG QUAN LAYER 4 TRONG TOÀN BỘ PIPELINE
-
-Trong quy trình xử lý hội thoại (`process_chat_pipeline`), **Layer 4** tiếp nhận bối cảnh tri thức đã hợp nhất từ Layer 3 (`composed_context`) để sinh ra câu trả lời cuối cùng, đóng vai nhà điều hành và thực hiện quy trình phân nhánh: phát ngôn trực tiếp vào nhóm hoặc lưu bản nháp chờ Sếp duyệt:
+## 1. Luồng xử lý tổng thể Lớp 4
 
 ```
-[Bối cảnh tri thức từ Layer 3: composed_context]
+[Bối cảnh tri thức từ Lớp 3: composed_context]
                  │
                  ▼
-[Bước 1: Chọn Prompt & Nạp Persona Sếp]
-     └── GROUNDED_QA_USER_PERSONA_PROMPT (Xưng hô đích danh, văn phong 10/10)
+[Bước 1: Chọn Prompt & Thiết lập phong cách điều hành]
+     └── Xưng hô tự nhiên, tôn trọng người hỏi, Fact Override
                  │
                  ▼
-[Bước 2: Gemini Grounded QA Generation]
+[Bước 2: Động cơ Đa Nhà Cung Cấp LLM (Gemini, ChatGPT, Claude, Custom)]
+     ├── Phân giải BYOK 4 tầng (Request > User BYOK > Project Scope > Default)
      ├── GLOBAL_LLM_SEMAPHORE (Bảo vệ tải trọng song song)
-     ├── max_output_tokens = 4096 (Chống cụt câu)
-     └── Fallback: weknora_service.get_chat_response() (Nếu LLM rỗng)
+     └── max_output_tokens = 4096 (Chống cụt câu)
                  │
                  ▼
-[Bước 3: Làm sạch định dạng qua text_filter.clean_output()]
-     ├── Xóa sạch thẻ XML/HTML RAG (<kb .../>, <doc ...>)
+[Bước 3: Làm sạch định dạng văn bản qua RuleEngine / Sanitizer]
+     ├── Loại bỏ thẻ XML/HTML RAG (<kb .../>, <doc ...>)
      ├── Xóa ngoặc trích dẫn ([Tài liệu: ...], [Cập nhật hội thoại: ...])
-     └── Sửa lỗi hở dấu câu & chuẩn hóa khoảng trắng/dòng trống
+     └── Sửa khoảng cách trước dấu câu và dòng trống thừa
                  │
                  ▼
 [Bước 4 & 5: Phân nhánh gửi tin & Phê duyệt bản nháp]:
      │
-     ├── Nếu (is_confidential_group == True) HOẶC (jev_action in DRAFT_PENDING_APPROVAL, MEMORY_AND_DRAFT):
-     │       ├── Lưu MongoDB: draft_store.create(PendingDraft(status='pending'))
-     │       └── Gửi DM riêng tới Sếp: lark_service.send_bot_dm_to_owner(draft_card_text)
-     │           [Cung cấp lệnh duyệt: Gửi / Sửa / Bỏ - KHÔNG phát ngôn vào nhóm]
+     ├── Nếu (is_confidential_group == True) HOẶC (jev_action in [DRAFT_PENDING_APPROVAL, MEMORY_AND_DRAFT]):
+     │       ├── Lưu MongoDB: collection draft_logs (status: 'pending')
+     │       └── Gửi Thẻ tương tác HITL Card vào DM Quản trị viên
+     │           [Nút 1-chạm: Duyệt và gửi / Nhờ AI sửa / Tự sửa / Hủy bỏ]
      │
      └── Nếu (jev_action == REPLY_ONLY) VÀ (reply_to_lark == True):
-             └── Phát ngôn vào nhóm: lark_service.areply_text(message_id, answer, as_user=True)
-                 [Gửi dưới danh nghĩa tài khoản cá nhân của Sếp]
+             └── Phản hồi trực tiếp vào nhóm chat qua Lark OpenAPI
+                 [Trích dẫn tin nhắn gốc của người hỏi]
 ```
 
 ---
 
-## 🧩 2. BẢNG PHÂN RÃ CÁC MODULE THUỘC LAYER 4
+## 2. Bảng phân rã các module chức năng
 
-> 💡 **Tài liệu bóc tách chi tiết:** Xem tại thư mục [`ultis_docs/`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer4/ultis_docs/README.md) gồm: [`output_sanitizer.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/layer4/ultis_docs/output_sanitizer.md) và sơ đồ quan hệ phân cấp Parent-Child.
-
-| Module | Đường dẫn file | Vai trò chính | Lớp / Hàm phụ trách |
+| Thành phần | Đường dẫn file | Vai trò kỹ thuật | Lớp / Hàm phụ trách |
 | :--- | :--- | :--- | :--- |
-| **Module 1: Động cơ sinh câu trả lời** | [`server/services/chat_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py) | Nạp persona điều hành, gọi Gemini QA có kiểm soát tải trọng, kích hoạt fallback WeKnora nếu lỗi. | `generate_grounded_answer()` (L190–L235) |
-| **Module 2: Bộ làm sạch đầu ra** | [`server/utils/text_filter.py`](file:///Users/hoainam/Desktop/HiLark/server/utils/text_filter.py) | Quét sạch toàn bộ các thẻ trích dẫn RAG XML/HTML, sửa lỗi dấu câu và chuẩn hóa markdown. | `TextFilter.clean_output()` (L39–L91)<br/>`TextFilter.extract_kb_citations()` |
-| **Module 3: Quản lý bản nháp chờ duyệt** | [`server/models/chat_queue.py`](file:///Users/hoainam/Desktop/HiLark/server/models/chat_queue.py)<br/>[`server/services/chat_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py) | Lưu trữ bản ghi phê duyệt vào MongoDB `pending_drafts`, quản lý trạng thái `pending`, `approved`, `rejected`. | `draft_store.create()`<br/>`PendingDraft` Data Model |
-| **Module 4: Cổng phân phối & Phát ngôn** | [`server/services/larkServices/lark_messenger.py`](file:///Users/hoainam/Desktop/HiLark/server/services/larkServices/lark_messenger.py) | Bắn tin phản hồi vào nhóm nhân danh User của Sếp hoặc gửi thẻ duyệt DM riêng tư cho Sếp. | `lark_service.areply_text(as_user=True)`<br/>`lark_service.send_bot_dm_to_owner()` |
-| **Module 5: Điều phối định tuyến an toàn** | [`server/services/chat_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py) | Phân luồng giữa gửi thẳng và soạn nháp, kiểm tra chính sách bảo mật nhóm Tuyệt mật. | `process_chat_pipeline()` (L567–L679) |
+| **Động cơ Multi-LLM** | [`server/services/ai/gemini_client.py`](file:///Users/hoainam/Desktop/HiLark/server/services/ai/gemini_client.py) | Điều phối các dòng mô hình (Gemini, Claude, GPT, Custom) và giải quyết khóa BYOK. | `LLMClient.generate_text_async()` |
+| **Bộ làm sạch đầu ra** | [`server/services/knowledge/rule_engine.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/rule_engine.py) | Quét sạch các thẻ trích dẫn RAG XML/HTML, sửa lỗi dấu câu và chuẩn hóa markdown. | `clean_output()` |
+| **Quản lý bản nháp chờ duyệt** | [`server/services/workflows/draft_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/draft_workflow.py) | Quản lý vòng đời bản nháp (`draft_logs`) trong MongoDB, cập nhật trạng thái `pending`, `approved`, `rejected`. | `draft_store.create()` |
+| **Dựng thẻ tương tác** | [`server/services/lark/card_builder.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/card_builder.py) | Dựng cấu trúc JSON thẻ tương tác Lark: Thẻ duyệt nháp, Thẻ Master Digest, Thẻ Executive Control Hub. | `build_draft_approval_card()` |
+| **Xử lý tương tác thẻ** | [`server/services/lark/handlers/card_action_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/card_action_handler.py) | Xử lý sự kiện bấm nút trên thẻ tương tác, gọi cập nhật thẻ tại chỗ và bắn tin nhắn vào nhóm. | `handle_card_action()` |
+| **Điều hành trung tâm DM** | [`server/services/lark/handlers/owner_command_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/owner_command_handler.py) | Phản hồi Thẻ Executive Control Hub Card V2 khi Quản trị viên nhắn tin riêng với bot. | `handle_owner_command()` |
 
 ---
 
-## 🔬 3. CHI TIẾT KỸ THUẬT TỪNG BƯỚC THỰC THI (CODE-LEVEL)
+## 3. Chi tiết kỹ thuật từng bước thực thi
 
-### Bước 1: Nạp phong cách người điều hành (Persona Prompting)
-- **Vị trí mã nguồn:** [`server/services/chat_service.py:L78-126`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L78-L126)
-- **Đầu vào:** `context_text`, `query`, `user_name`, `responder_name`, `role`.
-- **Cấu trúc nhắc lệnh chuẩn mực (Benchmark 10/10):**
-  * Tự xưng là `"anh"`, gọi người hỏi là `"em"` hoặc gọi đích danh `{user_name}`.
-  * Cấm tuyệt đối: Không xưng là AI/chatbot, không viết hoa chữ `"Anh"` ở giữa câu, không dùng đại từ xa cách như `"chúng tôi"`, `"anh/chị"`.
-  * Nói như kiến thức của chính mình, tuyệt đối cấm nói: *"theo tài liệu WeKnora..."* hay *"theo cơ sở tri thức..."*.
-  * **Scope Defaulting:** Thành viên hỏi cộc lốc về dự án $\rightarrow$ Tự động lấy tài liệu dự án của nhóm đó trả lời ngay, cấm hỏi ngược lại.
+### Bước 1: Thiết lập phong cách người điều hành (Persona Prompting)
+- **Vị trí mã nguồn:** [`server/services/workflows/chat_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/chat_workflow.py)
+- **Cấu trúc:** Nạp chỉ dẫn xưng hô tự nhiên, tôn trọng người hỏi; trả lời như kiến thức của chính mình, không để lộ các thuật ngữ máy móc ("theo tài liệu WeKnora").
+- **Fact Override:** Nếu thông tin cũ trong tài liệu đã bị thay thế bởi quyết định mới chốt trong nhóm chat, câu trả lời tự động nêu rõ dữ kiện mới nhất.
+- **Scope Defaulting:** Khi thành viên hỏi ngắn gọn về dự án, hệ thống tự động sử dụng tài liệu của dự án gắn với nhóm đó để phản hồi ngay, không hỏi lại.
 
 ---
 
-### Bước 2: Sinh câu trả lời qua Gemini với Semaphore bảo vệ
-- **Vị trí mã nguồn:** [`server/services/chat_service.py:L190-235`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L190-L235)
-- **Kiểm soát tải trọng:**
-  ```python
-  async with GLOBAL_LLM_SEMAPHORE:
-      ans = await client.generate_text_async(
-          prompt=prompt,
-          model_name=model_name,
-          max_output_tokens=4096,
-      )
-  ```
-- **Xử lý dự phòng (Fallback):**
-  ```python
-  if not answer:
-      fallback = await weknora_service.get_chat_response(ChatRequest(query=clean_query))
-      if isinstance(fallback, dict) and "answer" in fallback:
-          answer = fallback["answer"]
-  ```
+### Bước 2: Động cơ Đa Nhà Cung Cấp LLM & Phân giải BYOK
+- **Vị trí mã nguồn:** [`server/services/ai/gemini_client.py`](file:///Users/hoainam/Desktop/HiLark/server/services/ai/gemini_client.py)
+- **Các dòng mô hình hỗ trợ:**
+  - Google Gemini: `gemini-2.0-flash`, `gemini-1.5-pro`
+  - OpenAI ChatGPT: `gpt-4o`, `gpt-4o-mini`
+  - Anthropic Claude: `claude-3-5-sonnet`
+  - Custom OpenAI-Compatible: DeepSeek, vLLM, Ollama (hỗ trợ tùy biến `base_url` và `timeout`)
+- **Phân giải khóa BYOK 4 tầng:**
+  $$\text{Request Override} \longrightarrow \text{User BYOK (AES-256)} \longrightarrow \text{Project Chat Scope} \longrightarrow \text{System Default (.env)}$$
 
 ---
 
-### Bước 3: Làm sạch định dạng văn bản qua `text_filter.clean_output()`
-- **Vị trí mã nguồn:** [`server/utils/text_filter.py:L39-91`](file:///Users/hoainam/Desktop/HiLark/server/utils/text_filter.py#L39-L91)
-- **Thuật toán Regex 5 tầng:**
-  1. Xóa thẻ XML/HTML: `re.sub(r'<(?:kb|doc|chunk|source|citation)\b[^>]*\/>', '', cleaned)`
+### Bước 3: Thuật toán làm sạch đầu ra (Sanitizer)
+- **Vị trí mã nguồn:** [`server/services/knowledge/rule_engine.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/rule_engine.py)
+- **Các bước làm sạch bằng Regex:**
+  1. Xóa thẻ tự đóng: `re.sub(r'<(?:kb|doc|chunk|source|citation)\b[^>]*\/>', '', cleaned)`
   2. Xóa thẻ cặp: `re.sub(r'<(?:kb|doc|chunk|source|citation)\b[^>]*>.*?<\/(?:kb|doc|chunk|source|citation)>', '', cleaned)`
   3. Xóa ngoặc trích dẫn: `re.sub(r'\[(?:Cập nhật hội thoại|Tài liệu|Nguồn|Source|Chunk ID|Document)[^\]]*\]', '', cleaned)`
-  4. Chữa lỗi khoảng cách trước dấu câu: `re.sub(r'[ \t]+([,.:;?!])', r'\1', cleaned)`
-  5. Rút gọn dòng trống liên tiếp: `re.sub(r'\n{3,}', '\n\n', cleaned)`
+  4. Sửa khoảng trắng trước dấu câu: `re.sub(r'[ \t]+([,.:;?!])', r'\1', cleaned)`
+  5. Rút gọn dòng trống liên tiếp (giữ tối đa 2 dấu xuống dòng `\n\n`).
 
 ---
 
-### Bước 4 & 5: Cơ chế phân nhánh — Phát ngôn trực tiếp vs Duyệt nháp riêng tư
-
-#### Nhánh A: Phát ngôn trực tiếp vào nhóm chat (`REPLY_ONLY`)
-- **Điều kiện:** `jev_action == "REPLY_ONLY"` và nhóm KHÔNG thuộc diện Tuyệt mật (`not is_confidential_group`).
-- **Thực thi:**
-  ```python
-  lark_reply_result = await lark_service.areply_text(
-      message_id=message_id,
-      text=answer,
-      as_user=True, # Phát ngôn nhân danh tài khoản cá nhân của Sếp!
-  )
-  ```
-
-#### Nhánh B: Soạn nháp chờ Sếp duyệt (`DRAFT_PENDING_APPROVAL`)
-- **Điều kiện kích hoạt:**
-  * Nhóm thuộc mức độ `TUYỆT MẬT` (`is_confidential_group = True`).
-  * Hoặc `jev_action in ("DRAFT_PENDING_APPROVAL", "MEMORY_AND_DRAFT")`.
-- **Thực thi:**
-  1. Lưu vào MongoDB qua `draft_store.create(PendingDraft(...))`.
-  2. Bọc thẻ thông báo duyệt nháp gửi thẳng vào tin nhắn riêng (DM) của Sếp:
-     ```python
-     dm_notice = await lark_service.send_bot_dm_to_owner(draft_card_text)
-     ```
-  3. Bot **hoàn toàn im lặng trong nhóm chat**, không để lộ bất kỳ dấu vết nào.
+### Bước 4: Luồng phê duyệt bản nháp qua Thẻ tương tác (HITL Draft Card)
+- **Vị trí mã nguồn:** [`server/services/workflows/draft_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/draft_workflow.py), [`server/services/lark/card_builder.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/card_builder.py)
+- **Điều kiện kích hoạt:** Nhóm thuộc diện bảo mật cao (`confidential`), câu hỏi vi phạm vùng cấm ngân sách/lương (Strict HITL) hoặc JEV đánh giá rủi ro.
+- **Thao tác trên thẻ:**
+  - `[Duyệt và gửi]`: Gửi câu trả lời vào nhóm chat và cập nhật trạng thái thẻ thành đã duyệt.
+  - `[Nhờ AI sửa lại]`: Mở hộp thoại nhập yêu cầu chỉ đạo, LLM viết lại nội dung và cập nhật thẻ.
+  - `[Tự sửa]`: Mở form chỉnh sửa văn bản trực tiếp trên giao diện Lark.
+  - `[Hủy bỏ]`: Hủy bản nháp an toàn, không phát ngôn vào nhóm.
 
 ---
 
-## ⚙️ 4. BẢNG THAM SỐ CẤU HÌNH LIÊN QUAN
+### Bước 5: Bảng điều khiển Quản trị (Executive Control Hub Card V2)
+- **Vị trí mã nguồn:** [`server/services/lark/handlers/owner_command_handler.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/handlers/owner_command_handler.py)
+- Trong tin nhắn riêng với Quản trị viên, hệ thống luôn phản hồi bằng Thẻ bảng điều khiển 2 hàng nút 1-chạm:
+  - Hàng 1: Lark Base Quản trị, WeKnora Console, Screen Guide Onboarding.
+  - Hàng 2: Báo cáo ngày (Daily Digest), Trạng thái vận hành hệ thống, Tài khoản WeKnora.
+- Loại bỏ hoàn toàn cú pháp lệnh văn bản trong DM 1-1.
 
-| Biến cấu hình | Mặc định | Ý nghĩa điều khiển |
+---
+
+## 4. Tham số cấu hình Lớp 4
+
+| Tham số | Giá trị mặc định | Mô tả kỹ thuật |
 | :--- | :---: | :--- |
-| `GEMINI_API_KEY` | — | Khóa API truy cập mô hình ngôn ngữ Gemini. |
-| `LARK_USER_NAME` | `"Sếp"` | Tên thật của Sếp để nạp vào biến `{responder_name}` trong Persona. |
-| `LARK_USER_ROLE` | `"CEO / Founder / CTO"` | Chức danh điều hành nạp vào biến `{role}` trong Persona. |
-| `LARK_USER_OPEN_ID` | — | Mã định danh người dùng Lark của Sếp để nhận tin nhắn duyệt nháp (DM). |
-| `max_output_tokens` | `4096` | Giới hạn độ dài câu trả lời, đảm bảo không bị đứt câu giữa chừng. |
+| `DEFAULT_LLM_PROVIDER` | `google` | Nhà cung cấp LLM mặc định (`google`, `openai`, `anthropic`, `custom`). |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Tên mô hình Gemini mặc định. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Tên mô hình OpenAI mặc định. |
+| `ANTHROPIC_MODEL` | `claude-3-5-sonnet-20241022` | Tên mô hình Anthropic mặc định. |
+| `LLM_DEFAULT_TIMEOUT` | `60.0` | Thời gian chờ tối đa khi gọi LLM (giây). |
+| `MAX_OUTPUT_TOKENS` | `4096` | Hạn mức độ dài sinh phản hồi của LLM. |

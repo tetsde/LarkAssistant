@@ -1,172 +1,87 @@
-# 📘 SPEC KỸ THUẬT: LUỒNG ĐỒNG BỘ DỮ LIỆU LARK BASE (BITABLE SYNC)
-> **HiLark Server** — Bản đặc tả kỹ thuật chi tiết (Spec), đối chiếu mã nguồn thực tế, ưu tiên tiếng Việt, không dùng từ ngữ bóng bẩy.
+# Đặc tả Kỹ thuật: Luồng đồng bộ dữ liệu Lark Base (Bitable)
+
+Tài liệu này ghi lại chi tiết luồng xử lý kỹ thuật, cấu trúc phân giải ô tính, cơ chế kiểm soát MD5 Hash Guard và quy trình nạp tài liệu sang WeKnora từ bảng tính Lark Base.
+
+Mã nguồn liên quan:
+- Dịch vụ Lark Base: [`server/services/lark/bitable.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/bitable.py)
+- Khởi tạo Base tự động: [`server/services/lark/base_provision_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/base_provision_service.py)
+- Đồng bộ Chat Scopes: [`server/services/knowledge/chat_scopes.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/chat_scopes.py)
+- Đồng bộ chính sách Policy: [`server/services/knowledge/policy_sync.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/policy_sync.py)
+- Dọn dẹp dữ liệu ô: [`server/services/lark/bitable.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/bitable.py)
 
 ---
 
-## 🧭 1. TỔNG QUAN LUỒNG ĐỒNG BỘ DỮ LIỆU
+## 1. Tổng quan luồng đồng bộ dữ liệu
 
-Luồng đồng bộ dữ liệu Lark Base là cầu nối giữa **Bảng tính quản trị Lark Base** với **Cơ sở dữ liệu MongoDB `chat_scopes`** và **Kho tri thức WeKnora RAG**:
+Luồng đồng bộ dữ liệu Lark Base là cầu nối giữa bảng tính quản trị Lark Base với cơ sở dữ liệu MongoDB (`chat_scopes`) và kho tri thức WeKnora:
 
 ```
-[Sếp thao tác trên Lark Base]              [Thành viên Add Bot vào nhóm]
-(Sửa trạng thái / Nạp file PDF)           (im.chat.member.bot.added_v1)
-                 │                                      │
-  (Kênh 1: Webhook Base Realtime)        (Kênh 2: Webhook Group Realtime)
-                 │                                      │
-                 ▼                                      ▼
-[scope_service.py: bitable_changed]     [lark_dispatcher.py: bot_added]
-                 │                                      │
-                 └──────────────────┬───────────────────┘
+[Quản trị viên thao tác trên Lark Base]      [Thành viên thêm Bot vào nhóm]
+(Sửa trạng thái / Nạp file PDF)             (im.chat.member.bot.added_v1)
+                 │                                        │
+  (Kênh 1: Webhook Base Realtime)          (Kênh 2: Webhook Group Realtime)
+                 │                                        │
+                 ▼                                        ▼
+[handle_bitable_record_changed_event]       [handle_bot_added_to_chat]
+                 │                                        │
+                 └──────────────────┬─────────────────────┘
                                     │
                                     ▼
-                 [larkbase.py: create_record() / aget_all_records()]
+                [LarkBaseService: aget_all_records()]
                                     │
                                     ▼
-                 [scope_service.py: sync_group_from_base_record()]
+                [sync_group_from_base_record()]
                                  │
                  ┌───────────────┴───────────────┐
                  ▼                               ▼
        [Bước 1 & 2: Dọn dẹp & Phân tích]    [Bước 3: Tải file & Đẩy WeKnora]
-       • cleaner.clean_field_value()        • adownload_attachment(file_token)
-       • parse_labels(forbidden_labels)     • weknora_service.upload_file()
-       • Nhận diện nhóm Tuyệt mật           • Nhận về 'knowledge_id'
+       • cleaner.clean_field_value()        • Tải tệp nhị phân attachment
+       • parse_labels(forbidden_labels)     • Kiểm tra MD5 Hash Guard
+       • Phân định nhóm confidential        • WeKnora upload & vectorization
                  │                               │
                  └───────────────┬───────────────┘
                                  │
                                  ▼
        [Bước 4: Lưu trữ MongoDB collection 'chat_scopes']
-       • Upsert ChatScopeRecord theo {"chat_id": chat_id}
-       • Cung cấp dữ liệu siêu tốc (< 1ms) cho Layer 2 & Layer 3
+       • Upsert ChatScopeRecord theo {"chat_id": chat_id, "tenant_key": tenant_key}
+       • Cung cấp dữ liệu < 1ms cho Lớp 2 & Lớp 3
 ```
 
 ---
 
-## 🧩 2. BẢNG PHÂN RÃ CÁC MODULE THỰC THI
+## 2. Bảng phân rã các module thực thi
 
-| Module | Đường dẫn file | Vai trò trong luồng Sync | Lớp / Hàm phụ trách |
+| Thành phần | Đường dẫn file | Vai trò trong luồng Sync | Hàm / Lớp phụ trách |
 | :--- | :--- | :--- | :--- |
-| **Driver kết nối Lark Bitable** | [`server/services/larkbase.py`](file:///Users/hoainam/Desktop/HiLark/server/services/larkbase.py) | Giao tiếp với Open API của Lark: đọc records, tải file đính kèm, tạo dòng mới, đăng ký webhook. | `LarkBaseService.aget_all_records()`<br/>`LarkBaseService.adownload_attachment()`<br/>`LarkBaseService.sync_bot_chats()` |
-| **Động cơ điều phối đồng bộ** | [`server/services/scope_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/scope_service.py) | Nhận bản ghi thô, phân giải nhãn cấm, tải nạp tài liệu sang WeKnora và lưu trữ vào MongoDB. | `ScopeService.sync_group_from_base_record()`<br/>`ScopeService.handle_bitable_record_changed_event()` |
-| **Bộ dọn dẹp cell values** | [`server/utils/larkbase/cleaner.py`](file:///Users/hoainam/Desktop/HiLark/server/utils/larkbase/cleaner.py) | Bóc tách cấu trúc JSON phức tạp của Bitable (mảng text, user mentions, options, attachments) thành kiểu Python sạch. | `clean_field_value()`<br/>`clean_record_fields()` |
-| **Quản trị Token JWT** | [`server/utils/larkbase/token.py`](file:///Users/hoainam/Desktop/HiLark/server/utils/larkbase/token.py) | Giải mã payload JWT của App Token và Bitable Token, kiểm tra thời gian hết hạn. | `decode_jwt_token_payload()`<br/>`inspect_bitable_token()` |
-| **Mô hình dữ liệu** | [`server/models/larkbase.py`](file:///Users/hoainam/Desktop/HiLark/server/models/larkbase.py)<br/>[`server/models/scope.py`](file:///Users/hoainam/Desktop/HiLark/server/models/scope.py) | Định nghĩa ánh xạ kiểu dữ liệu trường Bitable (`BITABLE_FIELD_TYPE_MAP`) và cấu trúc lưu trữ `ChatScopeRecord`. | `LarkBaseRecord`<br/>`ChatScopeRecord` |
+| **Lark Base Service** | [`server/services/lark/bitable.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/bitable.py) | Giao tiếp với Lark Bitable OpenAPI: đọc bản ghi, tải tệp đính kèm, tạo dòng mới. | `LarkBaseService.aget_all_records()`<br/>`LarkBaseService.adownload_attachment()` |
+| **Cấp phát Base tự động** | [`server/services/lark/base_provision_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/base_provision_service.py) | Tự động tạo Base, cấu hình bảng Chat Scopes và Policies, nạp dữ liệu mẫu và gán quyền. | `BaseProvisionService.provision_base_for_tenant()` |
+| **Đồng bộ Chat Scopes** | [`server/services/knowledge/chat_scopes.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/chat_scopes.py) | Nhận bản ghi thô, phân giải nhãn cấm, nạp tài liệu sang WeKnora và lưu trữ MongoDB. | `sync_group_from_base_record()`<br/>`handle_bitable_record_changed_event()` |
+| **Đồng bộ chính sách Policy** | [`server/services/knowledge/policy_sync.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/policy_sync.py) | Quét bảng Policies, tải tài liệu quy định, đối soát MD5 hash và rebuild tri thức chính sách. | `sync_policies()`<br/>`_upload_or_rebuild()` |
 
 ---
 
-## 🔬 3. CHI TIẾT KỸ THUẬT 4 BƯỚC THỰC THI (CODE-LEVEL)
+## 3. Chi tiết kỹ thuật 4 bước thực thi
 
-Hàm cốt lõi điều hành luồng đồng bộ là `sync_group_from_base_record(record: LarkBaseRecord)` tại [`server/services/scope_service.py:L226-396`](file:///Users/hoainam/Desktop/HiLark/server/services/scope_service.py#L226-L396):
+### Bước 1: Trích xuất và dọn dẹp dữ liệu ô (Cell Value Sanitization)
+- **Vị trí mã nguồn:** [`server/services/lark/bitable.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/bitable.py)
+- **Xử lý dữ liệu phức tạp của Bitable:**
+  - Ô rich-text: Bóc tách mảng `[{"text": "Dự án Atlas", "type": "text"}]` thành chuỗi `"Dự án Atlas"`.
+  - Ô user mention: Trích xuất tên hiển thị người dùng từ đối tượng mention.
+  - Ô đính kèm (Attachment): Trích xuất danh sách tệp đính kèm gồm `file_token`, tên tệp, kích thước và định dạng MIME.
 
-### Bước 1: Trích xuất & Dọn dẹp dữ liệu ô (Cell Value Sanitization)
-- **Vị trí mã nguồn:** [`server/utils/larkbase/cleaner.py:L15-85`](file:///Users/hoainam/Desktop/HiLark/server/utils/larkbase/cleaner.py#L15-L85)
-- **Vấn đề thực tế:** Dữ liệu trả về từ Lark Bitable API không phải là chuỗi văn bản đơn thuần, mà là các đối tượng lồng nhau phức tạp:
-  * Ô văn bản rich-text: `[{"text": "Dự án Sàn", "type": "text"}]` $\rightarrow$ Cần gộp thành `"Dự án Sàn"`.
-  * Ô User mention: `[{"id": "ou_xxx", "name": "Nguyên", "en_name": "Nguyen"}]` $\rightarrow$ Cần lấy `"Nguyên"`.
-  * Ô Đính kèm (Attachment): `[{"file_token": "boxcn...", "name": "spec.pdf", "size": 1024, "type": "application/pdf"}]`.
-- **Cơ chế bóc tách:**
-  ```python
-  clean_fields = clean_record_fields(record.fields)
-  chat_id = _extract_text_field(clean_fields.get("ID Group") or clean_fields.get("chat_id"))
-  chat_name = _extract_text_field(clean_fields.get("Dự án / Nhóm") or clean_fields.get("project_name"))
-  ```
+### Bước 2: Phân giải nhãn cấm và trạng thái bảo mật
+- **Vị trí mã nguồn:** [`server/services/knowledge/chat_scopes.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/chat_scopes.py)
+- **Quy trình:**
+  1. Phân giải nhãn cấm: Bóc tách chuỗi ngăn cách tự do (phẩy, chấm phẩy) thành mảng chuỗi chuẩn hóa: `["Ngân sách", "Lương", "Chi phí", "Hợp đồng"]`.
+  2. Nhận diện nhóm bảo mật cao: Nếu cột "Mức độ bảo mật" chứa các từ khóa (`tuyệt mật`, `confidential`, `bí mật`), gán `security_level = "confidential"`, tự động tước quyền tự động phát ngôn của bot trong nhóm.
 
----
+### Bước 3: Tải file đính kèm & MD5 Hash Guard sang WeKnora
+- **Vị trí mã nguồn:** [`server/services/knowledge/chat_scopes.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/chat_scopes.py), [`server/services/knowledge/policy_sync.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/policy_sync.py)
+- **Kiểm soát MD5 Hash Guard:**
+  - Trước khi upload, hệ thống tính toán mã băm MD5 của tài liệu.
+  - Đối chiếu với bản ghi hiện hữu trong WeKnora. Nếu MD5 trùng khớp hoàn toàn và không có cờ ép buộc (`force = False`), hệ thống bỏ qua việc nạp lại.
+  - Nếu tệp mới hoặc có thay đổi nội dung, hệ thống xóa bản ghi cũ (`delete_knowledge`) và nạp bản mới để WeKnora xây dựng lại chỉ mục từ đầu (tránh trùng lặp vector).
 
-### Bước 2: Phân giải Nhãn cấm & Trạng thái Bảo mật (Policy Resolution)
-- **Vị trí mã nguồn:** [`server/services/scope_service.py:L285-305`](file:///Users/hoainam/Desktop/HiLark/server/services/scope_service.py#L285-L305)
-- **1. Phân giải danh sách nhãn cấm:**
-  * Sếp có thể gõ nhãn cấm tự do: *"Ngân sách, Bảng lương; Chi phí; Hợp đồng"*.
-  * Hàm `parse_labels(raw_labels)` tự động bóc tách thành danh sách chuẩn: `["Ngân sách", "Bảng lương", "Chi phí", "Hợp đồng"]`.
-- **2. Nhận diện nhóm Tuyệt mật (Confidential Group):**
-  * Quét chuỗi trong cột "Mức độ bảo mật":
-  * Nếu phát hiện các từ khóa: *"tuyệt mật"*, *"bí mật"*, *"confidential"*, *"nghiêm ngặt"*:
-    ```python
-    if any(k in sec_raw for k in ["tuyệt mật", "tuyet mat", "confidential", "bí mật", "nghiêm ngặt"]):
-        security_level = "confidential"
-    ```
-  * **Hậu quả an ninh:** Toàn bộ câu hỏi trong nhóm này sẽ bị khóa tính năng tự động trả lời (Auto-reply), bắt buộc 100% phải chuyển sang luồng soạn nháp để Sếp duyệt trước khi gửi.
-
----
-
-### Bước 3: Tải file đính kèm & Tự động nạp sang WeKnora RAG
-- **Vị trí mã nguồn:** [`server/services/scope_service.py:L310-360`](file:///Users/hoainam/Desktop/HiLark/server/services/scope_service.py#L310-L360)
-- **Cơ chế chống tải lại file cũ (Cache Deduplication):**
-  * Trước khi tải, hệ thống đọc danh sách file hiện có của nhóm trong MongoDB:
-  * Tạo bảng tra cứu `existing_doc_map = {file_token: knowledge_id}`.
-  * Nếu `file_token` đã có trong map $\rightarrow$ Giữ nguyên `knowledge_id`, **không tốn băng thông tải lại**!
-- **Quy trình nạp file mới sang WeKnora:**
-  1. **Tải file nhị phân:**
-     ```python
-     file_bytes = await lark_base_service.adownload_attachment(file_token, use_tenant_token=True)
-     ```
-     Gọi API Lark Drive `/open-apis/drive/v1/medias/{file_token}/download` tải file PDF/Word về máy chủ.
-  2. **Đẩy sang WeKnora Knowledge Base:**
-     ```python
-     upload_res = await weknora_service.upload_file(
-         file_name=file_name,
-         file_bytes=file_bytes,
-         dataset_id=effective_dataset_id,
-         mime_type=mime_type,
-     )
-     knowledge_id = upload_res.get("knowledge_id", "")
-     ```
-  3. WeKnora tự động bóc tách văn bản, cắt đoạn (chunking), tạo vector embeddings và đưa vào cơ sở dữ liệu vector.
-  4. Hệ thống ghi nhận `knowledge_id` này vào danh sách tri thức được phép truy xuất của nhóm.
-
----
-
-### Bước 4: Lưu trữ và Cập nhật trạng thái vào MongoDB (Atomic Upsert)
-- **Vị trí mã nguồn:** [`server/services/scope_service.py:L361-396`](file:///Users/hoainam/Desktop/HiLark/server/services/scope_service.py#L361-L396)
-- **Đóng gói đối tượng `ChatScopeRecord`:**
-  * `chat_id`: Khóa chính định danh nhóm chat.
-  * `project_tag`: Nhãn dự án phân vùng Claims (bảo toàn bằng `effective_project_tag = raw_project_tag or (existing_scope.project_tag if existing_scope else None)` để không bị ghi đè thành `None` khi cập nhật).
-  * `status`: Trạng thái hoạt động (`active`, `paused`, `inactive`).
-  * `security_level`: `standard` hoặc `confidential`.
-  * `forbidden_labels`: Danh sách nhãn cấm đã chuẩn hóa.
-  * `knowledge_ids`: Danh sách các mã tài liệu WeKnora được phép truy xuất.
-  * `documents`: Chi tiết các file đính kèm (tên, kích thước, token, knowledge_id).
-  * `updated_by`: Đóng dấu nguồn `"larkbase_sync"`.
-- **Thực thi Upsert an toàn vào MongoDB:**
-  ```python
-  await coll.update_one(
-      {"chat_id": chat_id},
-      {"$set": scope_rec.to_dict()},
-      upsert=True,
-  )
-  ```
-- **Ý nghĩa kiến trúc:** Khi người dùng nhắn tin, Layer 2 chỉ cần đọc thẳng từ MongoDB `chat_scopes` với tốc độ siêu nhanh (**< 1ms**), hoàn toàn không bị nghẽn mạng hay phụ thuộc vào thời gian phản hồi của Lark API.
-
----
-
-## ⚡ 4. CƠ CHẾ TỰ ĐỘNG PHÁT HIỆN & ĐỒNG BỘ 2 CHIỀU (BIDIRECTIONAL DISCOVERY)
-
-Không chỉ đồng bộ từ Base về Server, HiLark còn có cơ chế **tự động phát hiện và đồng bộ ngược lên Lark Base**:
-
-### Khi Bot được thêm vào nhóm chat mới trên Lark:
-1. Lark gửi sự kiện webhook `im.chat.member.bot.added_v1` về hệ thống.
-2. `lark_dispatcher.py` bắt sự kiện và kiểm tra:
-   ```python
-   base_record = lark_base_service.find_record_by_chat_id(chat_id)
-   if not base_record:
-       # Nhóm chat chưa tồn tại trên bảng Lark Base:
-       # BOT TỰ ĐỘNG TẠO DÒNG MỚI TRÊN LARK BASE!
-       lark_base_service.create_record({
-           "ID Group": chat_id,
-           "Dự án / Nhóm": chat_name or "Nhóm mới",
-           "Trạng thái": "Hoạt động",
-           "Mức độ bảo mật": "Tiêu chuẩn",
-       })
-   ```
-3. **Kết quả:** Sếp chỉ cần add bot vào nhóm chat Lark, dòng thông tin của nhóm đó **tự động xuất hiện trên bảng tính Lark Base** để Sếp bắt đầu kéo thả tài liệu và đặt nhãn cấm mà không cần copy paste ID thủ công!
-
----
-
-## 🛡️ 5. CƠ CHẾ CHỊU LỖI & PHỤC HỒI (FAULT TOLERANCE)
-
-1. **Xử lý Token hết hạn (Dual Token Failover):**
-   * Nếu `user_access_token` của Sếp bị hết hạn: Hệ thống tự động chuyển sang dùng `tenant_access_token` của Bot (`use_tenant_token=True`) để duy trì việc đọc bảng Base và tải file mà không bị gián đoạn.
-2. **Xử lý File lỗi hoặc rớt mạng:**
-   * Nếu một file PDF bị hỏng hoặc WeKnora từ chối tải: Lỗi được bắt cục bộ (`try...except`), ghi log chi tiết và tiếp tục xử lý các file còn lại trong danh sách, không làm sập toàn bộ luồng đồng bộ của nhóm.
-3. **Khắc phục rớt gói tin bằng Webhook Retry & Bootstrap Sync:**
-   * **Webhook Retry:** Lark Open Platform tự động gửi lại sự kiện theo hàm mũ nếu server chưa phản hồi mã HTTP 200 trong vòng 3 giây.
-   * **One-off Bootstrap Sync:** Mỗi khi khởi động server (`bot_service.py:L500-517`), hệ thống tự động chạy `sync_bot_chats()` và `sync_all_groups_from_base()` để bù đắp bất kỳ dữ liệu nào bị thiếu trong thời gian server offline, đảm bảo tính toàn vẹn 100% mà không cần duy trì polling 30s liên tục.
+### Bước 4: Lưu trữ MongoDB collection `chat_scopes`
+- **Vị trí mã nguồn:** [`server/services/knowledge/chat_scopes.py`](file:///Users/hoainam/Desktop/HiLark/server/services/knowledge/chat_scopes.py)
+- **Hoạt động:** Cập nhật bản ghi `ChatScopeRecord` vào MongoDB kèm danh sách `knowledge_ids` vừa nhận từ WeKnora. Dữ liệu này được cung cấp cho Lớp 2 và Lớp 3 với tốc độ truy vấn < 1ms nhờ Compound Index `(tenant_key, chat_id)`.

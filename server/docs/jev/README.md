@@ -1,112 +1,103 @@
-# 📘 TỔNG QUAN KIẾN TRÚC JEV SYSTEM ONE (HI-LARK SERVER)
-> **HiLark Server** — Mô hình tư duy phản xạ nhanh (System 1) gác cổng an ninh, phân luồng ý định và tái sắp xếp ngữ nghĩa RAG.  
-> **Vị trí thư mục:** [`server/docs/jev/`](file:///Users/hoainam/Desktop/HiLark/server/docs/jev)
+# Kiến trúc Bộ phân loại Ý định JEV (System 1 Gatekeeper)
+
+Tài liệu này ghi lại kiến trúc, các trạm kiểm soát kỹ thuật và cơ chế chấm điểm xác suất của mô hình phân loại JEV System 1 trong HiLark Server.
+
+Mã nguồn liên quan:
+- Dịch vụ JEV: [`server/services/ai/jev_classifier.py`](file:///Users/hoainam/Desktop/HiLark/server/services/ai/jev_classifier.py)
+- Điều phối luồng chat: [`server/services/workflows/chat_workflow.py`](file:///Users/hoainam/Desktop/HiLark/server/services/workflows/chat_workflow.py)
+- Ngoại lệ JEV: [`server/core/http_client.py`](file:///Users/hoainam/Desktop/HiLark/server/core/http_client.py)
 
 ---
 
-## 🧭 1. JEV SYSTEM ONE LÀ GÌ TRONG HỆ THỐNG HILARk?
+## 1. Vai trò của JEV System 1 trong hệ thống
 
-Trong kiến trúc HiLark Server, **JEV (System One)** đóng vai trò là **"Bộ não phản xạ nhanh" (Fast Probabilistic Classifier)**:
-* **Tư duy nhị phân & Xác suất:** JEV không phải là một LLM sinh văn bản dài dòng (như Gemini hay GPT), mà là mô hình chuyên sâu đưa ra các phán quyết xác suất định lượng (`probabilities` từ `0.0` đến `1.0`) cho các câu hỏi phân loại có cấu trúc.
-* **Mô hình Tư duy Kép (Dual-Brain Architecture):**
-  * **JEV (System 1 - Phản xạ nhanh):** Gác cổng đầu nguồn, phát hiện câu hỏi cấm, phân loại 5 hành động của tin nhắn và lọc tài liệu lạc đề với độ trễ thấp và chi phí token cực rẻ.
-  * **Gemini 2.5 Flash (System 2 - Tư duy sâu):** Chỉ được gọi ở bước cuối cùng tại Layer 4 để tổng hợp bối cảnh, đóng vai Sếp và sinh câu trả lời tự nhiên.
-* **Hiệu quả kinh tế & bảo mật:** Nhờ 3 điểm chặn của JEV, hệ thống cắt giảm **60% – 70%** chi phí gọi Gemini và ngăn chặn **100%** nguy cơ rò rỉ dữ liệu mật vào phòng chat công cộng.
-
----
-
-## 🌲 2. SƠ ĐỒ PHÂN CẤP QUAN HỆ PARENT - CHILD LOGIC
-
-Dưới đây là sơ đồ cấu trúc phả hệ: **Root Pipeline (`process_chat_pipeline`) ➔ 3 Parent Steps (3 Trạm kiểm soát) ➔ Các Child Engines / Utilities thực thi**:
-
-![Sơ đồ phân cấp Parent-Child Logic JEV](./so_do_parent_child_jev.jpg)
-
-### Bảng phân rã chi tiết Parent - Child Logic:
-
-| Cấp độ | Tên thành phần | File & Dòng mã nguồn | Vai trò kỹ thuật |
-| :--- | :--- | :--- | :--- |
-| **ROOT PIPELINE** | **`process_chat_pipeline()`** | [`services/chat_service.py:L268-688`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L268-L688) | Điều phối toàn bộ dòng chảy từ lúc nhận tin nhắn đến lúc phát ngôn hoặc lưu nháp. |
-| **PARENT STEP 1** | **Chốt chặn Bảo mật & Nhãn cấm** *(Forbidden Intent Gating)* | [`services/chat_service.py:L323-370`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L323-L370)<br/>[`services/jev.py:L198-388`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L198-L388) | Ngăn chặn câu hỏi tra cứu thông tin bảo mật/nhãn cấm từ Lark Base (Lương, Ngân sách, Chi phí...). |
-| ↳ Child 1.1 | `Fast Keyword Matcher` | [`services/jev.py:L253-260`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L253-L260) | Quét chuỗi trực tiếp từ khóa cấm để chặn tức thì (< 0.1ms) không cần tốn mạng. |
-| ↳ Child 1.2 | `JEV Semantic Choice Evaluator` | [`services/jev.py:L280-368`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L280-L368) | Gửi payload sang JEV System One phân tích ngữ nghĩa sâu (NLU): nhận diện câu hỏi ẩn ý, hỏi vòng vo né từ khóa, hoặc tiếng lóng (*"ting ting", "mấy chục củ", "đút túi", "hoa hồng"*...) thành 2 nhãn `FORBIDDEN` vs `ALLOWED`. |
-| ↳ Child 1.3 | `Zero-Response Guard` | [`services/chat_service.py:L359-367`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L359-L367) | Cắt đứt luồng ngay lập tức, trả về `status="forbidden_query"`, Bot im lặng hoàn toàn. |
-| ↳ Child 1.4 | `Silent DM Alert Dispatcher` | [`services/chat_service.py:L342-358`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L342-L358) | Bắn tin cảnh báo ngầm tới Lark DM của Sếp báo cáo hành vi tra cứu trái phép. |
-| **PARENT STEP 2** | **Người gác cổng Phân loại Ý định** *(Gatekeeper Router)* | [`services/chat_service.py:L371-404`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L371-L404)<br/>[`services/jev.py:L18-103`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L18-L103) | Phân tích tin nhắn thành 1 trong 5 hành động điều phối chiến lược. |
-| ↳ Child 2.1 | `5-Choice Action Classifier` | [`services/jev.py:L22-66`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L22-L66) | Phân loại `IGNORE`, `MEMORY_ONLY`, `REPLY_ONLY`, `MEMORY_AND_DRAFT`, `DRAFT_PENDING_APPROVAL`. |
-| ↳ Child 2.2 | `Confidence Tuner Engine` | [`services/jev.py:L67-98`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L67-L98) | Lọc độ tự tin: ép về DRAFT nếu `prob_draft >= 0.85`, hạ cấp về MEMORY nếu tự tin thấp. |
-| ↳ Child 2.3 | `Owner Anti-Loop Shield` | [`services/chat_service.py:L382-394`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L382-L394) | Nếu Sếp chat trong nhóm: ép `REPLY` ➔ `IGNORE` để triệt tiêu 100% vòng lặp bot tự trả lời Sếp. |
-| ↳ Child 2.4 | `Fail-safe Safety Fallback` | [`services/chat_service.py:L376-381`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L376-L381) | Nếu JEV API timeout: tự động chuyển sang `DRAFT_PENDING_APPROVAL` để Sếp duyệt tay an toàn. |
-| **PARENT STEP 3** | **Lọc ngữ nghĩa & Tái sắp xếp RAG** *(Semantic Reranker)* | [`services/chat_service.py:L486-497`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py#L486-L497)<br/>[`services/jev.py:L104-197`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L104-L197) | Đánh giá độ phù hợp của từng đoạn trích từ WeKnora và sắp xếp đoạn chuẩn nhất lên đầu. |
-| ↳ Child 3.1 | `Candidate Chunk Pruner` | [`services/jev.py:L125-140`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L125-L140) | Lấy tối đa 5 chunks, cắt ngắn mỗi đoạn $\le 300$ ký tự để tiết kiệm băng thông. |
-| ↳ Child 3.2 | `Batch Payload Builder` | [`services/jev.py:L140-165`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L140-L165) | Gộp 5 câu hỏi đánh giá vào 1 lượt gọi HTTP request duy nhất tới JEV System One. |
-| ↳ Child 3.3 | `jev_score Assigner` | [`services/jev.py:L176-187`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L176-L187) | Trích xuất xác suất `RELEVANT`, loại bỏ hoàn toàn các đoạn bị đánh dấu `IRRELEVANT`. |
-| ↳ Child 3.4 | `Cross-Encoder Reranker` | [`services/jev.py:L189-192`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L189-L192) | Tái sắp xếp mảng chunks theo điểm số `jev_score` giảm dần đưa đoạn chuẩn nhất lên đầu. |
-| ↳ Child 3.5 | `Graceful Empty Fallback` | [`services/jev.py:L193-196`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py#L193-L196) | Nếu JEV lọc quá tay làm rỗng danh sách: tự động giữ lại chunks gốc để không crash RAG. |
+Trong kiến trúc HiLark Server, JEV System 1 đóng vai trò là bộ não phản xạ nhanh (Fast Intent & Guardrail Classifier):
+- **Phân loại xác suất định lượng:** JEV đưa ra phán quyết xác suất cho các câu hỏi phân loại có cấu trúc (probabilities từ 0.0 đến 1.0) với độ trễ thấp và chi phí tối thiểu.
+- **Mô hình hai tầng (Dual-System Architecture):**
+  - **JEV (System 1 - Phản xạ nhanh):** Gác cổng đầu vào, phát hiện câu hỏi vi phạm vùng cấm, phân loại 5 nhánh ý định và xếp hạng đoạn trích tài liệu.
+  - **Multi-Provider LLM (System 2 - Tư duy sâu):** Chỉ được kích hoạt khi câu hỏi hợp lệ và an toàn để sinh phản hồi tự nhiên.
+- **Hiệu quả:** Cắt giảm 60% – 70% số lượt gọi LLM không cần thiết đối với các tin nhắn chào hỏi, cập nhật tiến độ hoặc vi phạm chính sách.
 
 ---
 
-## ⚡ 3. SƠ ĐỒ LUỒNG HOẠT ĐỘNG THỰC TẾ (OPERATIONAL LIFECYCLE)
-
-Dưới đây là vòng đời thực tế của một tin nhắn khi di chuyển qua 3 trạm kiểm soát của JEV:
-
-![Sơ đồ luồng hoạt động JEV](./luong_hoat_dong_jev.jpg)
-
-### Quy trình dòng chảy chi tiết (Mermaid Flowchart):
+## 2. 3 Trạm kiểm soát của JEV
 
 ```mermaid
 flowchart TD
-    classDef rootBox fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
-    classDef parentBox fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#f8fafc;
-    classDef utilBox fill:#0f172a,stroke:#10b981,stroke-width:1px,color:#e2e8f0;
-    classDef alertBox fill:#450a0a,stroke:#ef4444,stroke-width:2px,color:#fecaca;
-    classDef successBox fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#a7f3d0;
+    MSG["TIN NHẮN NGƯỜI DÙNG TỪ LỚP 1"] --> P1
 
-    MSG["📩 TIN NHẮN NGƯỜI DÙNG TỪ LAYER 1"]:::rootBox --> P1
-
-    subgraph TRẠM_1["🛡️ TRẠM 1: CHỐT CHẶN BẢO MẬT NHÃN CẤM (PARENT STEP 1)"]
+    subgraph T1["TRẠM 1: CHỐT CHẶN BẢO MẬT & NHÃN CẤM (check_forbidden_query)"]
         direction TB
-        P1["jev_service.check_forbidden_query()"]:::parentBox
-        U1_1["1.1 Fast Keyword Matcher"]:::utilBox
-        U1_2["1.2 JEV Semantic Evaluator (FORBIDDEN vs ALLOWED)"]:::utilBox
+        P1["Kiểm tra chủ đề cấm"]
+        U1_1["1.1 Fast Keyword Matcher (Regex < 0.1ms)"]
+        U1_2["1.2 JEV Semantic Scan (FORBIDDEN vs ALLOWED)"]
         P1 --> U1_1 --> U1_2
     end
 
-    U1_2 -->|Phát hiện vi phạm nhãn cấm| DROP["⛔ ZERO-RESPONSE SILENT DROP<br/>• Ngắt pipeline ngay<br/>• Mật báo DM riêng cho Sếp"]:::alertBox
+    U1_2 -->|Vi phạm nhãn cấm| DROP["STRICT HITL<br/>• Bot im lặng trong nhóm<br/>• Chuyển Thẻ nháp gửi Quản trị viên"]
     U1_2 -->|An toàn: ALLOWED| P2
 
-    subgraph TRẠM_2["🚪 TRẠM 2: NGƯỜI GÁC CỔNG PHÂN LOẠI Ý ĐỊNH (PARENT STEP 2)"]
+    subgraph T2["TRẠM 2: PHÂN LOẠI Ý ĐỊNH ĐẦU VÀO (classify_message)"]
         direction TB
-        P2["jev_service.classify_message()"]:::parentBox
-        U2_1["2.1 5-Action Classifier (IGNORE, MEMORY, REPLY, DRAFT)"]:::utilBox
-        U2_2["2.2 Confidence Tuner (Lọc ngưỡng rủi ro)"]:::utilBox
-        U2_3["2.3 Owner Anti-Loop Shield (Chống lặp Sếp)"]:::utilBox
+        P2["Phân loại 5 nhánh ý định"]
+        U2_1["2.1 5-Action Classifier (IGNORE, MEMORY, REPLY, DRAFT)"]
+        U2_2["2.2 Confidence Tuner (Lọc ngưỡng rủi ro)"]
+        U2_3["2.3 Owner Anti-Loop Shield (Chống lặp Quản trị viên)"]
         P2 --> U2_1 --> U2_2 --> U2_3
     end
 
-    U2_3 -->|IGNORE: Tán gẫu / Chào hỏi| IG["💤 IM LẶNG (Bỏ qua hoàn toàn)"]:::alertBox
-    U2_3 -->|MEMORY_ONLY: Cập nhật tiến độ| MEM["💾 LAYER 3: Bóc tách Claim lưu MongoDB"]:::utilBox
-    U2_3 -->|REPLY_ONLY / DRAFT: Hỏi đáp nghiệp vụ| RAG["📚 WEKNORA RAG RETRIEVAL<br/>Truy vấn Top-K Chunks"]:::rootBox
+    U2_3 -->|IGNORE: Chào hỏi / Tán gẫu| IG["Ngắt sớm luồng xử lý (0 token)"]
+    U2_3 -->|MEMORY_ONLY: Cập nhật tiến độ| MEM["LỚP 3: Bóc tách Claims lưu MongoDB"]
+    U2_3 -->|REPLY_ONLY / DRAFT: Hỏi đáp| RAG["WEKNORA RAG RETRIEVAL<br/>Truy vấn Top-K Chunks"]
 
     RAG --> P3
 
-    subgraph TRẠM_3["🎯 TRẠM 3: LỌC NGỮ NGHĨA & RERANK RAG (PARENT STEP 3)"]
+    subgraph T3["TRẠM 3: LỌC NGỮ NGHĨA & RERANK RAG (filter_chunks_relevance)"]
         direction TB
-        P3["jev_service.filter_chunks_relevance()"]:::parentBox
-        U3_1["3.1 Top-5 Chunk Pruner (300 ký tự)"]:::utilBox
-        U3_2["3.2 Batch Payload Builder (1 API Call)"]:::utilBox
-        U3_3["3.3 JEV Cross-Encoder Score & Rerank"]:::utilBox
+        P3["Đánh giá độ tương quan ngữ nghĩa"]
+        U3_1["3.1 Top-5 Chunk Pruner (300 ký tự)"]
+        U3_2["3.2 Batch Payload Builder (1 API Call)"]
+        U3_3["3.3 JEV Score Assigner & Rerank"]
         P3 --> U3_1 --> U3_2 --> U3_3
     end
-
-    U3_3 -->|Chunks lạc đề: IRRELEVANT| TRASH["🗑️ Loại bỏ tài liệu rác"]:::alertBox
-    U3_3 -->|Chunks sát bối cảnh: RELEVANT| CONTEXT["🧩 HỢP NHẤT BỐI CẢNH (ContextComposer)<br/>RuleEngine ➔ Context ➔ Gemini 2.5 Flash"]:::successBox
 ```
 
 ---
 
-## 🗂️ DANH MỤC TÀI LIỆU CHI TIẾT
+## 3. Chi tiết các trạm kiểm soát
 
-1. **[`jev_architecture_spec.md`](file:///Users/hoainam/Desktop/HiLark/server/docs/jev/jev_architecture_spec.md)**:
-   * Bản đặc tả kỹ thuật chi tiết (Spec).
-   * Phân tích sâu từng trường Payload API (`https://api.typesafe.ai/v1/systemone`), cấu trúc JSON questions, ma trận phân bổ xác suất và cơ chế tự phục hồi mạng.
-   * Đối chiếu mã nguồn thực tế [`server/services/jev.py`](file:///Users/hoainam/Desktop/HiLark/server/services/jev.py) và [`server/services/chat_service.py`](file:///Users/hoainam/Desktop/HiLark/server/services/chat_service.py).
+### Trạm 1: Chốt chặn bảo mật và nhãn cấm (`check_forbidden_query`)
+- **Mục tiêu:** Phát hiện câu hỏi chạm vào thông tin bảo mật nội bộ (Ngân sách, Bảng lương, Chi phí, Hợp đồng đối tác).
+- **Cơ chế 2 vòng:**
+  1. *Fast Keyword Matcher:* Quét nhanh danh sách từ khóa cấm đã cấu hình trong `forbidden_labels` (< 0.1ms).
+  2. *JEV Semantic Evaluator:* Phân tích ngữ nghĩa để phát hiện các câu hỏi gián tiếp hoặc tiếng lóng nhằm khai thác thông tin mật.
+- **Hành vi:** Ngắt luồng xử lý tức thì, bot không phản hồi vào nhóm và chuyển sang Thẻ nháp gửi riêng Quản trị viên.
+
+---
+
+### Trạm 2: Người gác cổng phân loại ý định (`classify_message`)
+- **5 Nhánh phân loại:**
+  1. `IGNORE`: Lời chào hỏi xã giao, cảm ơn, tán gẫu $\rightarrow$ Bỏ qua hoàn toàn.
+  2. `MEMORY_ONLY`: Thông báo tiến độ, cập nhật nhân sự, thay đổi deadline $\rightarrow$ Chuyển sang `llm_extractor` lưu Claims vào MongoDB.
+  3. `REPLY_ONLY`: Câu hỏi nghiệp vụ được chứng thực bởi tài liệu $\rightarrow$ Chuyển tiếp tới WeKnora RAG và LLM.
+  4. `MEMORY_AND_DRAFT`: Vừa có thông tin cập nhật vừa có câu hỏi nhạy cảm $\rightarrow$ Ghi nhận Claims và soạn Thẻ nháp gửi Quản trị viên.
+  5. `DRAFT_PENDING_APPROVAL`: Câu hỏi có độ rủi ro hoặc thiếu tài liệu đối soát $\rightarrow$ Soạn Thẻ nháp gửi Quản trị viên duyệt.
+- **Confidence Tuner:** Nếu độ tự tin của JEV thấp hơn ngưỡng quy định, hệ thống tự động ép chuyển sang Thẻ nháp để bảo đảm an toàn.
+- **Chống lặp Quản trị viên:** Ép tin nhắn của Quản trị viên về `MEMORY_ONLY` hoặc `IGNORE` để tránh bot xen ngang lời nói của Quản trị viên.
+
+---
+
+### Trạm 3: Lọc ngữ nghĩa và tái sắp xếp RAG (`filter_chunks_relevance`)
+- **Mục tiêu:** Chấm điểm độ tương quan của các đoạn trích từ WeKnora với câu hỏi của người dùng.
+- **Tối ưu hóa băng thông:** Cắt ngắn mỗi đoạn trích $\le 300$ ký tự và gộp tối đa 5 đoạn trích vào một lượt gọi HTTP duy nhất.
+- **Reranking:** Trích xuất xác suất `RELEVANT`, loại bỏ các đoạn lạc đề (`IRRELEVANT`), sắp xếp mảng đoạn trích theo điểm tương quan giảm dần.
+
+---
+
+## 4. Tham số và cấu hình liên quan
+
+| Biến cấu hình | Vị trí | Mô tả kỹ thuật |
+| :--- | :--- | :--- |
+| `JEV_API_KEY` | Biến môi trường `.env` | Khóa API truy cập dịch vụ JEV System 1. |
+| `CONFIDENCE_THRESHOLD` | Hằng số mã nguồn (`0.85`) | Ngưỡng tin cậy tối thiểu để kích hoạt phản hồi tự động. |
+| `MAX_RERANK_CHUNKS` | Hằng số mã nguồn (`5`) | Số lượng đoạn trích tối đa gửi sang JEV để đánh giá độ tương quan. |
