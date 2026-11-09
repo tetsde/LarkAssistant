@@ -738,31 +738,72 @@ def build_digest_approval_card(
         ])
 
     # Khối thống kê chi phí và hiệu năng AI (nếu có cost_summary)
-    if cost_summary:
-        total_calls = cost_summary.get("total_calls", 0)
-        total_tokens = cost_summary.get("total_tokens", 0)
-        total_usd = cost_summary.get("total_cost_usd", 0.0)
-        total_vnd = cost_summary.get("total_cost_vnd", 0.0)
-        by_service = cost_summary.get("by_service", {})
+    if isinstance(cost_summary, dict) and cost_summary:
+        total_calls = int(cost_summary.get("total_calls", 0) or 0)
+        total_tokens = int(cost_summary.get("total_tokens", 0) or 0)
+        total_usd = float(cost_summary.get("total_cost_usd", 0.0) or 0.0)
+        total_vnd = float(cost_summary.get("total_cost_vnd", 0.0) or 0.0)
+        raw_by_service = cost_summary.get("by_service", {})
+        by_service = raw_by_service if isinstance(raw_by_service, dict) else {}
 
         if total_calls > 0:
-            gemini_info = by_service.get("gemini", {})
-            jev_info = by_service.get("jev", {})
+            jev_raw = by_service.get("jev", {})
+            jev_info = jev_raw if isinstance(jev_raw, dict) else {}
 
-            gemini_calls = gemini_info.get("total_calls", 0)
-            gemini_tokens = gemini_info.get("total_tokens", 0)
-            gemini_cost_usd = gemini_info.get("total_cost_usd", 0.0)
-            gemini_latency = int(gemini_info.get("avg_latency_ms", 0.0))
+            provider_labels = {
+                "google": "Google Gemini",
+                "gemini": "Google Gemini",
+                "openai": "OpenAI",
+                "chatgpt": "ChatGPT / OpenAI",
+                "anthropic": "Anthropic Claude",
+                "custom": "Custom LLM",
+            }
 
-            jev_calls = jev_info.get("total_calls", 0)
-            jev_latency = int(jev_info.get("avg_latency_ms", 0.0))
+            llm_calls = 0
+            llm_tokens = 0
+            llm_thinking_tokens = 0
+            llm_cost_usd = 0.0
+            llm_weighted_latency = 0.0
+            active_provider_labels: List[str] = []
+
+            for svc_name, svc_info in by_service.items():
+                if not isinstance(svc_info, dict):
+                    continue
+                svc_key = str(svc_name or "").strip().lower()
+                if svc_key == "jev":
+                    continue
+
+                svc_calls = int(svc_info.get("total_calls", 0) or 0)
+                svc_tokens = int(svc_info.get("total_tokens", 0) or 0)
+                svc_thinking = int(svc_info.get("thinking_tokens", 0) or 0)
+                svc_cost_usd = float(svc_info.get("total_cost_usd", 0.0) or 0.0)
+                svc_latency = float(svc_info.get("avg_latency_ms", 0.0) or 0.0)
+
+                llm_calls += svc_calls
+                llm_tokens += svc_tokens
+                llm_thinking_tokens += svc_thinking
+                llm_cost_usd += svc_cost_usd
+                llm_weighted_latency += svc_latency * svc_calls
+
+                if svc_calls > 0:
+                    raw_label = str(svc_name or "").strip()
+                    label = provider_labels.get(svc_key) or (raw_label or "Custom LLM")
+                    if label not in active_provider_labels:
+                        active_provider_labels.append(label)
+
+            llm_latency = int(round(llm_weighted_latency / llm_calls)) if llm_calls > 0 else 0
+            llm_label = f"LLM ({', '.join(active_provider_labels)})" if active_provider_labels else "LLM"
+            thinking_part = f", thinking: {llm_thinking_tokens:,}" if llm_thinking_tokens > 0 else ""
+
+            jev_calls = int(jev_info.get("total_calls", 0) or 0)
+            jev_latency = int(float(jev_info.get("avg_latency_ms", 0.0) or 0.0))
 
             fastlane_ratio = int((jev_calls / total_calls) * 100) if total_calls > 0 else 0
 
             cost_lines = [
                 "**Thống kê Chi phí AI hôm nay:**",
                 f"- **Tổng ngân sách:** ${total_usd:.4f} USD (~{int(total_vnd):,} VND) | **Tokens:** {total_tokens:,}",
-                f"- **Gemini LLM:** {gemini_calls} lượt ({gemini_tokens:,} tokens) - ${gemini_cost_usd:.4f} - Phản hồi TB: {gemini_latency}ms",
+                f"- **{llm_label}:** {llm_calls} lượt ({llm_tokens:,} tokens{thinking_part}) - ${llm_cost_usd:.4f} - Phản hồi TB: {llm_latency}ms",
                 f"- **JEV System 1:** {jev_calls} lượt phân loại nhanh - Phản hồi TB: {jev_latency}ms",
                 f"- **Tiết kiệm Fast-lane:** {fastlane_ratio}% tác vụ được lọc sơ bộ qua JEV giúp tối ưu token gọi LLM.",
             ]

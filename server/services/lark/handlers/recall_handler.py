@@ -44,7 +44,7 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
     """
     event_data = getattr(event, "event", None)
     if not event_data:
-        logger.warning("[LARK RECALL] Nhận sự kiện rỗng, bỏ qua.")
+        logger.warning("[RECALL] ignored reason=empty_event_data")
         return {"success": False, "error": "Event data is empty"}
 
     message_id = getattr(event_data, "message_id", "") or ""
@@ -53,16 +53,16 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
     recall_type = getattr(event_data, "recall_type", "") or "message_owner"
 
     if not message_id:
-        logger.warning("[LARK RECALL] Thiếu message_id trong sự kiện thu hồi.")
+        logger.warning("[RECALL] ignored reason=missing_message_id")
         return {"success": False, "error": "Missing message_id"}
 
-    print("\n" + "=" * 65)
-    print(f"🗑️ [LARK RECALL PHÁT HIỆN] Tin nhắn đã bị thu hồi trên Lark!")
-    print(f"   • Message ID : {message_id}")
-    print(f"   • Chat ID    : {chat_id}")
-    print(f"   • Loại       : {recall_type}")
-    print(f"   • Thời điểm  : {recall_time}")
-    print("-" * 65)
+    logger.info(
+        "[RECALL] start msg=%s chat=%s type=%s recall_time=%s",
+        message_id,
+        chat_id or "-",
+        recall_type,
+        recall_time or "-",
+    )
 
     lark_service = _resolve_lark_service()
 
@@ -75,11 +75,11 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
             recall_type=recall_type,
         )
         if recalled_stg:
-            print(f"🛡️ [TẦNG 1 - STAGING] Đã đánh dấu is_recalled: True cho {message_id} -> Loại khỏi Daily Digest.")
+            logger.debug("[RECALL] staging_marked msg=%s", message_id)
         else:
-            print(f"ℹ️ [TẦNG 1 - STAGING] Tin {message_id} chưa lưu trong staging hoặc không tìm thấy.")
+            logger.debug("[RECALL] staging_not_found msg=%s", message_id)
     except Exception as e:
-        logger.error(f"[LARK RECALL] Lỗi khi cập nhật staging cho tin {message_id}: {e}", exc_info=True)
+        logger.error("[RECALL] staging_failed msg=%s error=%s", message_id, e, exc_info=True)
 
     # ── [TẦNG 2: TRI THỨC & CLAIMS REVOCATION] ──
     claims_revoked = 0
@@ -91,26 +91,24 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
         )
         claims_revoked = rev_res.get("proposed_revoked", 0)
         claims_flagged = rev_res.get("current_flagged", 0)
-        if claims_revoked > 0:
-            print(f"🚫 [TẦNG 2 - CLAIMS] Đã hủy bỏ {claims_revoked} đề xuất tri thức (PROPOSED -> REVOKED).")
-        if claims_flagged > 0:
-            print(f"⚠️ [TẦNG 2 - CLAIMS] Đã gắn cờ source_recalled: True cho {claims_flagged} facts CURRENT.")
-        if claims_revoked == 0 and claims_flagged == 0:
-            print(f"ℹ️ [TẦNG 2 - CLAIMS] Không có facts nào phát sinh từ tin {message_id}.")
+        if claims_revoked > 0 or claims_flagged > 0:
+            logger.info("[RECALL] claims_updated msg=%s revoked=%d flagged=%d", message_id, claims_revoked, claims_flagged)
+        else:
+            logger.debug("[RECALL] claims_none msg=%s", message_id)
     except Exception as e:
-        logger.error(f"[LARK RECALL] Lỗi khi thu hồi claims cho tin {message_id}: {e}", exc_info=True)
+        logger.error("[RECALL] claims_failed msg=%s error=%s", message_id, e, exc_info=True)
 
     # ── [TẦNG 3: DRAFT LOGS CANCELLATION] ──
     drafts_cancelled = 0
     try:
         drafts_cancelled = await cancel_pending_drafts_by_message_id(
             message_id=message_id,
-            reason=f"Tin nhắn gốc đã bị thu hồi trên Lark",
+            reason="Tin nhắn gốc đã bị thu hồi trên Lark",
         )
         if drafts_cancelled > 0:
-            print(f"❌ [TẦNG 3 - DRAFTS] Đã tự động hủy {drafts_cancelled} bản nháp đang chờ duyệt.")
+            logger.info("[RECALL] drafts_cancelled msg=%s count=%d", message_id, drafts_cancelled)
     except Exception as e:
-        logger.error(f"[LARK RECALL] Lỗi khi hủy drafts cho tin {message_id}: {e}", exc_info=True)
+        logger.error("[RECALL] drafts_failed msg=%s error=%s", message_id, e, exc_info=True)
 
     # ── [TẦNG 4: USER/BOT REPLY CASCADE RECALL] ──
     bot_reply_recalled = False
@@ -131,24 +129,32 @@ async def handle_message_recalled(event: P2ImMessageRecalledV1) -> Dict[str, Any
                 if not eff_tenant:
                     eff_tenant = d_doc.get("tenant_key")
         except Exception as ex:
-            logger.debug(f"Không thể tra cứu bot_reply_message_id từ draft_logs: {ex}")
+            logger.debug("[RECALL] draft_reply_lookup_failed msg=%s error=%s", message_id, ex)
 
     if reply_id:
-        print(f"🔄 [TẦNG 4 - CASCADE RECALL] Tin nhắn gốc đã có câu trả lời đại diện (as_user: {reply_id}). Tiến hành thu hồi...")
+        logger.debug("[RECALL] cascade_start msg=%s reply_id=%s", message_id, reply_id)
         try:
             recall_resp = await lark_service.arecall_message(reply_id, tenant_key=eff_tenant)
             if isinstance(recall_resp, dict) and recall_resp.get("success"):
                 bot_reply_recalled = True
-                print(f"✔ [TẦNG 4 - CASCADE RECALL] Đã thu hồi thành công tin nhắn trả lời đại diện ({reply_id}).")
+                logger.info("[RECALL] cascade_ok msg=%s reply_id=%s", message_id, reply_id)
             else:
                 err_msg = recall_resp.get("msg") or recall_resp.get("error") if isinstance(recall_resp, dict) else str(recall_resp)
-                print(f"⚠️ [TẦNG 4 - CASCADE RECALL] Không thể thu hồi tin nhắn trả lời {reply_id}: {err_msg}")
+                logger.warning("[RECALL] cascade_failed msg=%s reply_id=%s error=%s", message_id, reply_id, err_msg)
         except Exception as e:
-            logger.error(f"[LARK RECALL] Lỗi khi gọi arecall_message cho {reply_id}: {e}", exc_info=True)
+            logger.error("[RECALL] cascade_error msg=%s reply_id=%s error=%s", message_id, reply_id, e, exc_info=True)
     else:
-        print(f"ℹ️ [TẦNG 4 - CASCADE RECALL] Không có tin nhắn trả lời nào gắn với tin {message_id}.")
+        logger.debug("[RECALL] cascade_skipped msg=%s reason=no_reply_id", message_id)
 
-    print("=" * 65 + "\n")
+    logger.info(
+        "[RECALL] completed msg=%s staging=%s revoked=%d flagged=%d drafts=%d reply_recalled=%s",
+        message_id,
+        bool(recalled_stg),
+        claims_revoked,
+        claims_flagged,
+        drafts_cancelled,
+        bot_reply_recalled,
+    )
 
     return {
         "success": True,

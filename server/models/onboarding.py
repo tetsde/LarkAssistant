@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 class TestKeyRequest(BaseModel):
     """Payload kiểm tra kết nối API Key và đo độ trễ mạng."""
     api_key: str = Field(..., description="API Key cần kiểm tra")
-    provider: Optional[str] = Field(default="google", description="Nhà cung cấp: google, openai, chatgpt, anthropic, custom")
+    provider: Optional[str] = Field(default="google", description="Nhà cung cấp: google, openai, chatgpt, anthropic, custom, jev")
     base_url: Optional[str] = Field(default=None, description="Base URL tùy chỉnh")
     model_name: Optional[str] = Field(default=None, description="Tên mô hình")
     timeout: Optional[float] = Field(default=30.0, description="Thời gian chờ timeout (giây)")
@@ -29,11 +29,13 @@ class SaveSettingsRequest(BaseModel):
     open_id: str = Field(..., description="Lark Open ID của người dùng (ou_xxx)")
     user_name: Optional[str] = Field(default=None, description="Tên người dùng")
     is_byok_enabled: bool = Field(default=False, description="Kích hoạt BYOK hay không")
-    raw_gemini_key: Optional[str] = Field(default=None, description="Khóa API mới (nếu có)")
+    raw_llm_key: Optional[str] = Field(default=None, description="Khóa API LLM mới (nếu có)")
     llm_provider: Optional[str] = Field(default="google", description="Nhà cung cấp LLM: google, openai, anthropic, custom")
     llm_base_url: Optional[str] = Field(default=None, description="Base URL tùy chỉnh")
     llm_model: Optional[str] = Field(default=None, description="Tên mô hình")
     llm_timeout: Optional[float] = Field(default=60.0, description="Timeout (giây)")
+    is_jev_byok_enabled: bool = Field(default=False, description="Kích hoạt BYOK cho JEV System 1 Classifier hay không")
+    raw_jev_key: Optional[str] = Field(default=None, description="Khóa API JEV mới (nếu có)")
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
     policy_sync_interval_seconds: Optional[int] = Field(default=3600, description="Chu kỳ quét định kỳ chính sách doanh nghiệp (giây)")

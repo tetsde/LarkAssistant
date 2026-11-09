@@ -15,10 +15,12 @@ import logging
 import sys
 from typing import Optional
 
+from core.tenant_errors import TenantResolutionError, TokenUnavailable
 from models.lark import LarkMessage
 from services.chat_service import process_document_to_claims as default_process_claims
 from services.knowledge.doc_parser import doc_parser_service as default_doc_parser
 from services.lark import lark_service as default_lark_service
+from services.lark.tenant_error_reply import notify_tenant_error
 
 logger = logging.getLogger("hilark.bot.document_handler")
 
@@ -50,12 +52,12 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
         file_name = msg.file_name or ("image.png" if msg.message_type == "image" else "document")
 
         if not file_key:
-            print(f"⚠️ [ATTACHMENT] Tin nhắn {msg.message_id} là {msg.message_type} nhưng không tìm thấy file_key/image_key.")
+            logger.warning("[DOC_HANDLER] missing_file_key msg=%s type=%s", msg.message_id, msg.message_type)
             return True
 
         # Kiểm tra Extension Gate
         if not doc_parser._docreader.is_supported_file(file_name) and not doc_parser.is_image_file(file_name, msg.message_type):
-            print(f"Bỏ qua file '{file_name}' vì không thuộc định dạng được hỗ trợ.")
+            logger.info("[DOC_HANDLER] skipped_unsupported msg=%s file=%s", msg.message_id, file_name)
             if msg.chat_type == "p2p":
                 await lark.areply_text(
                     msg.message_id,
@@ -63,43 +65,60 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                 )
             return True
 
-        print(f"Bắt đầu phân giải tệp: {file_name} (key: {file_key})...")
+        logger.info("[DOC_HANDLER] parsing_attachment msg=%s file=%s key=%s", msg.message_id, file_name, file_key)
 
-        doc_res = await doc_parser.parse_attachment(
-            message_id=msg.message_id,
-            file_key=file_key,
-            file_name=file_name,
-            resource_type=msg.message_type,
-            tenant_key=msg.tenant_key,
-        )
+        try:
+            doc_res = await doc_parser.parse_attachment(
+                message_id=msg.message_id,
+                file_key=file_key,
+                file_name=file_name,
+                resource_type=msg.message_type,
+                tenant_key=msg.tenant_key,
+            )
 
-        if not doc_res.success:
-            print(f"Phân giải thất bại: {doc_res.error}")
-            if msg.chat_type == "p2p":
-                await lark.areply_text(
-                    msg.message_id,
-                    f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
-                )
+            if not doc_res.success:
+                logger.warning("[DOC_HANDLER] parse_failed msg=%s file=%s error=%s", msg.message_id, file_name, doc_res.error)
+                if msg.chat_type == "p2p":
+                    await lark.areply_text(
+                        msg.message_id,
+                        f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
+                    )
+                return True
+
+            # Trích xuất Claims & Entities vào MongoDB (Chế độ âm thầm - Silent Ingestion)
+            claims_res = await process_claims(
+                doc_result=doc_res,
+                chat_id=msg.chat_id,
+                sender=msg.sender_id,
+                sender_id=msg.sender_id,
+                message_id=msg.message_id,
+                is_owner=is_owner,
+                tenant_key=msg.tenant_key,
+            )
+        except (TenantResolutionError, TokenUnavailable) as e:
+            logger.warning(
+                "[DROP] msg=%s reason=%s error=%s",
+                msg.message_id,
+                getattr(e, "error_code", type(e).__name__),
+                e,
+            )
+            await notify_tenant_error(
+                e,
+                message_id=msg.message_id,
+                chat_id=msg.chat_id,
+                tenant_key=msg.tenant_key,
+            )
             return True
-
-        # Trích xuất Claims & Entities vào MongoDB (Chế độ âm thầm - Silent Ingestion)
-        claims_res = await process_claims(
-            doc_result=doc_res,
-            chat_id=msg.chat_id,
-            sender=msg.sender_id,
-            sender_id=msg.sender_id,
-            message_id=msg.message_id,
-            is_owner=is_owner,
-            tenant_key=msg.tenant_key,
-        )
 
         new_count = claims_res.get("new_claims_count", 0)
         superseded_count = claims_res.get("superseded_claims_count", 0)
         logger.info(
-            f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới vào MongoDB từ '{file_name}' "
-            f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
+            "[SILENT_INGEST] attachment_saved file=%s new_facts=%d superseded=%d is_owner=%s",
+            file_name,
+            new_count,
+            superseded_count,
+            is_owner,
         )
-        print(f"✔ Đã âm thầm lưu {new_count} facts mới từ '{file_name}' vào MongoDB (không phát ngôn vào nhóm).")
 
         # Tự động nạp tài liệu vào WeKnora Knowledge Base
         try:
@@ -126,9 +145,9 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                         mime_type=mime,
                         tenant_id=weknora_tenant_id,
                     )
-                    logger.info(f"✔ [DOC HANDLER] Đã tải nạp '{upload_name}' sang WeKnora KB {effective_dataset_id}")
+                    logger.info("[DOC_HANDLER] weknora_uploaded file=%s dataset=%s", upload_name, effective_dataset_id)
         except Exception as weknora_up_err:
-            logger.warning(f"Lỗi khi nạp file sang WeKnora trong document_handler: {weknora_up_err}")
+            logger.warning("[DOC_HANDLER] weknora_upload_failed file=%s error=%s", file_name, weknora_up_err)
 
         return True
 
@@ -136,67 +155,84 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
     if msg.message_type == "text" and msg.text:
         lark_links = doc_parser.extract_lark_links(msg.text)
         if lark_links:
-            print(f"Tìm thấy {len(lark_links)} liên kết tài liệu Lark trong tin nhắn.")
+            logger.info("[DOC_HANDLER] links_detected msg=%s count=%d", msg.message_id, len(lark_links))
             handled_any = False
-            for link in lark_links:
-                if link["type"] == "docx":
-                    doc_res = await doc_parser.parse_lark_docx(link["token"], tenant_key=msg.tenant_key)
-                    doc_res_list = [doc_res] if doc_res else []
-                elif link["type"] == "wiki":
-                    doc_res = await doc_parser.parse_lark_wiki(link["token"], tenant_key=msg.tenant_key)
-                    doc_res_list = [doc_res] if doc_res else []
-                elif link["type"] == "folder":
-                    print(f"📁 [FOLDER LINK] Bắt đầu phân giải toàn bộ tài liệu trong thư mục Lark Drive {link['token']}...")
-                    doc_res_list = await doc_parser.parse_lark_folder(link["token"], tenant_key=msg.tenant_key)
-                else:
-                    continue
+            try:
+                for link in lark_links:
+                    if link["type"] == "docx":
+                        doc_res = await doc_parser.parse_lark_docx(link["token"], tenant_key=msg.tenant_key)
+                        doc_res_list = [doc_res] if doc_res else []
+                    elif link["type"] == "wiki":
+                        doc_res = await doc_parser.parse_lark_wiki(link["token"], tenant_key=msg.tenant_key)
+                        doc_res_list = [doc_res] if doc_res else []
+                    elif link["type"] == "folder":
+                        logger.info("[DOC_HANDLER] folder_parsing msg=%s folder_token=%s", msg.message_id, link["token"])
+                        doc_res_list = await doc_parser.parse_lark_folder(link["token"], tenant_key=msg.tenant_key)
+                    else:
+                        continue
 
-                for doc_res in doc_res_list:
-                    if doc_res and doc_res.success:
-                        claims_res = await process_claims(
-                            doc_result=doc_res,
-                            chat_id=msg.chat_id,
-                            sender=msg.sender_id,
-                            sender_id=msg.sender_id,
-                            message_id=msg.message_id,
-                            is_owner=is_owner,
-                            tenant_key=msg.tenant_key,
-                        )
-                        new_count = claims_res.get("new_claims_count", 0)
-                        superseded_count = claims_res.get("superseded_claims_count", 0)
-                        logger.info(
-                            f"✔ [SILENT INGESTION] Đã lưu {new_count} facts mới từ Lark Doc '{doc_res.doc_name}' "
-                            f"(superseded={superseded_count}, is_owner={is_owner}). Không phát ngôn vào nhóm chat."
-                        )
-                        print(f"✔ Đã âm thầm lưu {new_count} facts từ Lark Doc '{doc_res.doc_name}' vào MongoDB (không phát ngôn vào nhóm).")
+                    for doc_res in doc_res_list:
+                        if doc_res and doc_res.success:
+                            claims_res = await process_claims(
+                                doc_result=doc_res,
+                                chat_id=msg.chat_id,
+                                sender=msg.sender_id,
+                                sender_id=msg.sender_id,
+                                message_id=msg.message_id,
+                                is_owner=is_owner,
+                                tenant_key=msg.tenant_key,
+                            )
+                            new_count = claims_res.get("new_claims_count", 0)
+                            superseded_count = claims_res.get("superseded_claims_count", 0)
+                            logger.info(
+                                "[SILENT_INGEST] lark_doc_saved doc=%s new_facts=%d superseded=%d is_owner=%s",
+                                doc_res.doc_name,
+                                new_count,
+                                superseded_count,
+                                is_owner,
+                            )
 
-                        # Nạp tài liệu lên WeKnora Knowledge Base
-                        try:
-                            from services.knowledge.chat_scopes import scope_service, _get_active_weknora, _sanitize_filename
-                            effective_dataset_id, _ = await scope_service.get_kb_info_for_chat(msg.chat_id, tenant_key=msg.tenant_key)
-                            if effective_dataset_id and doc_res.markdown_content:
-                                weknora_tenant_id = None
-                                if msg.tenant_key:
-                                    from database.db import get_tenant_config
-                                    t_cfg = await get_tenant_config(msg.tenant_key)
-                                    if t_cfg:
-                                        weknora_tenant_id = t_cfg.get("weknora_tenant_id")
+                            # Nạp tài liệu lên WeKnora Knowledge Base
+                            try:
+                                from services.knowledge.chat_scopes import scope_service, _get_active_weknora, _sanitize_filename
+                                effective_dataset_id, _ = await scope_service.get_kb_info_for_chat(msg.chat_id, tenant_key=msg.tenant_key)
+                                if effective_dataset_id and doc_res.markdown_content:
+                                    weknora_tenant_id = None
+                                    if msg.tenant_key:
+                                        from database.db import get_tenant_config
+                                        t_cfg = await get_tenant_config(msg.tenant_key)
+                                        if t_cfg:
+                                            weknora_tenant_id = t_cfg.get("weknora_tenant_id")
 
-                                safe_name = _sanitize_filename(doc_res.doc_name or "lark_doc")
-                                if not safe_name.lower().endswith(".md"):
-                                    safe_name = f"{safe_name}.md"
-                                await _get_active_weknora().upload_file(
-                                    file_name=safe_name,
-                                    file_bytes=doc_res.markdown_content.encode("utf-8"),
-                                    dataset_id=effective_dataset_id,
-                                    mime_type="text/markdown",
-                                    tenant_id=weknora_tenant_id,
-                                )
-                                logger.info(f"✔ [DOC HANDLER] Đã tải nạp Lark Doc '{safe_name}' sang WeKnora KB {effective_dataset_id}")
-                        except Exception as w_err:
-                            logger.warning(f"Lỗi khi tải nạp Lark Doc sang WeKnora: {w_err}")
+                                    safe_name = _sanitize_filename(doc_res.doc_name or "lark_doc")
+                                    if not safe_name.lower().endswith(".md"):
+                                        safe_name = f"{safe_name}.md"
+                                    await _get_active_weknora().upload_file(
+                                        file_name=safe_name,
+                                        file_bytes=doc_res.markdown_content.encode("utf-8"),
+                                        dataset_id=effective_dataset_id,
+                                        mime_type="text/markdown",
+                                        tenant_id=weknora_tenant_id,
+                                    )
+                                    logger.info("[DOC_HANDLER] weknora_uploaded file=%s dataset=%s", safe_name, effective_dataset_id)
+                            except Exception as w_err:
+                                logger.warning("[DOC_HANDLER] weknora_upload_failed doc=%s error=%s", doc_res.doc_name, w_err)
 
-                        handled_any = True
+                            handled_any = True
+            except (TenantResolutionError, TokenUnavailable) as e:
+                logger.warning(
+                    "[DROP] msg=%s reason=%s error=%s",
+                    msg.message_id,
+                    getattr(e, "error_code", type(e).__name__),
+                    e,
+                )
+                await notify_tenant_error(
+                    e,
+                    message_id=msg.message_id,
+                    chat_id=msg.chat_id,
+                    tenant_key=msg.tenant_key,
+                )
+                return True
 
             if handled_any:
                 return True

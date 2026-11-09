@@ -12,7 +12,7 @@ from database.db import (  # noqa: F401
     get_master_daily_digests_collection,
 )
 from services.knowledge.weknora_client import weknora_service  # noqa: F401
-from services.ai.gemini_client import llm_client  # noqa: F401
+from services.ai.llm_client import llm_client  # noqa: F401
 from services.workflows.digest_workflow import (  # noqa: F401
     CommitmentItem,
     DailyDigestRecord,

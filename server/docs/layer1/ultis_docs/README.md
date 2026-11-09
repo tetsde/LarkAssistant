@@ -40,7 +40,7 @@ Trong Layer 1, toàn bộ luồng xử lý tin nhắn từ Lark Open Platform đ
 
 | Bước xử lý (Parent Step) | Vai trò của Bước trong Layer 1 | Tiện ích thực thi con (Child Utils / Functions) | Vị trí mã nguồn |
 | :--- | :--- | :--- | :--- |
-| **BƯỚC 1: Tiếp nhận & Phân giải sự kiện** *(Event Ingestion & Parsing)* | Tiếp nhận raw JSON từ WebSocket hoặc Webhook, giải mã cấu trúc gói tin Lark. | • `parse_event()`: Rút trích `event_type`, `message_id`, `chat_id`, `content`.<br/>• `LarkMessage` Data Class: Chuẩn hóa kiểu dữ liệu tin nhắn toàn server. | [`services/larkServices/lark_dispatcher.py:L70-130`](file:///Users/hoainam/Desktop/HiLark/server/services/larkServices/lark_dispatcher.py#L70-L130) |
+| **BƯỚC 1: Tiếp nhận & Phân giải sự kiện** *(Event Ingestion & Parsing)* | Tiếp nhận raw JSON từ Webhook HTTP, giải mã cấu trúc gói tin Lark. | • `parse_event()`: Rút trích `event_type`, `message_id`, `chat_id`, `content`.<br/>• `LarkMessage` Data Class: Chuẩn hóa kiểu dữ liệu tin nhắn toàn server. | [`services/lark/dispatcher.py`](file:///Users/hoainam/Desktop/HiLark/server/services/lark/dispatcher.py) |
 | **BƯỚC 2: Lọc sơ cấp & Chống lặp** *(Primary Filtering & Dedup)* | Chặn đứng tin rác, chống vòng lặp vô tận và chống xử lý trùng khi Lark bắn lại webhook. | • `_seen_msg_ids` (Dedup Cache): Bộ nhớ đệm lưu 1.000 `msg_id` trong 10 phút.<br/>• Loop Shield: Kiểm tra `is_bot == True` hoặc `is_self == True` để ngắt ngay.<br/>• Schema Guard: Bỏ qua các sự kiện không phải tin nhắn văn bản (`im.message.receive_v1`). | [`services/larkServices/lark_dispatcher.py:L135-185`](file:///Users/hoainam/Desktop/HiLark/server/services/larkServices/lark_dispatcher.py#L135-L185) |
 | **BƯỚC 3: Phân luồng quyền lực & Lưu tạm** *(Role Routing & Staging)* | Phân biệt Chủ nhân với Thành viên; lưu trữ dữ liệu thời gian thực cho báo cáo tổng kết ngày. | • `Role Router`: Chủ nhân (`is_owner=True`) đi thẳng vào pipeline, Thành viên đẩy vào Queue.<br/>• `Staging Logger`: Gọi `digest_service.add_staging_message()` lưu vào MongoDB `conversation_staging`.<br/>• `DM Commander`: Bắt riêng tin nhắn 1-1 của Sếp để nhận lệnh Duyệt/Sửa/Hủy Daily Digest. | [`services/bot_service.py:L200-364`](file:///Users/hoainam/Desktop/HiLark/server/services/bot_service.py#L200-L364) |
 | **BƯỚC 4: Gom tin gõ ngắt dòng** *(Message Debouncing)* | Gom nhiều dòng gõ ngắt quãng của cùng một người trong một nhóm thành một câu hoàn chỉnh. | • `MessageDebouncer`: Khởi tạo bộ đệm theo cặp `(chat_id, sender_id)`.<br/>• `asyncio.TimerHandle`: Cửa sổ chờ 1.75s, reset timer nếu người dùng tiếp tục gõ.<br/>• `_flush()`: Nối các dòng chat bằng dấu xuống dòng `\n`, đóng gói thành `ChatQueueItem`. | [`utils/chat_queue.py:L27-119`](file:///Users/hoainam/Desktop/HiLark/server/utils/chat_queue.py#L27-L119) |
@@ -71,7 +71,7 @@ flowchart TD
     classDef alertBox fill:#450a0a,stroke:#ef4444,stroke-width:1px,color:#fecaca;
     classDef successBox fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#a7f3d0;
 
-    LarkMsg["📨 Tin nhắn thô từ Lark (WebSocket / Webhook)"]
+    LarkMsg["📨 Tin nhắn thô từ Lark (HTTP Webhook)"]
 
     subgraph L1["🏛️ LAYER 1 PIPELINE: CỬA NGÕ TIẾP NHẬN & ĐIỀU TIẾT (ROOT)"]
         

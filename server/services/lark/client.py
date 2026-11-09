@@ -76,7 +76,7 @@ class LarkClientMixin:
                                 "status": {"$ne": "revoked"},
                             }, {"_id": 1})
                             if not scoped_app:
-                                logger.info("ℹ️ User Token legacy trong MongoDB đã hết hạn, bỏ qua lúc init client.")
+                                logger.debug("[LARK_CLIENT] legacy_token_expired action=skip")
             except Exception:
                 pass
 
@@ -133,7 +133,7 @@ class LarkClientMixin:
             return self._current_user_profile
 
         fallback_profile = {
-            "name": settings.LARK_USER_NAME or "User",
+            "name": settings.LARK_USER_NAME or "",
             "open_id": self.known_user_open_id,
             "union_id": "",
             "avatar_url": "",
@@ -151,14 +151,18 @@ class LarkClientMixin:
             req = GetUserInfoRequest.builder().build()
             resp = self.client.authen.v1.user_info.get(req, opt)
             if not resp.success():
-                logger.warning(f"Lỗi lấy thông tin user từ token ({resp.msg}, code {resp.code}). Sử dụng profile mặc định.")
+                logger.warning(
+                    "[LARK_CLIENT] user_info_failed code=%s msg=%s fallback=profile",
+                    resp.code,
+                    resp.msg,
+                )
                 self._current_user_profile = fallback_profile
                 return fallback_profile
 
             data = resp.data
             open_id = getattr(data, "open_id", "") or self.known_user_open_id
             profile = {
-                "name": getattr(data, "name", "") or "User",
+                "name": getattr(data, "name", "") or "",
                 "open_id": open_id,
                 "union_id": getattr(data, "union_id", ""),
                 "avatar_url": getattr(data, "avatar_url", ""),
@@ -169,10 +173,10 @@ class LarkClientMixin:
             self._current_user_profile = profile
             if open_id:
                 self.known_user_open_id = open_id
-            logger.info(f"👤 Đang hoạt động dưới danh tính User: {profile['name']} (open_id: {profile['open_id']})")
+            logger.debug("[LARK_CLIENT] user_profile_loaded open_id=%s", profile["open_id"])
             return profile
         except Exception as e:
-            logger.error(f"Exception khi lấy user info: {e}", exc_info=True)
+            logger.error("[LARK_CLIENT] user_info_error error=%s", e, exc_info=True)
             self._current_user_profile = fallback_profile
             return fallback_profile
 
@@ -293,7 +297,7 @@ class LarkClientMixin:
         ContextVar phải đứng trước `self.tenant_key`: singleton `lark_service` mang
         tenant của .env/tenant đầu tiên, nên nếu ưu tiên thuộc tính instance thì một
         request của tenant B sẽ bị gửi bằng danh tính tenant A. Thuộc tính instance chỉ
-        còn là fallback hợp lệ cho luồng WebSocket đã tạo service riêng theo App
+        còn là fallback hợp lệ cho runtime service riêng theo App được tạo qua
         (`runtime.get_or_create_lark_service`).
         """
         from database.db import get_current_tenant_key
@@ -376,7 +380,7 @@ class LarkClientMixin:
             bytes nếu tải thành công, None nếu thất bại.
         """
         if not message_id or not file_key:
-            logger.warning("adownload_message_resource: message_id hoặc file_key rỗng.")
+            logger.warning("[LARK_IM] download_skipped reason=empty_ids")
             return None
 
         from lark_oapi.api.im.v1 import GetMessageResourceRequest
@@ -392,7 +396,9 @@ class LarkClientMixin:
             resp = await self.client.im.v1.message_resource.aget(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK IM] Tải tài nguyên bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_IM] resource_download_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = (
                     GetMessageResourceRequest.builder()
@@ -405,8 +411,11 @@ class LarkClientMixin:
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_IM] resource_download_failed msg=%s key=%s code=%s error=%s",
+                    message_id,
+                    file_key,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -417,7 +426,7 @@ class LarkClientMixin:
                     return bytes(resp.file)
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK IM] Exception khi tải tài nguyên {file_key}: {e}", exc_info=True)
+            logger.error("[LARK_IM] resource_download_error key=%s error=%s", file_key, e, exc_info=True)
             return None
 
     def download_message_resource(
@@ -443,7 +452,9 @@ class LarkClientMixin:
             resp = self.client.im.v1.message_resource.get(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK IM] Tải tài nguyên bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_IM] resource_download_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = (
                     GetMessageResourceRequest.builder()
@@ -456,8 +467,11 @@ class LarkClientMixin:
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK IM] Tải tài nguyên thất bại (msg_id={message_id}, key={file_key}): "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_IM] resource_download_failed msg=%s key=%s code=%s error=%s",
+                    message_id,
+                    file_key,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -468,7 +482,7 @@ class LarkClientMixin:
                     return bytes(resp.file)
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK IM] Exception khi tải tài nguyên {file_key}: {e}", exc_info=True)
+            logger.error("[LARK_IM] resource_download_error key=%s error=%s", file_key, e, exc_info=True)
             return None
 
     async def aget_docx_raw_content(self, document_id: str, tenant_key: Optional[str] = None) -> Optional[str]:
@@ -492,15 +506,19 @@ class LarkClientMixin:
             resp = await self.client.docx.v1.document.araw_content(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK DOCX] Lấy raw content bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_DOCX] raw_content_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = RawContentDocumentRequest.builder().document_id(document_id).build()
                 resp = await self.client.docx.v1.document.araw_content(req_bot)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_DOCX] raw_content_failed doc=%s code=%s msg=%s",
+                    document_id,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -508,7 +526,7 @@ class LarkClientMixin:
                 return resp.data.content or ""
             return ""
         except Exception as e:
-            logger.error(f"❌ [LARK DOCX] Exception khi lấy raw content document {document_id}: {e}", exc_info=True)
+            logger.error("[LARK_DOCX] raw_content_error doc=%s error=%s", document_id, e, exc_info=True)
             return None
 
     def get_docx_raw_content(self, document_id: str) -> Optional[str]:
@@ -523,15 +541,19 @@ class LarkClientMixin:
             resp = self.client.docx.v1.document.raw_content(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK DOCX] Lấy raw content bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_DOCX] raw_content_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = RawContentDocumentRequest.builder().document_id(document_id).build()
                 resp = self.client.docx.v1.document.raw_content(req_bot)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK DOCX] Lấy raw content document {document_id} thất bại: "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_DOCX] raw_content_failed doc=%s code=%s msg=%s",
+                    document_id,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -539,7 +561,7 @@ class LarkClientMixin:
                 return resp.data.content or ""
             return ""
         except Exception as e:
-            logger.error(f"❌ [LARK DOCX] Exception khi lấy raw content document {document_id}: {e}", exc_info=True)
+            logger.error("[LARK_DOCX] raw_content_error doc=%s error=%s", document_id, e, exc_info=True)
             return None
 
     async def aresolve_wiki_token(self, wiki_token: str, tenant_key: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -563,15 +585,19 @@ class LarkClientMixin:
             resp = await self.client.wiki.v2.space.aget_node(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK WIKI] Tra cứu wiki node bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_WIKI] get_node_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = GetNodeSpaceRequest.builder().token(wiki_token).build()
                 resp = await self.client.wiki.v2.space.aget_node(req_bot)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_WIKI] get_node_failed token=%s code=%s msg=%s",
+                    wiki_token,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -584,7 +610,7 @@ class LarkClientMixin:
                 }
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK WIKI] Exception khi tra cứu wiki node {wiki_token}: {e}", exc_info=True)
+            logger.error("[LARK_WIKI] get_node_error token=%s error=%s", wiki_token, e, exc_info=True)
             return None
 
     def resolve_wiki_token(self, wiki_token: str) -> Optional[Dict[str, str]]:
@@ -599,15 +625,19 @@ class LarkClientMixin:
             resp = self.client.wiki.v2.space.get_node(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK WIKI] Tra cứu wiki node bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_WIKI] get_node_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 req_bot = GetNodeSpaceRequest.builder().token(wiki_token).build()
                 resp = self.client.wiki.v2.space.get_node(req_bot)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK WIKI] Tra cứu wiki node {wiki_token} thất bại: "
-                    f"code={resp.code}, msg={resp.msg}"
+                    "[LARK_WIKI] get_node_failed token=%s code=%s msg=%s",
+                    wiki_token,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -620,7 +650,7 @@ class LarkClientMixin:
                 }
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK WIKI] Exception khi tra cứu wiki node {wiki_token}: {e}", exc_info=True)
+            logger.error("[LARK_WIKI] get_node_error token=%s error=%s", wiki_token, e, exc_info=True)
             return None
 
     async def alist_drive_folder_files(
@@ -661,15 +691,19 @@ class LarkClientMixin:
                 resp = await self.client.drive.v1.file.alist(req, opt)
                 if not resp.success() and opt is not None:
                     logger.warning(
-                        f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                        "[LARK_DRIVE] folder_list_retry mode=bot code=%s msg=%s",
+                        resp.code,
+                        resp.msg,
                     )
                     bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                     resp = await self.client.drive.v1.file.alist(req, bot_opt)
 
                 if not resp.success():
                     logger.error(
-                        f"❌ [LARK DRIVE] Liệt kê tệp trong thư mục {folder_token} thất bại: "
-                        f"code={resp.code}, msg={resp.msg}"
+                        "[LARK_DRIVE] folder_list_failed folder=%s code=%s msg=%s",
+                        folder_token,
+                        resp.code,
+                        resp.msg,
                     )
                     break
 
@@ -688,10 +722,10 @@ class LarkClientMixin:
                 if not page_token:
                     break
 
-            logger.info(f"✔ [LARK DRIVE] Quét thư mục {folder_token}: tìm thấy {len(files)} tệp/thư mục.")
+            logger.info("[LARK_DRIVE] folder_listed folder=%s items=%d", folder_token, len(files))
             return files
         except Exception as e:
-            logger.error(f"❌ [LARK DRIVE] Exception khi liệt kê tệp trong thư mục {folder_token}: {e}", exc_info=True)
+            logger.error("[LARK_DRIVE] folder_list_error folder=%s error=%s", folder_token, e, exc_info=True)
             return files
 
     def list_drive_folder_files(
@@ -721,15 +755,19 @@ class LarkClientMixin:
                 resp = self.client.drive.v1.file.list(req, opt)
                 if not resp.success() and opt is not None:
                     logger.warning(
-                        f"⚠️ [LARK DRIVE] Liệt kê thư mục bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                        "[LARK_DRIVE] folder_list_retry mode=bot code=%s msg=%s",
+                        resp.code,
+                        resp.msg,
                     )
                     bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                     resp = self.client.drive.v1.file.list(req, bot_opt)
 
                 if not resp.success():
                     logger.error(
-                        f"❌ [LARK DRIVE] Liệt kê tệp trong thư mục {folder_token} thất bại: "
-                        f"code={resp.code}, msg={resp.msg}"
+                        "[LARK_DRIVE] folder_list_failed folder=%s code=%s msg=%s",
+                        folder_token,
+                        resp.code,
+                        resp.msg,
                     )
                     break
 
@@ -748,10 +786,10 @@ class LarkClientMixin:
                 if not page_token:
                     break
 
-            logger.info(f"✔ [LARK DRIVE] Quét thư mục {folder_token}: tìm thấy {len(files)} tệp/thư mục.")
+            logger.info("[LARK_DRIVE] folder_listed folder=%s items=%d", folder_token, len(files))
             return files
         except Exception as e:
-            logger.error(f"❌ [LARK DRIVE] Exception khi liệt kê tệp trong thư mục {folder_token}: {e}", exc_info=True)
+            logger.error("[LARK_DRIVE] folder_list_error folder=%s error=%s", folder_token, e, exc_info=True)
             return files
 
     async def adownload_drive_file(self, file_token: str, tenant_key: Optional[str] = None) -> Optional[bytes]:
@@ -776,14 +814,19 @@ class LarkClientMixin:
             resp = await self.client.drive.v1.file.adownload(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_DRIVE] file_download_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                 resp = await self.client.drive.v1.file.adownload(req, bot_opt)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK DRIVE] Tải tệp {file_token} thất bại: code={resp.code}, msg={resp.msg}"
+                    "[LARK_DRIVE] file_download_failed token=%s code=%s msg=%s",
+                    file_token,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -794,7 +837,7 @@ class LarkClientMixin:
                     return bytes(resp.file)
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK DRIVE] Exception khi tải tệp {file_token}: {e}", exc_info=True)
+            logger.error("[LARK_DRIVE] file_download_error token=%s error=%s", file_token, e, exc_info=True)
             return None
 
     def download_drive_file(self, file_token: str, tenant_key: Optional[str] = None) -> Optional[bytes]:
@@ -810,14 +853,19 @@ class LarkClientMixin:
             resp = self.client.drive.v1.file.download(req, opt)
             if not resp.success() and opt is not None:
                 logger.warning(
-                    f"⚠️ [LARK DRIVE] Tải tệp bằng User Token thất bại (code={resp.code}, msg={resp.msg}), fallback sang Bot token..."
+                    "[LARK_DRIVE] file_download_retry mode=bot code=%s msg=%s",
+                    resp.code,
+                    resp.msg,
                 )
                 bot_opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                 resp = self.client.drive.v1.file.download(req, bot_opt)
 
             if not resp.success():
                 logger.error(
-                    f"❌ [LARK DRIVE] Tải tệp {file_token} thất bại: code={resp.code}, msg={resp.msg}"
+                    "[LARK_DRIVE] file_download_failed token=%s code=%s msg=%s",
+                    file_token,
+                    resp.code,
+                    resp.msg,
                 )
                 return None
 
@@ -828,6 +876,6 @@ class LarkClientMixin:
                     return bytes(resp.file)
             return None
         except Exception as e:
-            logger.error(f"❌ [LARK DRIVE] Exception khi tải tệp {file_token}: {e}", exc_info=True)
+            logger.error("[LARK_DRIVE] file_download_error token=%s error=%s", file_token, e, exc_info=True)
             return None
 

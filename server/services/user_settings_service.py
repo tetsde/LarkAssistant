@@ -1,78 +1,74 @@
 """
-HiLark - User Settings & BYOK Service
-=====================================
+HiLark - User Settings & BYOK Service (Thin Compatibility Facade)
+=================================================================
 Vị trí: server/services/user_settings_service.py
 
-Chịu trách nhiệm:
-  1. Mã hóa & giải mã an toàn AES-256 cho khóa API cá nhân (Fernet key derivation).
-  2. Ping test độ sống còn và đo độ trễ (latency) của Gemini API Key.
-  3. Quản lý lưu trữ/truy vấn cấu hình người dùng (MongoDB collection 'user_settings').
-  4. Thuật toán giải quyết Key 3 tầng (Key Resolution Hierarchy):
-       User BYOK -> Project/Scope BYOK -> System Default Key
+Facade tương thích ngược ủy quyền 100% logic mã hóa, kiểm tra kết nối,
+lưu trữ/caching MongoDB và phân giải cấu hình AI (Fail-Closed BYOK)
+sang `services.ai.ai_config_manager`.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import logging
-import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-import httpx
-from cryptography.fernet import Fernet
-
-from core.config import settings
-from database.db import get_user_settings_collection
 from database.scoped_query import get_current_tenant_key
-from models.memory import get_vietnam_now_iso
 from models.user_settings import UserSettingsRecord
-
-logger = logging.getLogger("hilark.services.user_settings")
-
-
-def _derive_fernet_key(secret: str) -> bytes:
-    """Sinh khóa Fernet 32-bytes an toàn từ chuỗi bí mật bằng SHA-256."""
-    key_hash = hashlib.sha256(secret.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(key_hash)
+from services.ai.ai_config_manager import AIConfigManager, _UNSET, ai_config_manager
 
 
 class UserSettingsService:
-    """Quản trị cấu hình người dùng, bảo mật API Key và phân giải BYOK."""
+    """Thin facade ủy quyền quản trị cấu hình người dùng & BYOK sang AIConfigManager."""
 
     def __init__(self, secret_key: Optional[str] = None):
-        raw_secret = secret_key or getattr(settings, "ENCRYPTION_SECRET_KEY", "hilark-secret-key-32bytes-aes256!!")
-        self._fernet = Fernet(_derive_fernet_key(raw_secret))
+        if secret_key is not None:
+            self._manager = AIConfigManager(secret_key=secret_key)
+        else:
+            self._manager = ai_config_manager
 
     def encrypt_key(self, raw_key: str) -> str:
         """Mã hóa chuỗi API key thành token mã hóa an toàn."""
-        if not raw_key or not raw_key.strip():
-            return ""
-        encrypted_bytes = self._fernet.encrypt(raw_key.strip().encode("utf-8"))
-        return encrypted_bytes.decode("utf-8")
+        return self._manager.encrypt_key(raw_key)
 
     def decrypt_key(self, cipher_text: str) -> str:
         """Giải mã token mã hóa để lấy lại API key nguyên bản."""
-        if not cipher_text or not cipher_text.strip():
-            return ""
-        try:
-            decrypted_bytes = self._fernet.decrypt(cipher_text.strip().encode("utf-8"))
-            return decrypted_bytes.decode("utf-8")
-        except Exception as e:
-            logger.error(f"Lỗi giải mã API key: {e}")
-            return ""
+        return self._manager.decrypt_key(cipher_text)
+
+    def decrypt_key_strict(
+        self,
+        cipher_text: Optional[str],
+        *,
+        tenant_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        service_type: str = "llm",
+    ) -> str:
+        """Giải mã token mã hóa ở chế độ Fail-Closed (ném BYOKConfigurationError khi rỗng/lỗi)."""
+        return self._manager.decrypt_key_strict(
+            cipher_text,
+            tenant_key=tenant_key,
+            provider=provider,
+            service_type=service_type,
+        )
 
     @staticmethod
     def mask_key(raw_key: Optional[str]) -> str:
-        """Ẩn phần thân của key chỉ chừa đầu và đuôi (VD: AIzaSy••••••••1234)."""
-        if not raw_key:
-            return ""
-        s = raw_key.strip()
-        if len(s) <= 10:
-            return s
-        return f"{s[:6]}...{s[-4:]}"
+        """Ẩn phần thân của key chỉ chừa đầu và đuôi (VD: AIzaSy...1234)."""
+        return ai_config_manager.mask_key(raw_key)
 
     mask_api_key = mask_key
+
+    def invalidate_cache(
+        self,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
+    ) -> int:
+        """Xóa cache cấu hình AI theo tenant_key và/hoặc open_id."""
+        return self._manager.invalidate_cache(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
+
+    invalidate = invalidate_cache
 
     async def test_llm_connection(
         self,
@@ -82,194 +78,66 @@ class UserSettingsService:
         model: Optional[str] = None,
         timeout: float = 30.0,
     ) -> Tuple[bool, str, float]:
-        """
-        Kiểm tra trực tiếp kết nối với LLM Provider (Google, ChatGPT/OpenAI, Anthropic, Custom) kèm timeout.
-        Trả về: (thành_công, thông_báo, độ_trễ_ms)
-        """
-        if not raw_key or not raw_key.strip():
-            return False, "API Key không được để trống.", 0.0
+        """Kiểm tra trực tiếp kết nối với LLM/JEV Provider kèm timeout."""
+        return await self._manager.test_llm_connection(
+            raw_key=raw_key,
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+        )
 
-        key = raw_key.strip()
-        provider_norm = (provider or "google").strip().lower()
-        timeout_val = float(timeout) if timeout and float(timeout) > 0 else 30.0
-
-        start_time = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=timeout_val) as client:
-                if provider_norm == "google":
-                    model_target = model or "gemini-flash-latest"
-                    b_url = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
-                    test_url = f"{b_url}/v1beta/models/{model_target}:generateContent?key={key}"
-                    payload = {
-                        "contents": [{"parts": [{"text": "ping"}]}],
-                        "generationConfig": {"maxOutputTokens": 5, "thinkingConfig": {"thinkingBudget": 0}},
-                    }
-                    res = await client.post(test_url, json=payload)
-                elif provider_norm in ("openai", "chatgpt"):
-                    model_target = model or "gpt-4o-mini"
-                    b_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-                    test_url = f"{b_url}/chat/completions"
-                    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                    payload = {
-                        "model": model_target,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 5,
-                    }
-                    res = await client.post(test_url, headers=headers, json=payload)
-                elif provider_norm == "anthropic":
-                    model_target = model or "claude-3-5-sonnet-20241022"
-                    b_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
-                    if not b_url.endswith("/v1"):
-                        b_url = f"{b_url}/v1"
-                    test_url = f"{b_url}/messages"
-                    headers = {
-                        "x-api-key": key,
-                        "anthropic-version": "2023-06-01",
-                        "Content-Type": "application/json",
-                    }
-                    payload = {
-                        "model": model_target,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 5,
-                    }
-                    res = await client.post(test_url, headers=headers, json=payload)
-                else:  # "custom" / other OpenAI-compatible
-                    model_target = model or "gpt-3.5-turbo"
-                    b_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-                    if not b_url.endswith("/chat/completions"):
-                        test_url = f"{b_url}/chat/completions"
-                    else:
-                        test_url = b_url
-                    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                    payload = {
-                        "model": model_target,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 5,
-                    }
-                    res = await client.post(test_url, headers=headers, json=payload)
-
-                latency_ms = round((time.time() - start_time) * 1000, 2)
-                if res.status_code == 200:
-                    provider_display = {
-                        "google": "Google Gemini",
-                        "openai": "ChatGPT / OpenAI",
-                        "chatgpt": "ChatGPT / OpenAI",
-                        "anthropic": "Anthropic Claude",
-                        "custom": "Custom Provider",
-                    }.get(provider_norm, provider_norm.upper())
-                    return True, f"Kết nối {provider_display} thành công (độ trễ {latency_ms} ms)", latency_ms
-
-                try:
-                    err_json = res.json()
-                    err_msg = (
-                        err_json.get("error", {}).get("message")
-                        if isinstance(err_json.get("error"), dict)
-                        else str(err_json.get("error") or res.text)
-                    )
-                except Exception:
-                    err_msg = res.text
-
-                return False, f"Provider từ chối ({res.status_code}): {err_msg[:120]}", latency_ms
-
-        except httpx.TimeoutException:
-            return False, f"Kết nối đến {provider_norm.upper()} quá thời gian chờ (Timeout {timeout_val}s).", 0.0
-        except Exception as e:
-            return False, f"Lỗi kết nối kiểm tra: {str(e)}", 0.0
-
-    async def test_gemini_key(self, raw_key: str) -> Tuple[bool, str, float]:
-        """Tương thích ngược kiểm tra Gemini API Key."""
-        return await self.test_llm_connection(raw_key=raw_key, provider="google")
-
-    async def get_user_settings(self, open_id: str, tenant_key: Optional[str] = None) -> Optional[UserSettingsRecord]:
+    async def get_user_settings(
+        self,
+        open_id: str,
+        tenant_key: Optional[str] = None,
+        bypass_cache: bool = False,
+    ) -> Optional[UserSettingsRecord]:
         """Lấy cấu hình theo user; nếu có tenant thì dùng khóa kép user + tenant."""
-        if not open_id:
-            return None
-        coll = get_user_settings_collection()
-        query = {"open_id": open_id}
-        if tenant_key:
-            query["tenant_key"] = tenant_key
-        doc = await coll.find_one(query)
-        if not doc:
-            return None
-        return UserSettingsRecord(**doc)
+        return await self._manager.get_user_settings(
+            open_id,
+            tenant_key=tenant_key,
+            bypass_cache=bypass_cache,
+        )
+
+    get_settings = get_user_settings
 
     async def save_user_settings(
         self,
         open_id: str,
-        is_byok_enabled: bool = False,
-        raw_gemini_key: Optional[str] = None,
-        digest_schedule_time: str = "18:00",
-        hitl_mode_enabled: bool = True,
+        is_byok_enabled: Optional[bool] = None,
+        raw_llm_key: Optional[str] = None,
+        digest_schedule_time: Optional[str] = None,
+        hitl_mode_enabled: Optional[bool] = None,
         user_name: Optional[str] = None,
-        llm_provider: str = "google",
-        llm_base_url: Optional[str] = None,
-        llm_model: Optional[str] = None,
-        llm_timeout: float = 60.0,
+        llm_provider: Optional[str] = None,
+        llm_base_url: Optional[str] = _UNSET,
+        llm_model: Optional[str] = _UNSET,
+        llm_timeout: Optional[float] = None,
         policy_sync_interval_seconds: Optional[int] = None,
         tenant_key: Optional[str] = None,
+        is_jev_byok_enabled: Optional[bool] = None,
+        raw_jev_key: Optional[str] = None,
     ) -> UserSettingsRecord:
-        """Lưu hoặc cập nhật cấu hình người dùng vào MongoDB."""
-        normalized_digest_time = (digest_schedule_time or "18:00").strip()
-        try:
-            hour, minute = normalized_digest_time.split(":", 1)
-            if not (0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
-                raise ValueError
-            normalized_digest_time = f"{int(hour):02d}:{int(minute):02d}"
-        except (TypeError, ValueError):
-            raise ValueError("digest_schedule_time phải có định dạng HH:MM hợp lệ")
-
-        coll = get_user_settings_collection()
-        existing = await self.get_user_settings(open_id, tenant_key=tenant_key)
-
-        encrypted_key = None
-        masked_key = None
-
-        if is_byok_enabled and raw_gemini_key and raw_gemini_key.strip():
-            encrypted_key = self.encrypt_key(raw_gemini_key)
-            masked_key = self.mask_key(raw_gemini_key)
-        elif is_byok_enabled and existing and existing.encrypted_gemini_api_key:
-            # Giữ nguyên key cũ nếu không truyền key mới
-            encrypted_key = existing.encrypted_gemini_api_key
-            masked_key = existing.masked_gemini_api_key
-
-        now_iso = get_vietnam_now_iso()
-        record = UserSettingsRecord(
+        """Lưu hoặc cập nhật cấu hình người dùng thông qua AIConfigManager."""
+        return await self._manager.save_user_settings(
             open_id=open_id,
-            tenant_key=tenant_key or (existing.tenant_key if existing else None),
-            user_name=user_name or (existing.user_name if existing else None),
             is_byok_enabled=is_byok_enabled,
-            llm_provider=llm_provider or (existing.llm_provider if existing else "google"),
-            encrypted_gemini_api_key=encrypted_key,
-            masked_gemini_api_key=masked_key,
-            llm_base_url=llm_base_url or (existing.llm_base_url if existing else None),
-            llm_model=llm_model or (existing.llm_model if existing else None),
-            llm_timeout=llm_timeout if llm_timeout is not None else (existing.llm_timeout if existing else 60.0),
-            digest_schedule_time=normalized_digest_time,
+            raw_llm_key=raw_llm_key,
+            digest_schedule_time=digest_schedule_time,
             hitl_mode_enabled=hitl_mode_enabled,
-            policy_sync_interval_seconds=int(policy_sync_interval_seconds) if policy_sync_interval_seconds is not None else (getattr(existing, "policy_sync_interval_seconds", 3600) if existing else 3600),
-            created_at=existing.created_at if existing else now_iso,
-            updated_at=now_iso,
+            user_name=user_name,
+            llm_provider=llm_provider,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+            llm_timeout=llm_timeout,
+            policy_sync_interval_seconds=policy_sync_interval_seconds,
+            tenant_key=tenant_key,
+            is_jev_byok_enabled=is_jev_byok_enabled,
+            raw_jev_key=raw_jev_key,
         )
 
-        user_query = {"open_id": open_id}
-        if record.tenant_key:
-            user_query["tenant_key"] = record.tenant_key
-        await coll.update_one(
-            user_query,
-            {"$set": record.to_dict()},
-            upsert=True,
-        )
-        if record.tenant_key and policy_sync_interval_seconds is not None:
-            try:
-                from database.db import get_tenants_collection
-                await get_tenants_collection().update_one(
-                    {"tenant_key": record.tenant_key},
-                    {"$set": {"policy_sync_interval_seconds": int(policy_sync_interval_seconds)}},
-                )
-            except Exception as t_up_err:
-                logger.debug(f"Không thể cập nhật policy_sync_interval_seconds vào tenant: {t_up_err}")
-        logger.info(f"Đã lưu cấu hình người dùng cho open_id={open_id} (BYOK={is_byok_enabled})")
-        return record
+    save_settings = save_user_settings
 
     async def resolve_effective_llm_key(
         self,
@@ -280,36 +148,29 @@ class UserSettingsService:
         tenant_key: Optional[str] = None,
     ) -> str:
         """
-        Phân giải API key theo thứ tự:
-          1. User BYOK nếu được bật và giải mã thành công.
-          2. System Default từ settings/.env.
+        Phân giải API key hiệu lực qua AIConfigManager.
 
-        chat_id và request_api_key được giữ để tương thích ngược,
+        chat_id và request_api_key được giữ để tương thích ngược chữ ký hàm,
         nhưng không tham gia lựa chọn key.
         """
         eff_tenant = tenant_key or get_current_tenant_key()
         target_user = user_id or open_id
 
         if target_user:
-            user_settings = await self.get_user_settings(
-                target_user, tenant_key=eff_tenant
-            )
-            if (
-                user_settings
-                and user_settings.is_byok_enabled
-                and user_settings.encrypted_gemini_api_key
-            ):
-                decrypted = self.decrypt_key(
-                    user_settings.encrypted_gemini_api_key
+            rec = await self.get_user_settings(target_user, tenant_key=eff_tenant)
+            if rec is not None:
+                key, _ = await self._manager.resolve_llm_key(
+                    tenant_key=eff_tenant,
+                    open_id=target_user,
+                    config_record=rec,
                 )
-                if decrypted:
-                    logger.info(
-                        f"[BYOK] Sử dụng User BYOK: {target_user} "
-                        f"(tenant={eff_tenant})"
-                    )
-                    return decrypted
+                return key
 
-        return settings.GEMINI_API_KEY or settings.gemini_api or ""
+        key, _ = await self._manager.resolve_llm_key(
+            tenant_key=eff_tenant,
+            open_id=target_user,
+        )
+        return key
 
     async def resolve_effective_llm_client(
         self,
@@ -320,36 +181,38 @@ class UserSettingsService:
         tenant_key: Optional[str] = None,
     ):
         """
-        Phân giải và khởi tạo LLMClient hoàn chỉnh theo cấu hình cá nhân hóa của User hoặc Hệ thống:
-          - Nếu User bật BYOK: Áp dụng nhà cung cấp (provider), model, base_url, timeout và key giải mã.
-          - Nếu không: Sử dụng LLMClient mặc định của hệ thống.
+        Phân giải và khởi tạo LLMClient hoàn chỉnh qua AIConfigManager.
+
+        chat_id và request_api_key được giữ để tương thích ngược chữ ký hàm,
+        nhưng không tham gia lựa chọn client.
         """
-        from services.ai.gemini_client import LLMClient, llm_client
-
         eff_tenant = tenant_key or get_current_tenant_key()
-
         target_user = user_id or open_id
-        if target_user:
-            settings_rec = await self.get_user_settings(target_user, tenant_key=eff_tenant)
-            if settings_rec and settings_rec.is_byok_enabled and settings_rec.encrypted_gemini_api_key:
-                user_api_key = self.decrypt_key(settings_rec.encrypted_gemini_api_key)
-                if user_api_key:
-                    default_models = [settings_rec.llm_model] if settings_rec.llm_model else None
-                    logger.info(
-                        f"🤖 [BYOK CLIENT] Sử dụng cấu hình LLM riêng của User {target_user} (tenant={eff_tenant}): "
-                        f"provider={settings_rec.llm_provider}, model={settings_rec.llm_model or 'default'}"
-                    )
-                    return LLMClient(
-                        api_key=user_api_key,
-                        provider=settings_rec.llm_provider or "google",
-                        base_url=settings_rec.llm_base_url,
-                        timeout=settings_rec.llm_timeout or 60.0,
-                        default_models=default_models,
-                    )
 
-        # Không sử dụng Project BYOK hoặc Request Override.
-        # Nếu User BYOK không hợp lệ, dùng client mặc định của hệ thống.
-        return llm_client
+        if target_user:
+            rec = await self.get_user_settings(target_user, tenant_key=eff_tenant)
+            if rec is not None:
+                return await self._manager.resolve_llm_client(
+                    tenant_key=eff_tenant,
+                    open_id=target_user,
+                    config_record=rec,
+                )
+
+        return await self._manager.resolve_llm_client(
+            tenant_key=eff_tenant,
+            open_id=target_user,
+        )
+
+    async def resolve_effective_jev_key(
+        self,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
+    ) -> Tuple[str, bool]:
+        """Phân giải JEV API Key hiệu lực qua AIConfigManager."""
+        return await self._manager.resolve_jev_key(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
 
 
 user_settings_service = UserSettingsService()
@@ -367,16 +230,24 @@ async def resolve_effective_llm_key(
     """
     Hàm phân giải khóa cấp module: trả về bộ (effective_key, is_byok).
     """
-    key = await user_settings_service.resolve_effective_llm_key(
-        user_id=user_id,
-        chat_id=chat_id,
-        request_api_key=request_api_key,
-        open_id=open_id,
-        tenant_key=tenant_key,
+    eff_tenant = tenant_key or get_current_tenant_key()
+    target_user = user_id or open_id
+
+    if target_user:
+        rec = await user_settings_service.get_user_settings(
+            target_user, tenant_key=eff_tenant
+        )
+        if rec is not None:
+            return await user_settings_service._manager.resolve_llm_key(
+                tenant_key=eff_tenant,
+                open_id=target_user,
+                config_record=rec,
+            )
+
+    return await user_settings_service._manager.resolve_llm_key(
+        tenant_key=eff_tenant,
+        open_id=target_user,
     )
-    sys_key = settings.GEMINI_API_KEY or settings.gemini_api or ""
-    is_byok = bool(key and key != sys_key)
-    return key, is_byok
 
 
 __all__ = [

@@ -129,10 +129,27 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
 
             if parent_text:
                 logger.info("[THREAD] msg=%s parent=%s action=classify", msg.message_id, msg.parent_id)
-                decision_res = await jev_service.classify_thread_decision(
-                    parent_text=parent_text,
-                    reply_text=msg.text,
-                )
+                try:
+                    decision_res = await jev_service.classify_thread_decision(
+                        parent_text=parent_text,
+                        reply_text=msg.text,
+                        tenant_key=msg.tenant_key,
+                        open_id=msg.sender_id,
+                    )
+                except (TenantResolutionError, TokenUnavailable) as e:
+                    logger.warning(
+                        "[DROP] msg=%s reason=%s error=%s",
+                        msg.message_id,
+                        getattr(e, "error_code", type(e).__name__),
+                        e,
+                    )
+                    await notify_tenant_error(
+                        e,
+                        message_id=msg.message_id,
+                        chat_id=msg.chat_id,
+                        tenant_key=msg.tenant_key,
+                    )
+                    return
                 decision = decision_res.get("decision", "CHAT_ONLY")
                 conf = decision_res.get("confidence", 0.0)
                 logger.info("[THREAD] msg=%s decision=%s confidence=%.2f", msg.message_id, decision, conf)

@@ -44,22 +44,27 @@ from models.onboarding import (
     TestKeyRequest,
     SaveSettingsRequest,
     ProvisionBaseRequest,
-)
-
-from models.onboarding import (
-    TestKeyRequest,
-    SaveSettingsRequest,
-    ProvisionBaseRequest,
     ProvisionWeKnoraRequest,
     TestBotCredentialsRequest,
     SaveBotConfigRequest,
+    RegisterLarkAppRequest,
     TestMongoRequest,
 )
+from models.user_settings import UserSettingsRecord
+from models.llm import LLMModelOption, LLMRequest, LLMUsage
+from models.telemetry import ModelPricing, TelemetryRecord
 
 __all__ = [
     "TestKeyRequest",
     "SaveSettingsRequest",
     "ProvisionBaseRequest",
+    "RegisterLarkAppRequest",
+    "UserSettingsRecord",
+    "LLMModelOption",
+    "LLMRequest",
+    "LLMUsage",
+    "ModelPricing",
+    "TelemetryRecord",
     "ChatQueueItem",
     "DocReaderResult",
     "DocParseResult",

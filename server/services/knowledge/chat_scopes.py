@@ -19,14 +19,14 @@ import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.config import settings
-from core.tenant_errors import TenantContextMissing, TenantResolutionError
+from core.tenant_errors import BYOKConfigurationError, TenantContextMissing, TenantResolutionError
 from database.db import get_chat_scopes_collection
 from database.scoped_query import inject_tenant_filter, get_current_tenant_key
 from models.chat_scope import ChatScopeRecord
 from models.memory import get_vietnam_now_iso
 import sys
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("hilark.scope_sync")
 
 
 def _get_active_weknora():
@@ -234,7 +234,7 @@ class ScopeService:
                 return ChatScopeRecord(**doc)
             return None
         except Exception as e:
-            logger.error(f"Lỗi khi tìm chat scope cho chat_id={chat_id}: {e}", exc_info=True)
+            logger.error("[SCOPE] lookup_failed chat_id=%s error=%s", chat_id, e, exc_info=True)
             return None
 
     async def get_kb_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> str:
@@ -274,11 +274,7 @@ class ScopeService:
                 "get_default_kb_for_chat() cần tenant_key để trả về Knowledge Base đúng doanh nghiệp."
             )
         # Tenant config không có dataset_id → warn; resolver sẽ chặn ở bước dùng thực tế.
-        logger.warning(
-            "⚠️ [ChatScope] Tenant '%s' chưa cấu hình weknora_default_dataset_id. "
-            "Cần hoàn tất setup để gán dataset cho tenant.",
-            eff_tenant,
-        )
+        logger.warning("[SCOPE] default_kb_missing tenant=%s", eff_tenant)
         return "", "Chưa cấu hình KB"
 
     async def get_wiki_kb_for_chat(self, chat_id: Optional[str], tenant_key: Optional[str] = None) -> str:
@@ -309,10 +305,7 @@ class ScopeService:
             raise TenantContextMissing(
                 "get_wiki_kb_for_chat() cần tenant_key để trả về Wiki KB đúng doanh nghiệp."
             )
-        logger.warning(
-            "⚠️ [ChatScope] Tenant '%s' chưa cấu hình weknora_wiki_dataset_id.",
-            eff_tenant,
-        )
+        logger.warning("[SCOPE] wiki_kb_missing tenant=%s", eff_tenant)
         return ""
 
     async def set_chat_kb(
@@ -341,7 +334,9 @@ class ScopeService:
         # 1. Kiểm tra quyền Admin
         if not self.is_admin_user(operator_open_id):
             logger.warning(
-                f"⛔ CẢNH BÁO BẢO MẬT: Người dùng {operator_open_id} cố tình chạy set-kb trong chat {chat_id} nhưng không có quyền."
+                "[SCOPE] set_kb_denied operator=%s chat_id=%s",
+                operator_open_id,
+                chat_id,
             )
             return (
                 False,
@@ -352,7 +347,7 @@ class ScopeService:
         # 2. Xác thực dataset_id trên WeKnora và lấy tên KB
         kb_info = await _get_active_weknora().get_kb_info(clean_dataset_id)
         if not kb_info:
-            logger.warning(f"❌ Không tìm thấy Knowledge Base ID={clean_dataset_id} trên WeKnora.")
+            logger.warning("[SCOPE] dataset_not_found dataset_id=%s", clean_dataset_id)
             return (
                 False,
                 f"❌ Knowledge Base ID '{clean_dataset_id}' không tồn tại hoặc không hợp lệ trên WeKnora.",
@@ -394,12 +389,17 @@ class ScopeService:
             )
 
             log_msg = f"✔ Đã liên kết nhóm thành công với Knowledge Base '{dataset_name}' (ID: {clean_dataset_id})!"
-            logger.info(f"[ChatScope] {log_msg} cho chat {chat_id} (tenant: {eff_tenant}) bởi {operator_open_id}")
-            return True, log_msg, scope_rec
+            logger.info(
+                "[SCOPE] set_kb tenant=%s chat_id=%s dataset_id=%s operator=%s",
+                eff_tenant,
+                chat_id,
+                clean_dataset_id,
+                operator_open_id,
+            )
             return True, log_msg, scope_rec
 
         except Exception as e:
-            logger.error(f"Lỗi khi lưu ChatScope vào MongoDB: {e}", exc_info=True)
+            logger.error("[SCOPE] save_failed chat_id=%s error=%s", chat_id, e, exc_info=True)
             return False, f"❌ Lỗi hệ thống khi lưu cấu hình vào cơ sở dữ liệu: {e}", None
 
     async def reset_chat_kb(
@@ -437,7 +437,7 @@ class ScopeService:
                     "ℹ️ Nhóm chat này hiện chưa được cấu hình Knowledge Base riêng (đang dùng KB mặc định sẵn rồi).",
                 )
         except Exception as e:
-            logger.error(f"Lỗi khi xóa ChatScope cho chat {chat_id}: {e}", exc_info=True)
+            logger.error("[SCOPE] delete_failed chat_id=%s error=%s", chat_id, e, exc_info=True)
             return False, f"❌ Lỗi khi gỡ bỏ Knowledge Base: {e}"
 
     async def list_all_scopes(self, tenant_key: Optional[str] = None) -> List[ChatScopeRecord]:
@@ -450,7 +450,7 @@ class ScopeService:
             docs = await cursor.to_list(length=100)
             return [ChatScopeRecord(**d) for d in docs]
         except Exception as e:
-            logger.error(f"Lỗi khi lấy danh sách chat scopes: {e}", exc_info=True)
+            logger.error("[SCOPE] list_failed tenant=%s error=%s", eff_tenant, e, exc_info=True)
             return []
 
     async def ingest_documents_to_scope(
@@ -530,7 +530,7 @@ class ScopeService:
                 url = link.get("url", "")
 
                 if ltype == "folder":
-                    logger.info(f"📁 [Scope Ingest] Phân giải thư mục Lark Drive {token} [tenant={eff_tk}]...")
+                    logger.info("[SCOPE] folder_ingest_start tenant=%s folder_token=%s", eff_tk, token)
                     folder_docs = await doc_parser_service.parse_lark_folder(token, tenant_key=eff_tk)
                     for doc_res in folder_docs:
                         if not doc_res.success:
@@ -585,8 +585,10 @@ class ScopeService:
                                     tenant_key=eff_tk,
                                 )
                                 total_claims_count += claims_res.get("new_claims_count", 0)
+                            except BYOKConfigurationError:
+                                raise
                             except Exception as ce:
-                                logger.warning(f"Không thể bóc tách claims từ {doc_res.doc_name}: {ce}")
+                                logger.warning("[SCOPE] extract_claims_failed doc=%s error=%s", doc_res.doc_name, ce)
 
                 elif ltype in ("docx", "wiki"):
                     if ltype == "docx":
@@ -642,8 +644,10 @@ class ScopeService:
                                     tenant_key=eff_tk,
                                 )
                                 total_claims_count += claims_res.get("new_claims_count", 0)
+                            except BYOKConfigurationError:
+                                raise
                             except Exception as ce:
-                                logger.warning(f"Không thể bóc tách claims từ {doc_res.doc_name}: {ce}")
+                                logger.warning("[SCOPE] extract_claims_failed doc=%s error=%s", doc_res.doc_name, ce)
 
         # Cập nhật bản ghi ChatScope trong MongoDB
         now_iso = get_vietnam_now_iso()
@@ -691,7 +695,12 @@ class ScopeService:
             )
 
         msg = f"✔ Đã xử lý {len(processed_docs)} tài liệu, bóc tách {total_claims_count} facts mới vào nhóm {chat_id}."
-        logger.info(f"[ChatScope Ingest] {msg}")
+        logger.info(
+            "[SCOPE] ingest_completed chat_id=%s docs=%d claims=%d",
+            chat_id,
+            len(processed_docs),
+            total_claims_count,
+        )
         return {
             "success": True,
             "chat_id": chat_id,
@@ -729,7 +738,7 @@ class ScopeService:
         # 1. Trích xuất chat_id
         chat_id = _extract_text_field(_get_base_field(raw_fields, "chat_id"))
         if not chat_id:
-            logger.debug(f"[ChatScope Sync] Bản ghi {rec_id} không có ID Group, bỏ qua.")
+            logger.debug("[SCOPE_SYNC] record_skipped record_id=%s reason=missing_chat_id", rec_id)
             return None
 
         # 2. Trích xuất tên nhóm / dự án
@@ -768,7 +777,7 @@ class ScopeService:
                     eff_tenant = existing_s.tenant_key
                     tenant_cfg = await get_tenant_config(eff_tenant)
             except Exception as t_err:
-                logger.debug(f"Không thể tra cứu tenant_cfg phụ: {t_err}")
+                logger.debug("[SCOPE_SYNC] tenant_lookup_failed chat_id=%s error=%s", chat_id, t_err)
 
         weknora_tenant_id = None
         if tenant_cfg:
@@ -778,17 +787,16 @@ class ScopeService:
 
         if not weknora_tenant_id:
             logger.error(
-                "❌ [ChatScope Sync] Thiếu weknora_tenant_id cho chat=%s, dataset=%s; "
-                "WeKnora sẽ từ chối upload bằng TENANT_REQUIRED.",
+                "[SCOPE_SYNC] missing_weknora_tenant chat_id=%s dataset=%s",
                 chat_id,
                 target_dataset_id,
             )
         else:
-            logger.info(
-                "🔐 [ChatScope Sync] WeKnora routing: tenant_id=%s, dataset=%s, lark_tenant=%s",
+            logger.debug(
+                "[SCOPE_SYNC] weknora_route weknora_tenant=%s dataset=%s tenant=%s",
                 weknora_tenant_id,
                 target_dataset_id,
-                eff_tenant or "<chưa xác định>",
+                eff_tenant or "-",
             )
 
         # Ưu tiên: cột trong bản ghi -> KB đã resolve của tenant -> rỗng.
@@ -839,10 +847,15 @@ class ScopeService:
 
             if not k_id:
                 try:
-                    logger.info(f"📥 [ChatScope Sync] Đang tải file '{file_name}' ({file_token}) từ Lark Base...")
+                    logger.debug("[SCOPE_SYNC] attachment_downloading file=%s token=%s", file_name, file_token)
                     file_bytes = await lark_base_service.adownload_attachment(file_token, use_tenant_token=True)
                     if file_bytes:
-                        logger.info(f"📤 [ChatScope Sync] Đang nạp '{file_name}' ({len(file_bytes)} bytes) sang WeKnora KB {effective_dataset_id}...")
+                        logger.debug(
+                            "[SCOPE_SYNC] attachment_uploading file=%s bytes=%d dataset=%s",
+                            file_name,
+                            len(file_bytes),
+                            effective_dataset_id,
+                        )
                         upload_res = await _get_active_weknora().upload_file(
                             file_name=file_name,
                             file_bytes=file_bytes,
@@ -853,9 +866,9 @@ class ScopeService:
                         k_id = upload_res.get("knowledge_id", "")
                         doc_summary = upload_res.get("summary")
                         if k_id:
-                            logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp file thành công: knowledge_id={k_id}")
+                            logger.info("[SCOPE_SYNC] attachment_uploaded file=%s knowledge_id=%s", file_name, k_id)
                 except Exception as e:
-                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý file '{file_name}': {e}", exc_info=True)
+                    logger.error("[SCOPE_SYNC] attachment_failed file=%s error=%s", file_name, e, exc_info=True)
 
             if k_id and not doc_summary:
                 try:
@@ -863,7 +876,7 @@ class ScopeService:
                     if doc_info and doc_info.get("summary"):
                         doc_summary = doc_info["summary"]
                 except Exception as e:
-                    logger.debug(f"Chưa lấy được summary từ WeKnora cho file {file_name}: {e}")
+                    logger.debug("[SCOPE_SYNC] summary_fetch_failed file=%s error=%s", file_name, e)
 
             if k_id:
                 synced_docs.append({
@@ -888,7 +901,7 @@ class ScopeService:
 
             # 6.2.1. Xử lý Thư mục Lark Drive (Drive Folder - đệ quy và deduplicate trước khi tải)
             if link_type == "folder":
-                logger.info(f"📁 [ChatScope Sync] Bắt đầu duyệt danh mục thư mục Lark Drive ({token}) từ Base (tenant={eff_tenant})...")
+                logger.info("[SCOPE_SYNC] folder_scan_start tenant=%s folder_token=%s", eff_tenant, token)
                 try:
                     from services.lark import lark_service
                     import mimetypes
@@ -908,7 +921,7 @@ class ScopeService:
                         return collected
 
                     folder_items = await _collect_folder_items(token)
-                    logger.info(f"📁 [ChatScope Sync] Thư mục {token} chứa {len(folder_items)} tệp (sau khi quét đệ quy).")
+                    logger.info("[SCOPE_SYNC] folder_scan_done folder_token=%s files=%d", token, len(folder_items))
 
                     for item in folder_items:
                         itoken = item.get("token", "")
@@ -947,7 +960,7 @@ class ScopeService:
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
                                         if k_id:
-                                            logger.info(f"✔ [ChatScope Sync] Đã nạp Lark DocX '{doc_name}' vào KB {effective_dataset_id}")
+                                            logger.info("[SCOPE_SYNC] uploaded type=docx file=%s dataset=%s knowledge_id=%s", doc_name, effective_dataset_id, k_id)
                                 elif itype == "wiki":
                                     doc_res = await doc_parser_service.parse_lark_wiki(wiki_token=itoken, tenant_key=eff_tenant)
                                     if doc_res and doc_res.success and doc_res.markdown_content:
@@ -967,18 +980,23 @@ class ScopeService:
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
                                         if k_id:
-                                            logger.info(f"✔ [ChatScope Sync] Đã nạp Lark Wiki '{doc_name}' vào KB {effective_dataset_id}")
+                                            logger.info("[SCOPE_SYNC] uploaded type=wiki file=%s dataset=%s knowledge_id=%s", doc_name, effective_dataset_id, k_id)
                                 elif itype == "file":
                                     # Tệp ngoài (PDF, Word, Excel, CSV, MD...): Tải binary và bắn thẳng sang WeKnora
                                     # WeKnora tự động sử dụng container DocReader nội bộ của nó
-                                    logger.info(f"📥 [ChatScope Sync] Đang tải tệp ngoài '{iname}' ({itoken}) từ Lark Drive...")
+                                    logger.debug("[SCOPE_SYNC] drive_file_downloading name=%s token=%s", iname, itoken)
                                     file_bytes = await lark_service.adownload_drive_file(itoken, tenant_key=eff_tenant)
                                     if file_bytes:
                                         doc_name = iname or f"file_{itoken}"
                                         doc_size = len(file_bytes)
                                         guessed_mime, _ = mimetypes.guess_type(doc_name)
                                         mime_type = guessed_mime or "application/octet-stream"
-                                        logger.info(f"📤 [ChatScope Sync] Đang nạp tệp ngoài '{doc_name}' ({doc_size} bytes, mime={mime_type}) sang WeKnora...")
+                                        logger.debug(
+                                            "[SCOPE_SYNC] drive_file_uploading name=%s bytes=%d mime=%s",
+                                            doc_name,
+                                            doc_size,
+                                            mime_type,
+                                        )
                                         upload_res = await _get_active_weknora().upload_file(
                                             file_name=doc_name,
                                             file_bytes=file_bytes,
@@ -989,9 +1007,14 @@ class ScopeService:
                                         k_id = upload_res.get("knowledge_id", "")
                                         doc_summary = upload_res.get("summary")
                                         if k_id:
-                                            logger.info(f"✔ [ChatScope Sync] Đã nạp tệp ngoài '{doc_name}' thành công vào KB {effective_dataset_id}: k_id={k_id}")
+                                            logger.info(
+                                                "[SCOPE_SYNC] uploaded type=drive_file file=%s dataset=%s knowledge_id=%s",
+                                                doc_name,
+                                                effective_dataset_id,
+                                                k_id,
+                                            )
                             except Exception as file_err:
-                                logger.error(f"❌ [ChatScope Sync] Lỗi khi nạp file '{iname}' ({itoken}): {file_err}")
+                                logger.error("[SCOPE_SYNC] folder_file_failed name=%s token=%s error=%s", iname, itoken, file_err)
 
                         if k_id and not doc_summary:
                             try:
@@ -1014,7 +1037,7 @@ class ScopeService:
                             })
                             knowledge_ids.append(k_id)
                 except Exception as e:
-                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý Lark Folder link '{url}': {e}", exc_info=True)
+                    logger.error("[SCOPE_SYNC] folder_failed url=%s error=%s", url, e, exc_info=True)
                 continue
 
             # 6.2.2. Xử lý tài liệu đơn lẻ DocX & Wiki
@@ -1027,7 +1050,7 @@ class ScopeService:
 
             if not k_id:
                 try:
-                    logger.info(f"📥 [ChatScope Sync] Đang phân giải liên kết Lark {link_type.upper()} ({token}) từ Base...")
+                    logger.debug("[SCOPE_SYNC] link_parsing type=%s token=%s", link_type, token)
                     if link_type == "docx":
                         doc_res = await doc_parser_service.parse_lark_docx(document_id=token, title=title, tenant_key=eff_tenant)
                     elif link_type == "wiki":
@@ -1045,7 +1068,12 @@ class ScopeService:
                         doc_name = safe_name
                         doc_size = len(doc_bytes)
 
-                        logger.info(f"📤 [ChatScope Sync] Đang nạp Lark Doc '{doc_name}' ({doc_size} bytes) sang WeKnora KB {effective_dataset_id}...")
+                        logger.debug(
+                            "[SCOPE_SYNC] link_uploading file=%s bytes=%d dataset=%s",
+                            doc_name,
+                            doc_size,
+                            effective_dataset_id,
+                        )
                         upload_res = await _get_active_weknora().upload_file(
                             file_name=doc_name,
                             file_bytes=doc_bytes,
@@ -1056,18 +1084,24 @@ class ScopeService:
                         k_id = upload_res.get("knowledge_id", "")
                         doc_summary = upload_res.get("summary")
                         if k_id:
-                            logger.info(f"✔ [ChatScope Sync] WeKnora đã nạp Lark Doc thành công: knowledge_id={k_id}")
+                            logger.info(
+                                "[SCOPE_SYNC] uploaded type=%s file=%s dataset=%s knowledge_id=%s",
+                                link_type,
+                                doc_name,
+                                effective_dataset_id,
+                                k_id,
+                            )
                         elif not upload_res.get("success", False):
                             logger.error(
-                                "❌ [ChatScope Sync] WeKnora từ chối nạp Lark Doc '%s': %s",
+                                "[SCOPE_SYNC] upload_rejected file=%s error=%s",
                                 doc_name,
                                 upload_res.get("error") or upload_res,
                             )
                     else:
                         err_msg = doc_res.error if doc_res else "Phân giải tài liệu không thành công"
-                        logger.warning(f"⚠️ [ChatScope Sync] Không thể phân giải Lark {link_type} ({token}): {err_msg}")
+                        logger.warning("[SCOPE_SYNC] link_parse_failed type=%s token=%s error=%s", link_type, token, err_msg)
                 except Exception as e:
-                    logger.error(f"❌ [ChatScope Sync] Lỗi khi xử lý Lark Doc link '{url}': {e}", exc_info=True)
+                    logger.error("[SCOPE_SYNC] link_failed url=%s error=%s", url, e, exc_info=True)
 
             if k_id and not doc_summary:
                 try:
@@ -1075,7 +1109,7 @@ class ScopeService:
                     if doc_info and doc_info.get("summary"):
                         doc_summary = doc_info["summary"]
                 except Exception as e:
-                    logger.debug(f"Chưa lấy được summary từ WeKnora cho Lark Doc {doc_name}: {e}")
+                    logger.debug("[SCOPE_SYNC] summary_fetch_failed file=%s error=%s", doc_name, e)
 
             if k_id:
                 synced_docs.append({
@@ -1125,9 +1159,11 @@ class ScopeService:
         )
 
         logger.info(
-            f"✔ [ChatScope Sync] Đồng bộ thành công nhóm '{chat_name}' ({chat_id}): "
-            f"Trạng thái='{status}', {len(scope_rec.knowledge_ids)} files WeKnora, "
-            f"Nhãn cấm={forbidden_labels}"
+            "[SCOPE_SYNC] record_synced chat_id=%s status=%s files=%d forbidden=%d",
+            chat_id,
+            status,
+            len(scope_rec.knowledge_ids),
+            len(forbidden_labels),
         )
         return scope_rec
 
@@ -1144,12 +1180,12 @@ class ScopeService:
 
         eff_tenant = tenant_key or get_current_tenant_key()
         if not eff_tenant:
-            logger.warning("[ChatScope Sync] Bỏ qua quét toàn bảng Base: không có tenant_key nào.")
+            logger.warning("[SCOPE_SYNC] skipped reason=missing_tenant_key")
             return []
         try:
             resources = await tenant_resolver.resolve(eff_tenant)
         except TenantResolutionError as exc:
-            logger.warning("[ChatScope Sync] Bỏ qua tenant '%s': %s", eff_tenant, exc)
+            logger.warning("[SCOPE_SYNC] tenant_skipped tenant=%s error=%s", eff_tenant, exc)
             return []
 
         try:
@@ -1164,10 +1200,10 @@ class ScopeService:
                 )
                 if rec:
                     results.append(rec)
-            logger.info(f"🎉 [ChatScope Sync] Đã quét và đồng bộ thành công {len(results)} nhóm từ Lark Base của tenant '{eff_tenant}'!")
+            logger.info("[SCOPE_SYNC] completed tenant=%s groups=%d", eff_tenant, len(results))
             return results
         except Exception as e:
-            logger.error(f"Lỗi khi đồng bộ toàn bộ Lark Base: {e}", exc_info=True)
+            logger.error("[SCOPE_SYNC] sync_all_failed tenant=%s error=%s", eff_tenant, e, exc_info=True)
             return []
 
     async def handle_bitable_record_changed_event(self, event_data: Any) -> None:
@@ -1209,7 +1245,7 @@ class ScopeService:
                 if not tenant and app_id:
                     tenant = await t_col.find_one({"app_id": app_id})
             except Exception as t_lookup_err:
-                logger.debug(f"Không thể tra cứu tenant cho bitable change: {t_lookup_err}")
+                logger.debug("[BITABLE_EVENT] tenant_lookup_failed error=%s", t_lookup_err)
 
             is_policy_table = False
             if table_id and tenant and tenant.get("company_policy_table_id") == table_id:
@@ -1217,7 +1253,11 @@ class ScopeService:
 
             # Kiểm tra nếu sự kiện xuất phát từ Bảng Chính Sách Công Ty
             if is_policy_table:
-                logger.info(f"🏛️ [Bitable Realtime Event] Phát hiện thay đổi trong Bảng Chính Sách ({table_id}) -> Kích hoạt Policy Sync!")
+                logger.info(
+                    "[BITABLE_EVENT] policy_table_changed tenant=%s table=%s action=trigger_policy_sync",
+                    tenant.get("tenant_key") if tenant else "-",
+                    table_id,
+                )
                 from services.knowledge.policy_sync import policy_sync_service
                 await policy_sync_service.sync_policies(
                     tenant_key=tenant.get("tenant_key") if tenant else None,
@@ -1229,14 +1269,20 @@ class ScopeService:
                 # Không xác định được chủ sở hữu Base thì dừng: đọc tiếp sẽ phải đoán,
                 # mà đoán sai là ghi dữ liệu nhóm của doanh nghiệp này vào hệ thống của doanh nghiệp khác.
                 logger.warning(
-                    "⚠️ [Bitable Realtime Event] Không tìm thấy tenant sở hữu Base '%s' (table '%s') — bỏ qua sự kiện.",
+                    "[BITABLE_EVENT] tenant_not_found file_token=%s table=%s action=skip",
                     file_token,
                     table_id,
                 )
                 return
 
-            print(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}') của tenant '{tenant.get('tenant_key')}', tiến hành đồng bộ: {record_ids}")
-            logger.info(f"🔄 [Bitable Realtime Event] Phát hiện {len(record_ids)} bản ghi thay đổi trong Base '{file_token}' (table '{table_id}') của tenant '{tenant.get('tenant_key')}', tiến hành đồng bộ: {record_ids}")
+            logger.info(
+                "[BITABLE_EVENT] records_changed tenant=%s file_token=%s table=%s count=%d records=%s",
+                tenant.get("tenant_key"),
+                file_token,
+                table_id,
+                len(record_ids),
+                record_ids,
+            )
             from services.lark.bitable import LarkBaseService
 
             eff_tk = tenant.get("tenant_key") if tenant else tenant_key
@@ -1265,12 +1311,12 @@ class ScopeService:
                     )
                 else:
                     logger.warning(
-                        "⚠️ [Bitable Realtime Event] Không tìm thấy record %s trong bảng %s để đồng bộ.",
+                        "[BITABLE_EVENT] record_not_found record_id=%s table=%s",
                         rid,
                         table_id,
                     )
         except Exception as e:
-            logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
+            logger.error("[BITABLE_EVENT] handle_failed error=%s", e, exc_info=True)
 
     async def start_loop(self, interval_seconds: int = 30) -> None:
         """
@@ -1278,7 +1324,7 @@ class ScopeService:
         Đảm bảo tính nhất quán (Eventual Consistency) ngay cả khi webhook bị trễ hoặc ngắt kết nối.
         """
         import asyncio
-        logger.info(f"⏰ [ScopeSync Loop] Khởi động worker đồng bộ Chat Scopes định kỳ (Chu kỳ {interval_seconds}s).")
+        logger.info("[SCOPE_SYNC] started interval_s=%d source=mongo_tenants", interval_seconds)
         # Chờ 15s sau khi server khởi động để hệ thống bootstrap ổn định
         await asyncio.sleep(15)
         while True:
@@ -1292,12 +1338,12 @@ class ScopeService:
                         try:
                             await self.sync_all_groups_from_base(tenant_key=tk)
                         except Exception as sync_err:
-                            logger.debug(f"[ScopeSync Loop] Lỗi sync tenant {tk}: {sync_err}")
+                            logger.debug("[SCOPE_SYNC] tenant_sync_failed tenant=%s error=%s", tk, sync_err)
             except asyncio.CancelledError:
-                logger.info("[ScopeSync Loop] Đã nhận tín hiệu dừng worker.")
+                logger.info("[SCOPE_SYNC] stopped")
                 break
             except Exception as e:
-                logger.warning(f"[ScopeSync Loop] Lỗi worker: {e}")
+                logger.warning("[SCOPE_SYNC] loop_error error=%s", e)
                 await asyncio.sleep(15)
 
 

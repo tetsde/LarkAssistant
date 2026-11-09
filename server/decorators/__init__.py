@@ -13,9 +13,10 @@ from decorators.cost_telemetry import (
     track_jev_cost,
     current_telemetry_context,
     last_llm_usage,
+    last_jev_usage,
     get_cost_telemetry_summary,
     TelemetryRecord,
-    calculate_gemini_cost,
+    calculate_llm_cost,
 )
 
 __all__ = [
@@ -23,7 +24,8 @@ __all__ = [
     "track_jev_cost",
     "current_telemetry_context",
     "last_llm_usage",
+    "last_jev_usage",
     "get_cost_telemetry_summary",
     "TelemetryRecord",
-    "calculate_gemini_cost",
+    "calculate_llm_cost",
 ]

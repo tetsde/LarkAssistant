@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     await init_http_client()
     # 3. Khởi động token loop (không nạp legacy token vào RAM nữa — xem init_token_on_startup)
     await token_service.init_token_on_startup()
-    # 4. Khởi động Lark Bot Service (WebSocket Client, Event Handlers, Daily Digest Scheduler)
+    # 4. Khởi động Lark Bot Service (Webhook Event Handlers, Chat Queue, Daily Digest Scheduler)
     start_bot_service()
     yield
     # Dọn dẹp an toàn khi tắt server

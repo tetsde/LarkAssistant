@@ -49,7 +49,6 @@ flowchart TD
 - **Cách thức hoạt động:**
   1. Trong môi trường Multi-Tenant sản xuất, hệ thống tiếp nhận sự kiện độc quyền qua Webhook Gateway tại endpoint `/api/lark/events` (hoặc `/api/lark/events/{app_id}`).
   2. Hệ thống phân giải `tenant_key` từ thông tin sự kiện hoặc `app_id` được đăng ký trong collection `lark_app_credentials`, sau đó khởi tạo Scoped Execution Context cho toàn bộ luồng xử lý tiếp theo.
-  3. Cờ `ENABLE_LARK_WEBSOCKET` được mặc định đặt là `false` để tránh xung đột event loop khi chạy đồng thời nhiều kết nối nền trên cùng một tiến trình Python.
 
 ---
 
@@ -121,7 +120,6 @@ flowchart TD
 
 | Tên biến cấu hình | Mặc định | Chức năng |
 | :--- | :---: | :--- |
-| `ENABLE_LARK_WEBSOCKET` | `false` | Bật/tắt chế độ WebSocket ngầm (mặc định tắt, ưu tiên Webhook Gateway). |
 | `DEBOUNCE_DELAY_SECONDS` | `1.75` | Thời gian chờ gom các dòng gõ ngắt quãng của cùng một người dùng. |
 | `USER_COOLDOWN_SECONDS` | `4.0` | Khoảng thời gian giãn cách tối thiểu giữa 2 câu hỏi của cùng một người. |
 | `MAX_CONCURRENT_CHAT_PIPELINES` | `3` | Số pipeline hội thoại được phép chạy đồng thời trên toàn server. |

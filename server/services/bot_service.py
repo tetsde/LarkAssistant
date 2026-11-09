@@ -11,7 +11,6 @@ from services.lark.bot_runner import (  # noqa: F401
     start_bot_service,
     stop_bot_service,
     start_digest_scheduler_daemon,
-    run_standalone_bot,
     lark_service,
     doc_parser_service,
     process_document_to_claims,

@@ -55,7 +55,7 @@ async def close_mongo_connections() -> None:
             _async_client.close()
             closed_any = True
         except Exception as e:
-            logger.debug(f"Lỗi khi đóng Async Motor Client: {e}")
+            logger.debug("[DB] close_async_failed error=%s", e)
         _async_client = None
 
     if _sync_client is not None:
@@ -63,11 +63,11 @@ async def close_mongo_connections() -> None:
             _sync_client.close()
             closed_any = True
         except Exception as e:
-            logger.debug(f"Lỗi khi đóng Sync PyMongo Client: {e}")
+            logger.debug("[DB] close_sync_failed error=%s", e)
         _sync_client = None
 
     if closed_any:
-        logger.info("✔ Đã đóng toàn bộ kết nối MongoDB an toàn.")
+        logger.info("[DB] connections_closed")
 
 
 

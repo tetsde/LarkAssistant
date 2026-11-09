@@ -80,7 +80,7 @@ class TenantTokenSweeper:
         try:
             tenant_keys = await self._ready_tenant_keys()
         except Exception as exc:  # DB lỗi thì chu kỳ sau thử lại
-            logger.warning("⚠️ [SWEEPER] Không đọc được danh sách tenant: %s", exc)
+            logger.warning("[TOKEN_SWEEPER] list_tenants_failed error=%s", exc)
             result["other_errors"] = 1
             result["errors"].append(f"list_tenants: {exc}")
             self._last_result = result
@@ -96,8 +96,7 @@ class TenantTokenSweeper:
                 result["user_token_missing"] += 1
                 result["errors"].append(f"{tenant_key}: user_token_missing")
                 logger.warning(
-                    "⚠️ [SWEEPER] tenant '%s' chưa có User Token hợp lệ, cần uỷ quyền lại "
-                    "qua /auth/lark/login (%s)",
+                    "[TOKEN_SWEEPER] token_missing tenant=%s action=reauth_required error=%s",
                     tenant_key,
                     exc,
                 )
@@ -105,7 +104,7 @@ class TenantTokenSweeper:
                 result["unavailable"] += 1
                 result["errors"].append(f"{tenant_key}: token_unavailable")
                 logger.warning(
-                    "⚠️ [SWEEPER] tenant '%s' không lấy được user token lần này: %s",
+                    "[TOKEN_SWEEPER] token_unavailable tenant=%s error=%s",
                     tenant_key,
                     exc,
                 )
@@ -114,7 +113,7 @@ class TenantTokenSweeper:
                 result["other_errors"] += 1
                 result["errors"].append(f"{tenant_key}: {type(exc).__name__}")
                 logger.info(
-                    "ℹ️ [SWEEPER] Bỏ qua tenant '%s' (%s: %s)",
+                    "[TOKEN_SWEEPER] tenant_skipped tenant=%s error_type=%s error=%s",
                     tenant_key,
                     type(exc).__name__,
                     exc,
@@ -125,17 +124,20 @@ class TenantTokenSweeper:
                 result["other_errors"] += 1
                 result["errors"].append(f"{tenant_key}: {exc}")
                 logger.warning(
-                    "⚠️ [SWEEPER] Lỗi không phân loại cho tenant '%s': %s", tenant_key, exc
+                    "[TOKEN_SWEEPER] tenant_error tenant=%s error=%s", tenant_key, exc
                 )
 
-        logger.info(
-            "🧹 [SWEEPER] completed checked=%d ok=%d missing=%d unavailable=%d other=%d",
-            result["checked"],
-            result["refreshed_or_valid"],
-            result["user_token_missing"],
-            result["unavailable"],
-            result["other_errors"],
-        )
+        if result["checked"] > 0:
+            logger.info(
+                "[TOKEN_SWEEPER] completed checked=%d ok=%d missing=%d unavailable=%d other=%d",
+                result["checked"],
+                result["refreshed_or_valid"],
+                result["user_token_missing"],
+                result["unavailable"],
+                result["other_errors"],
+            )
+        else:
+            logger.debug("[TOKEN_SWEEPER] tick checked=0")
         self._last_result = result
         return result
 
@@ -147,9 +149,8 @@ class TenantTokenSweeper:
         """Chạy cho tới khi `stop()` được gọi; không được tự kết thúc vì một tenant hỏng."""
         self._stop_event = self._stop_event or asyncio.Event()
         logger.info(
-            "🔄 [SWEEPER] Khởi động tenant token sweeper (chu kỳ %.0fs, filter=%s)",
+            "[TOKEN_SWEEPER] started interval_s=%.0f source=mongo_tenants filter=status:ready",
             self.interval_seconds,
-            self.tenant_filter,
         )
         # Chờ server startup xong rồi quét ngay lần đầu để token vừa login không bị bỏ.
         if not await self._sleep_or_stop(5.0):
@@ -158,13 +159,13 @@ class TenantTokenSweeper:
             try:
                 await self.run_once()
             except asyncio.CancelledError:
-                logger.info("⏹️ [SWEEPER] Dừng vòng lặp quét token.")
+                logger.info("[TOKEN_SWEEPER] stopping reason=cancelled")
                 raise
             except Exception as exc:  # pragma: no cover - loop phải sống sót
-                logger.warning("⚠️ [SWEEPER] Chu kỳ lỗi: %s", exc)
+                logger.warning("[TOKEN_SWEEPER] loop_error error=%s", exc)
             if not await self._sleep_or_stop(self.interval_seconds):
                 return
-        logger.info("⏹️ [SWEEPER] Vòng lặp quét token đã dừng.")
+        logger.info("[TOKEN_SWEEPER] stopped")
 
     async def _sleep_or_stop(self, seconds: float) -> bool:
         """True nếu ngủ đủ chu kỳ, False nếu `stop()` được gọi giữa chừng."""

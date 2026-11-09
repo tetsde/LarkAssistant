@@ -26,7 +26,11 @@ from typing import Any, Dict, List, Optional
 from pymongo import ReturnDocument
 
 from core.config import settings
-from database.db import get_setup_sessions_collection, get_system_config_collection
+from database.db import (
+    get_setup_sessions_collection,
+    get_system_config_collection,
+    get_user_settings_collection,
+)
 from models.memory import get_vietnam_now_iso
 from services.auth_service import token_service
 from services.user_settings_service import user_settings_service
@@ -247,7 +251,7 @@ class OneClickSetupService:
             task = self._tasks[task_id]
 
         try:
-            logger.info(f"🚀 [ONE-CLICK SETUP] Bắt đầu pipeline cho task '{task_id}' (code: {code[:6]}...)")
+            logger.info("[ONE_CLICK_SETUP] pipeline_started task_id=%s", task_id)
             # -------------------------------------------------------------
             # BƯỚC 2: Lark Authorization (Hoàn tất)
             # -------------------------------------------------------------
@@ -267,7 +271,7 @@ class OneClickSetupService:
                 status="processing",
                 detail="Đang đổi authorization code lấy Token và trích xuất thông tin doanh nghiệp...",
             )
-            logger.info(f"🔄 [ONE-CLICK SETUP] Task '{task_id}': Đang đổi authorization code...")
+            logger.info("[ONE_CLICK_SETUP] exchanging_code task_id=%s", task_id)
 
             app_registration_id = task.get("app_registration_id")
             app_record = None
@@ -306,7 +310,10 @@ class OneClickSetupService:
             await lark_app_service.link_tenant(app_registration_id, tenant_key, admin_open_id)
             # Ghi tenant_key vào task để except block biết tenant nào cần đánh dấu hỏng.
             task["tenant_key"] = tenant_key
-            logger.info(f"✔ [ONE-CLICK SETUP] Task '{task_id}': Token exchanged. Admin: {admin_name} ({admin_open_id}), Tenant: {tenant_key}")
+            logger.info(
+                "[ONE_CLICK_SETUP] token_exchanged task_id=%s tenant=%s admin=%s",
+                task_id, tenant_key, admin_open_id,
+            )
 
             # Lưu hồ sơ Tenant vào MongoDB Atlas
             # Dry-run (WEKNORA_PROVISION_DRY_RUN) chỉ dành cho dev: dataset_id nó sinh ra là
@@ -324,8 +331,7 @@ class OneClickSetupService:
             }
             if dry_run:
                 logger.warning(
-                    "⚠️ [ONE-CLICK SETUP] WEKNORA_PROVISION_DRY_RUN=True — bỏ qua ghi "
-                    "collection 'tenants' cho '%s' (status=provisioning). Setup chỉ mô phỏng.",
+                    "[ONE_CLICK_SETUP] dry_run=true action=skip_tenant_write tenant=%s status=provisioning",
                     tenant_key,
                 )
             else:
@@ -333,11 +339,55 @@ class OneClickSetupService:
 
             # Lưu đồng bộ vào user_settings & runtime LarkService
             try:
-                await user_settings_service.save_user_settings(
-                    open_id=admin_open_id,
-                    user_name=admin_name,
-                    tenant_key=tenant_key,
-                )
+                existing_settings = None
+                try:
+                    existing_settings = await user_settings_service.get_user_settings(
+                        admin_open_id,
+                        tenant_key=tenant_key,
+                    )
+                except Exception as lookup_err:
+                    logger.debug(
+                        "Không tra cứu được user_settings hiện có cho %s (tenant=%s): %s",
+                        admin_open_id,
+                        tenant_key,
+                        lookup_err,
+                    )
+                    existing_settings = None
+
+                if existing_settings is None:
+                    await user_settings_service.save_user_settings(
+                        open_id=admin_open_id,
+                        user_name=admin_name,
+                        tenant_key=tenant_key,
+                    )
+                else:
+                    # Admin chạy lại setup: không gọi save_user_settings vì sẽ reset
+                    # is_byok_enabled=False; chỉ cập nhật nhẹ metadata và giữ nguyên
+                    # toàn bộ cấu hình BYOK/JEV/Digest hiện có.
+                    existing_user_name = (
+                        existing_settings.get("user_name")
+                        if isinstance(existing_settings, dict)
+                        else getattr(existing_settings, "user_name", None)
+                    )
+                    metadata_updates: Dict[str, Any] = {
+                        "tenant_key": tenant_key,
+                        "updated_at": get_vietnam_now_iso(),
+                    }
+                    if admin_name and (token_res.get("user_name") or not existing_user_name):
+                        metadata_updates["user_name"] = admin_name
+                    await get_user_settings_collection().update_one(
+                        {"open_id": admin_open_id, "tenant_key": tenant_key},
+                        {"$set": metadata_updates},
+                    )
+                    existing_byok = (
+                        existing_settings.get("is_byok_enabled")
+                        if isinstance(existing_settings, dict)
+                        else getattr(existing_settings, "is_byok_enabled", None)
+                    )
+                    logger.info(
+                        "[ONE_CLICK_SETUP] preserved_user_settings tenant=%s admin=%s byok=%s",
+                        tenant_key, admin_open_id, existing_byok,
+                    )
             except Exception as us_err:
                 logger.warning(f"Lỗi khi lưu user_settings trong One-Click Setup: {us_err}")
 
@@ -425,10 +475,10 @@ class OneClickSetupService:
                         ),
                         timeout=20.0,
                     )
-                    logger.info(f"✔ [ONE-CLICK SETUP] Auto-provision Lark Base thành công cho tenant '{tenant_key}'")
+                    logger.info("[ONE_CLICK_SETUP] bitable_provisioned tenant=%s", tenant_key)
                 except Exception as base_err:
                     base_error = base_err
-                    logger.error(f"Lỗi khi khởi tạo Lark Base trong One-Click Setup: {base_err}")
+                    logger.error("[ONE_CLICK_SETUP] bitable_provision_failed tenant=%s error=%s", tenant_key, base_err)
 
             async def _init_weknora():
                 nonlocal weknora_result, weknora_error
@@ -442,10 +492,10 @@ class OneClickSetupService:
                         ),
                         timeout=15.0,
                     )
-                    logger.info(f"✔ [ONE-CLICK SETUP] Auto-provision WeKnora thành công cho tenant '{tenant_key}'")
+                    logger.info("[ONE_CLICK_SETUP] weknora_provisioned tenant=%s", tenant_key)
                 except Exception as weknora_err:
                     weknora_error = weknora_err
-                    logger.error(f"Lỗi khi khởi tạo WeKnora trong One-Click Setup: {weknora_err}")
+                    logger.error("[ONE_CLICK_SETUP] weknora_provision_failed tenant=%s error=%s", tenant_key, weknora_err)
 
             # Chạy song song cả hai tác vụ cấp phát hạ tầng để tối ưu tốc độ hoàn thành dưới 5 giây
             await asyncio.gather(_init_base(), _init_weknora(), return_exceptions=True)
@@ -462,8 +512,7 @@ class OneClickSetupService:
                 # Không dựng URL từ `settings.LARK_BASE_APP_TOKEN`: đó là Base của doanh
                 # nghiệp khác. Bàn giao thiếu URL thì Admin tự mở Base từ bước kế tiếp.
                 logger.warning(
-                    "⚠️ [ONE-CLICK SETUP] Provision Base không trả về app_url cho tenant '%s' "
-                    "— bỏ qua link Base trong thẻ bàn giao thay vì mượn LARK_BASE_APP_TOKEN.",
+                    "[ONE_CLICK_SETUP] bitable_app_url_missing tenant=%s",
                     tenant_key,
                 )
 
@@ -542,9 +591,9 @@ class OneClickSetupService:
                     )
                     if res.get("success"):
                         ping_sent = True
-                        logger.info(f"✔ [ONE-CLICK SETUP] Đã gửi Welcome Card tới Admin {admin_open_id}")
+                        logger.info("[ONE_CLICK_SETUP] welcome_card_sent admin=%s", admin_open_id)
                     else:
-                        logger.warning(f"Lark phản hồi gửi tin nhắn: {res.get('msg')}")
+                        logger.warning("[ONE_CLICK_SETUP] welcome_card_failed error=%s", res.get("msg"))
                 except Exception as ping_err:
                     logger.warning(f"Lỗi khi gửi ping DM tới Admin trong One-Click Setup: {ping_err}")
 
@@ -561,8 +610,7 @@ class OneClickSetupService:
             # -------------------------------------------------------------
             if dry_run:
                 logger.warning(
-                    "⚠️ [ONE-CLICK SETUP] Dry-run đang bật — tenant '%s' KHÔNG được chuyển "
-                    "sang 'ready' vì tài nguyên WeKnora chỉ là dữ liệu giả.",
+                    "[ONE_CLICK_SETUP] dry_run=true action=skip_mark_ready tenant=%s",
                     tenant_key,
                 )
             else:

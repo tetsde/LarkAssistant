@@ -210,7 +210,7 @@ class BaseProvisionService:
         # 1. Nếu đã tự động tạo trước đó -> tái sử dụng
         existing = await self.get_active_base_config(tenant_key=eff_tenant)
         if existing and existing.is_auto_provisioned and existing.app_token:
-            logger.info(f"✔ Đã tồn tại Lark Base quản trị tự động cho tenant '{eff_tenant}': {existing.app_url}")
+            logger.info("[BASE_PROVISION] reused tenant=%s url=%s", eff_tenant, existing.app_url)
             return existing
 
         token = await self._get_tenant_access_token_async(eff_tenant, app_id=app_id, app_secret=app_secret)
@@ -238,7 +238,7 @@ class BaseProvisionService:
             new_app_url = app_info.get("url")
             default_table_id = app_info.get("default_table_id")
 
-            logger.info(f"🎉 Đã khởi tạo Bitable App thành công: app_token={new_app_token}, default_table={default_table_id}")
+            logger.info("[BASE_PROVISION] app_created app_token=%s default_table=%s", new_app_token, default_table_id)
 
             # 3. Cấu hình sạch đẹp Bảng 1: Danh mục Dự án & Nhóm chat
             chat_scope_table_id = default_table_id
@@ -399,7 +399,7 @@ class BaseProvisionService:
                 # 5.1 Cập nhật liên kết công khai trong tổ chức có quyền chỉnh sửa (tenant_editable)
                 public_perm_url = f"{domain}/open-apis/drive/v1/permissions/{new_app_token}/public?type=bitable"
                 await client.patch(public_perm_url, headers=headers, json={"link_share_entity": "tenant_editable"})
-                logger.info(f"✔ Đã cấu hình link_share_entity='tenant_editable' cho Base {new_app_token}")
+                logger.info("[BASE_PROVISION] public_permission_updated app_token=%s link_share=tenant_editable", new_app_token)
             except Exception as pub_err:
                 logger.warning(f"Chưa thể cập nhật public permission cho Base: {pub_err}")
 
@@ -416,7 +416,7 @@ class BaseProvisionService:
                             "perm": "full_access",
                         },
                     )
-                    logger.info(f"✔ Đã cấp quyền Full Access cho Admin: {admin_open_id} trên Base {new_app_token}")
+                    logger.info("[BASE_PROVISION] admin_full_access_granted app_token=%s admin=%s", new_app_token, admin_open_id)
 
                     # 5.3 Chuyển giao quyền Sở hữu (Transfer Ownership) cho Admin
                     transfer_url = f"{domain}/open-apis/drive/v1/permissions/{new_app_token}/members/transfer_owner?type=bitable"
@@ -428,7 +428,7 @@ class BaseProvisionService:
                             "member_id": admin_open_id,
                         },
                     )
-                    logger.info(f"✔ Đã chuyển quyền Sở hữu (Owner) của Base cho Admin: {admin_open_id}")
+                    logger.info("[BASE_PROVISION] ownership_transferred app_token=%s admin=%s", new_app_token, admin_open_id)
                 except Exception as perm_err:
                     logger.warning(f"Lỗi khi phân quyền Admin trên Base: {perm_err}")
 
@@ -460,7 +460,7 @@ class BaseProvisionService:
                 if admin_open_id:
                     t_update["admin_open_id"] = admin_open_id
                 await upsert_tenant_config(t_update)
-                logger.info(f"✔ Đã lưu cấu hình Bitable vào collection 'tenants' cho tenant '{eff_tenant}'")
+                logger.info("[BASE_PROVISION] config_saved tenant=%s collection=tenants", eff_tenant)
             except Exception as e:
                 logger.error(f"Lỗi khi lưu cấu hình Base vào tenant '{eff_tenant}': {e}")
         else:
@@ -483,8 +483,7 @@ class BaseProvisionService:
 
             if not eff_tenant or eff_tenant == "default":
                 logger.info(
-                    "ℹ️ Bỏ kích hoạt runtime Base tức thì: không có tenant tường minh. "
-                    "bootstrap startup sẽ dựng LarkBaseService riêng cho từng tenant."
+                    "[BASE_PROVISION] immediate_sync_skipped reason=missing_tenant",
                 )
             else:
                 base_service = LarkBaseService(
@@ -493,7 +492,7 @@ class BaseProvisionService:
                     table_id=chat_scope_table_id,
                 )
                 logger.info(
-                    "✔ Đã dựng LarkBaseService riêng cho tenant '%s' (app_token=%s, table=%s)",
+                    "[BASE_PROVISION] client_initialized tenant=%s app_token=%s table=%s",
                     eff_tenant, new_app_token, chat_scope_table_id,
                 )
 
@@ -502,7 +501,7 @@ class BaseProvisionService:
                     from services.tenancy.tenant_resolver import tenant_resolver
                     tenant_resolver.invalidate(eff_tenant)
                 except Exception as inv_err:
-                    logger.debug("Không invalidate được resolver cache cho %s: %s", eff_tenant, inv_err)
+                    logger.debug("[BASE_PROVISION] resolver_invalidate_failed tenant=%s error=%s", eff_tenant, inv_err)
 
                 # 1. Đăng ký handler bắt sự kiện Base thay đổi
                 lark_service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
@@ -515,7 +514,7 @@ class BaseProvisionService:
 
                 # 4. Đồng bộ chính sách & tài liệu từ Base vào WeKnora & MongoDB
                 asyncio.create_task(scope_service.sync_all_groups_from_base(tenant_key=eff_tenant))
-                logger.info("✔ Đã kích hoạt toàn bộ luồng kết nối & đồng bộ dữ liệu thời gian thực cho Base mới!")
+                logger.info("[BASE_PROVISION] sync_triggered tenant=%s app_token=%s", eff_tenant, new_app_token)
         except Exception as conn_err:
             logger.warning(f"Chưa thể kết nối runtime Base ngay lập tức: {conn_err}")
 
@@ -604,7 +603,7 @@ class BaseProvisionService:
                 except Exception as e:
                     logger.warning(f"Lỗi khi sửa view Bảng 2 trong repair: {e}")
 
-        logger.info(f"✔ [REPAIR BITABLE SCHEMA] Hoàn tất dọn dẹp Base: {repaired_actions}")
+        logger.info("[BASE_PROVISION] schema_repaired actions=%s", repaired_actions)
         return {"success": True, "actions": repaired_actions}
 
 

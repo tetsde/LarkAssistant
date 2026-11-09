@@ -64,7 +64,7 @@ def get_lark_service_for_tenant(tenant_key: str) -> Optional[Any]:
                 object.__setattr__(svc, "_tenant_key_hint", tenant_key) if hasattr(type(svc), "__slots__") else setattr(svc, "_tenant_key_hint", tenant_key)
                 return svc
     except Exception as e:
-        logger.debug("get_lark_service_for_tenant lookup failed for %s: %s", tenant_key, e)
+        logger.debug("[LARK_RUNTIME] lookup_failed tenant=%s error=%s", tenant_key, e)
     return None
 
 
@@ -72,10 +72,10 @@ def invalidate_lark_service(app_id: Optional[str] = None) -> None:
     """Xóa cache LarkService trong RAM khi App credentials được cập nhật."""
     if app_id:
         _services.pop(app_id, None)
-        logger.info("Đã xóa cache LarkService RAM cho App: %s", app_id)
+        logger.info("[LARK_RUNTIME] cache_invalidated app_id=%s", app_id)
     else:
         _services.clear()
-        logger.info("Đã xóa toàn bộ cache LarkService RAM")
+        logger.info("[LARK_RUNTIME] cache_cleared")
 
 
 async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
@@ -97,7 +97,7 @@ async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
             or service.verification_token != rec_verif
             or service.encrypt_key != rec_encrypt
         ):
-            logger.info("🔄 Phát hiện App %s đã thay đổi khóa/credentials trên UI. Đang tái tạo LarkService mới...", app_id)
+            logger.info("[LARK_RUNTIME] client_rebuilt app_id=%s reason=credentials_changed", app_id)
             service = None
             _services.pop(app_id, None)
 
@@ -116,7 +116,7 @@ async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
                     token_type="user"
                 )
             except Exception as e:
-                logger.warning(f"Không lấy được user token cho tenant {tenant_key}: {e}")
+                logger.warning("[LARK_RUNTIME] user_token_unavailable tenant=%s error=%s", tenant_key, e)
         
         service = LarkService(
             app_id=app_id,
@@ -145,7 +145,7 @@ async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
                     token_type="user"
                 )
             except Exception as e:
-                logger.warning(f"Không lấy được user token cho tenant {tenant_key}: {e}")
+                logger.warning("[LARK_RUNTIME] user_token_unavailable tenant=%s error=%s", tenant_key, e)
         
         if access_token:
             service.user_access_token = access_token

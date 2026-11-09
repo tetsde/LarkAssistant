@@ -1,4 +1,4 @@
-from .ai import jev_service, JevService, llm_client, LLMClient, GeminiClient
+from .ai import jev_service, JevService, llm_client, LLMClient
 from .auth import token_service, LarkTokenService, start_tenant_token_sweeper
 from .knowledge import (
     weknora_service,
@@ -48,7 +48,6 @@ __all__ = [
     "JevService",
     "llm_client",
     "LLMClient",
-    "GeminiClient",
     # Auth Domain
     "token_service",
     "LarkTokenService",

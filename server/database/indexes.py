@@ -110,7 +110,9 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         # 9. COST TELEMETRY (Đo lường chi phí LLM & JEV)
         settings.MONGO_TELEMETRY_COLLECTION: [
             IndexModel([("timestamp", DESCENDING)], name="idx_telemetry_timestamp"),
+            IndexModel([("tenant_key", ASCENDING), ("timestamp", DESCENDING)], sparse=True, name="idx_telemetry_tenant_timestamp"),
             IndexModel([("service", ASCENDING), ("operation", ASCENDING)], name="idx_telemetry_svc_op"),
+            IndexModel([("provider", ASCENDING), ("model", ASCENDING)], name="idx_telemetry_provider_model"),
             IndexModel([("chat_id", ASCENDING)], sparse=True, name="idx_telemetry_chat_id"),
         ],
 
@@ -121,6 +123,7 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("open_id", ASCENDING)], name="idx_user_settings_open_id"),
             IndexModel([("tenant_key", ASCENDING), ("open_id", ASCENDING)], name="idx_user_settings_tenant_open_id"),
             IndexModel([("updated_at", DESCENDING)], name="idx_user_settings_updated_at"),
+            IndexModel([("tenant_key", ASCENDING), ("updated_at", DESCENDING)], name="idx_user_settings_tenant_updated"),
         ],
 
         # 11. SYSTEM CONFIG & AUTO PROVISIONED BITABLE
@@ -195,11 +198,12 @@ async def ensure_database_indexes(db_instance: Any = None) -> Dict[str, List[str
             created_names = await col.create_indexes(index_models)
             results[col_name] = created_names
             total_created += len(created_names)
-            logger.debug(f"✔ Đã đảm bảo {len(created_names)} indexes trên collection '{col_name}'.")
+            logger.debug("[DB_INDEXES] ensured collection=%s count=%d", col_name, len(created_names))
         except OperationFailure as op_err:
             logger.warning(
-                f"⚠️ Lỗi OperationFailure khi tạo index trên '{col_name}': {op_err}. "
-                f"Tiến hành tạo từng index để bỏ qua xung đột..."
+                "[DB_INDEXES] conflict collection=%s error=%s action=fallback_individual",
+                col_name,
+                op_err,
             )
             # Tạo từng index để bảo đảm các index khác vẫn được tạo nếu 1 index gặp xung đột
             for model in index_models:
@@ -208,9 +212,9 @@ async def ensure_database_indexes(db_instance: Any = None) -> Dict[str, List[str
                     results[col_name].extend(name)
                     total_created += 1
                 except Exception as ex:
-                    logger.warning(f"  - Không thể tạo index {model.document}: {ex}")
+                    logger.warning("[DB_INDEXES] create_failed index=%s error=%s", model.document, ex)
         except Exception as e:
-            logger.error(f"❌ Exception khi tạo index cho '{col_name}': {e}", exc_info=True)
+            logger.error("[DB_INDEXES] create_error collection=%s error=%s", col_name, e, exc_info=True)
 
-    logger.info(f"✅ [DATABASE INDEXES] Đã đảm bảo thành công {total_created} indexes trên {len(specs)} collections.")
+    logger.info("[DB_INDEXES] ensured=%d collections=%d", total_created, len(specs))
     return results

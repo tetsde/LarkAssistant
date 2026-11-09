@@ -212,12 +212,14 @@
         }
 
         .feat-title {
+            display: block;
             font-size: 13.5px;
             font-weight: 600;
             color: var(--text-primary);
         }
 
         .feat-desc {
+            display: block;
             font-size: 12.5px;
             color: var(--text-secondary);
             line-height: 1.4;
@@ -920,8 +922,21 @@
             transition: background 0.15s;
         }
 
+        button.custom-header {
+            width: 100%;
+            border: none;
+            text-align: left;
+            font: inherit;
+            color: inherit;
+        }
+
         .custom-header:hover {
             background: var(--surface-secondary);
+        }
+
+        .custom-header:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: -2px;
         }
 
         .custom-header-left {
@@ -929,6 +944,10 @@
             align-items: center;
             gap: 12px;
             text-align: left;
+        }
+
+        .custom-header-text {
+            display: block;
         }
 
         .custom-icon {
@@ -949,12 +968,14 @@
         }
 
         .custom-title {
+            display: block;
             font-size: 13.5px;
             font-weight: 700;
             color: var(--text-primary);
         }
 
         .custom-subtitle {
+            display: block;
             font-size: 11.5px;
             color: var(--text-secondary);
             margin-top: 1px;
@@ -998,8 +1019,34 @@
             margin-bottom: 10px;
         }
 
+        .visually-hidden {
+            position: absolute;
+            clip-path: inset(50%);
+            overflow: hidden;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            border: 0;
+            white-space: nowrap;
+        }
+
+        .input-hint {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 5px;
+            line-height: 1.4;
+        }
+
+        .mode-fieldset {
+            border: none;
+            padding: 0;
+            margin: 0;
+        }
+
         /* Option Cards (From Onboarding Slide 2) */
         .option-card {
+            position: relative;
             border: 1px solid var(--border);
             border-radius: var(--radius-md);
             padding: 12px 14px;
@@ -1020,6 +1067,21 @@
         .option-card.selected {
             background: var(--accent-light);
             border-color: var(--accent);
+        }
+
+        .option-card:has(input:focus-visible) {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+            border-color: var(--accent);
+        }
+
+        .option-card input.visually-hidden:focus-visible {
+            outline: none;
+        }
+
+        .option-card-body {
+            display: block;
+            min-width: 0;
         }
 
         .radio-circle {
@@ -1101,6 +1163,13 @@
             box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         }
 
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
         .input-wrapper {
             display: flex;
             background: var(--surface);
@@ -1115,14 +1184,24 @@
             box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         }
 
+        .input-wrapper:has(.key-input:focus-visible) {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
         .key-input {
             flex: 1;
+            min-width: 0;
             background: transparent;
             border: none;
             padding: 9px 12px;
             color: var(--text-primary);
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 13px;
+            outline: none;
+        }
+
+        .key-input:focus-visible {
             outline: none;
         }
 
@@ -1136,9 +1215,14 @@
             padding: 0 12px;
         }
 
+        .btn-input-action:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: -2px;
+        }
+
         .form-grid-2 {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 10px;
             margin-bottom: 10px;
         }
@@ -1150,7 +1234,10 @@
             font-weight: 500;
             padding: 4px 8px;
             border-radius: var(--radius-sm);
-            margin-left: 10px;
+        }
+
+        .test-feedback:empty {
+            display: none;
         }
 
         .test-feedback.success {
@@ -1570,87 +1657,155 @@
 
     <!-- 3. PROGRESSIVE CUSTOMIZATION PANEL (BẢNG CẤU HÌNH TRỢ LÝ) -->
     <div class="custom-panel fade-in" id="customPanel" style="display: none;">
-        <div class="custom-header" onclick="toggleCustomSection()">
-                <div class="custom-header-left">
-                    <div class="custom-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <button type="button" class="custom-header" id="customHeaderToggle" aria-expanded="false" aria-controls="customBody">
+                <span class="custom-header-left">
+                    <span class="custom-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                             <circle cx="12" cy="12" r="3"></circle>
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                         </svg>
-                    </div>
-                    <div>
-                        <div class="custom-title">Tùy Chỉnh Nâng Cao (Tùy chọn)</div>
-                        <div class="custom-subtitle">Bộ não AI, khóa riêng (BYOK), giờ nhận báo cáo &amp; kiểm duyệt</div>
-                    </div>
-                </div>
-                <div class="custom-chevron" id="customChevron">
+                    </span>
+                    <span class="custom-header-text">
+                        <span class="custom-title">Tùy Chỉnh Nâng Cao (Tùy chọn)</span>
+                        <span class="custom-subtitle">Bộ não AI, khóa riêng (BYOK), giờ nhận báo cáo &amp; kiểm duyệt</span>
+                    </span>
+                </span>
+                <span class="custom-chevron" id="customChevron" aria-hidden="true">
                     <svg viewBox="0 0 20 20" fill="currentColor">
                         <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
                     </svg>
-                </div>
-            </div>
+                </span>
+            </button>
 
             <div class="custom-body" id="customBody" style="display: none;">
                 <!-- KHỐI 1: BỘ NÃO AI & BYOK (TỪ ONBOARDING SLIDE 2) -->
                 <div class="form-section">
                     <div class="section-heading">Bộ Não AI &amp; Mô Hình Ngôn Ngữ (LLM)</div>
 
-                    <div class="option-card selected" id="optSystemKey" onclick="setByokMode(false)">
-                        <div class="radio-circle"></div>
-                        <div>
-                            <div class="feat-title">Hạn mức mặc định của hệ thống</div>
-                            <div class="feat-desc">Sử dụng Google Gemini đã tích hợp sẵn. Doanh nghiệp không cần cấu hình thêm.</div>
-                        </div>
-                    </div>
+                    <fieldset class="mode-fieldset">
+                        <legend class="visually-hidden">Chế độ khóa API LLM</legend>
+                        <label class="option-card selected" id="optSystemKey" for="radioLlmSystem">
+                            <input type="radio" id="radioLlmSystem" name="llm_mode_choice" value="system" class="visually-hidden" checked>
+                            <span class="radio-circle" aria-hidden="true"></span>
+                            <span class="option-card-body">
+                                <span class="feat-title">Hạn mức mặc định của hệ thống</span>
+                                <span class="feat-desc">Sử dụng Google Gemini (Gemini Flash Latest) đã tích hợp sẵn. Doanh nghiệp không cần cấu hình thêm.</span>
+                            </span>
+                        </label>
 
-                    <div class="option-card" id="optByok" onclick="setByokMode(true)">
-                        <div class="radio-circle"></div>
-                        <div>
-                            <div class="feat-title">Tự cấu hình khóa riêng (BYOK)</div>
-                            <div class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</div>
-                        </div>
-                    </div>
+                        <label class="option-card" id="optByok" for="radioLlmByok">
+                            <input type="radio" id="radioLlmByok" name="llm_mode_choice" value="byok" class="visually-hidden">
+                            <span class="radio-circle" aria-hidden="true"></span>
+                            <span class="option-card-body">
+                                <span class="feat-title">Tự cấu hình khóa riêng (BYOK)</span>
+                                <span class="feat-desc">Hỗ trợ ChatGPT, Anthropic, Google hoặc nhà cung cấp tùy chỉnh với hạn mức riêng.</span>
+                            </span>
+                        </label>
+                    </fieldset>
 
                     <!-- BYOK Form Fields -->
                     <div class="form-group-box" id="byokInputGroup" style="display: none;">
-                        <label class="input-label">Nhà cung cấp (Provider):</label>
-                        <select id="llmProviderSelect" class="custom-select" onchange="onProviderSelect()" style="margin-bottom: 12px;">
+                        <label class="input-label" for="llmProviderSelect">Nhà cung cấp (Provider):</label>
+                        <select id="llmProviderSelect" name="llm_provider" class="custom-select" style="margin-bottom: 12px;">
                             <option value="google">Google (Gemini)</option>
                             <option value="openai">ChatGPT (OpenAI)</option>
                             <option value="anthropic">Anthropic (Claude)</option>
                             <option value="custom">Tùy chỉnh (Khác / OpenAI-Compatible)</option>
                         </select>
 
-                        <label class="input-label">Khóa API (API Key):</label>
-                        <div class="input-wrapper" style="margin-bottom: 12px;">
-                            <input type="password" id="geminiKeyInput" class="key-input" placeholder="Nhập API Key">
-                            <button type="button" class="btn-input-action" id="btnToggleKey" onclick="toggleKeyVisibility()">Hiện</button>
+                        <label class="input-label" for="llmKeyInput">Khóa API (API Key):</label>
+                        <div class="input-wrapper" style="margin-bottom: 8px;">
+                            <input type="password" id="llmKeyInput" name="llm_api_key" class="key-input" placeholder="Nhập API Key" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false">
+                            <button type="button" class="btn-input-action" id="btnToggleKey" aria-pressed="false" aria-label="Hiện khóa API LLM">Hiện</button>
+                        </div>
+                        <div id="llmSavedKeyHint" class="input-hint" style="display: none; margin-bottom: 8px;">Đã lưu khóa hiện tại: <code id="llmMaskedKeyCode"></code> (để trống ô trên nếu giữ nguyên khóa cũ).</div>
+
+                        <div id="llmGeminiModelWrap" style="margin-bottom: 10px;">
+                            <label class="input-label" for="llmGeminiModelSelect">Mô hình Gemini (2.5 → 3.8):</label>
+                            <select id="llmGeminiModelSelect" name="llm_gemini_model" class="custom-select">
+                                <option value="gemini-flash-latest" selected>Gemini Flash Latest (Mặc định)</option>
+                                <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                                <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+                                <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                                <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                                <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                                <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                                <option value="gemini-3-flash">Gemini 3 Flash</option>
+                                <option value="gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                                <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</option>
+                                <option value="__custom__">Tự nhập tên mô hình...</option>
+                            </select>
                         </div>
 
                         <div class="form-grid-2">
-                            <div>
-                                <label class="input-label">Tên mô hình (Model):</label>
-                                <input type="text" id="llmModelInput" class="form-input" placeholder="gemini-2.0-flash">
+                            <div id="llmCustomModelWrap" style="display: none;">
+                                <label class="input-label" for="llmModelInput" id="llmModelInputLabel">Tên mô hình (Model):</label>
+                                <input type="text" id="llmModelInput" name="llm_model" class="form-input" placeholder="gemini-flash-latest" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                             </div>
                             <div>
-                                <label class="input-label">Thời gian chờ (Timeout - giây):</label>
-                                <input type="number" id="llmTimeoutInput" class="form-input" min="5" max="300" value="60">
+                                <label class="input-label" for="llmTimeoutInput">Thời gian chờ (Timeout - giây):</label>
+                                <input type="number" id="llmTimeoutInput" name="llm_timeout" class="form-input" min="5" max="300" value="60">
                             </div>
                         </div>
 
-                        <label class="input-label">Base URL (Tùy chọn):</label>
-                        <input type="text" id="llmBaseUrlInput" class="form-input" placeholder="https://generativelanguage.googleapis.com" style="margin-bottom: 12px;">
+                        <label class="input-label" for="llmBaseUrlInput">Base URL (Tùy chọn):</label>
+                        <input type="text" id="llmBaseUrlInput" name="llm_base_url" class="form-input" placeholder="https://generativelanguage.googleapis.com" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="margin-bottom: 12px;">
 
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <button type="button" id="btnTestKey" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;" onclick="testApiKeyLive()">
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" id="btnTestKey" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;">
                                 Kiểm tra kết nối
                             </button>
-                            <span id="testFeedback"></span>
+                            <span id="testFeedback" class="test-feedback" aria-live="polite"></span>
                         </div>
                     </div>
                 </div>
 
-                <!-- KHỐI 2: DAILY DIGEST & HITL (TỪ ONBOARDING SLIDE 3) -->
+                <!-- KHỐI 2: BỘ LỌC TIN NHẮN THÔNG MINH (JEV SYSTEM 1) -->
+                <div class="form-section" id="jevByokSection">
+                    <div class="section-heading">Bộ Lọc Tin Nhắn Thông Minh (JEV System 1)</div>
+
+                    <fieldset class="mode-fieldset">
+                        <legend class="visually-hidden">Chế độ khóa API JEV System 1</legend>
+                        <label class="option-card selected" id="optJevSystemKey" for="radioJevSystem">
+                            <input type="radio" id="radioJevSystem" name="jev_mode_choice" value="system" class="visually-hidden" checked>
+                            <span class="radio-circle" aria-hidden="true"></span>
+                            <span class="option-card-body">
+                                <span class="feat-title">Hạn mức mặc định của hệ thống</span>
+                                <span class="feat-desc">Sử dụng JEV System 1 mặc định của hệ thống để phân loại và lọc tin nhắn tự động.</span>
+                            </span>
+                        </label>
+
+                        <label class="option-card" id="optJevByok" for="radioJevByok">
+                            <input type="radio" id="radioJevByok" name="jev_mode_choice" value="byok" class="visually-hidden">
+                            <span class="radio-circle" aria-hidden="true"></span>
+                            <span class="option-card-body">
+                                <span class="feat-title">Tự cấu hình JEV Key riêng (BYOK)</span>
+                                <span class="feat-desc">Sử dụng khóa API JEV riêng của doanh nghiệp (mô hình jev-latest) để chủ động hạn mức xử lý.</span>
+                            </span>
+                        </label>
+                    </fieldset>
+
+                    <div class="form-group-box" id="jevByokInputGroup" style="display: none;">
+                        <label class="input-label" for="jevKeyInput">Khóa API JEV System 1:</label>
+                        <div class="input-wrapper" style="margin-bottom: 8px;">
+                            <input type="password" id="jevKeyInput" name="jev_api_key" class="key-input" placeholder="Nhập JEV API Key" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false">
+                            <button type="button" class="btn-input-action" id="btnToggleJevKey" aria-pressed="false" aria-label="Hiện khóa API JEV">Hiện</button>
+                        </div>
+                        <div id="jevSavedKeyHint" class="input-hint" style="display: none; margin-bottom: 8px;">Đã lưu khóa hiện tại: <code id="jevMaskedKeyCode"></code> (để trống ô trên nếu giữ nguyên khóa cũ).</div>
+                        <div id="jevKeyHint" class="input-hint" style="margin-bottom: 12px;">Kết nối tới endpoint chuẩn <code>https://api.typesafe.ai/v1/systemone</code> với mô hình <code>jev-latest</code>.</div>
+
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <button type="button" id="btnTestJevKey" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;">
+                                Kiểm tra JEV Key
+                            </button>
+                            <span id="jevTestFeedback" class="test-feedback" aria-live="polite"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- KHỐI 3: DAILY DIGEST & HITL (TỪ ONBOARDING SLIDE 3) -->
                 <div class="form-section">
                     <div class="section-heading">Lịch Nhận Báo Cáo &amp; Kiểm Duyệt</div>
 
@@ -1659,12 +1814,12 @@
                     <div id="digestTimeHelp" class="input-hint">Bạn có thể chọn bất kỳ giờ nào trong ngày. Mặc định: 18:00.</div>
 
                     <div class="setting-card">
-                        <label class="setting-label-flex">
+                        <label class="setting-label-flex" for="hitlCheckbox">
                             <input type="checkbox" id="hitlCheckbox" checked>
-                            <div>
-                                <div style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</div>
-                                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</div>
-                            </div>
+                            <span style="display: block;">
+                                <span style="display: block; font-size: 13px; font-weight: 600; color: var(--text-primary);">Bật chế độ kiểm duyệt an toàn (Strict HITL)</span>
+                                <span style="display: block; font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4;">Mọi câu trả lời nhạy cảm và báo cáo ngày phải được bạn duyệt trước khi gửi công khai.</span>
+                            </span>
                         </label>
                     </div>
                 </div>
@@ -1734,10 +1889,10 @@
 
                 <!-- NÚT LƯU THAY ĐỔI -->
                 <div class="save-actions">
-                    <button type="button" class="btn-primary" id="btnSaveCustom" onclick="saveCustomSettings()">
+                    <button type="button" class="btn-primary" id="btnSaveCustom">
                         Lưu Thay Đổi Cấu Hình
                     </button>
-                    <div id="saveFeedback" class="save-feedback"></div>
+                    <div id="saveFeedback" class="save-feedback" aria-live="polite"></div>
                 </div>
             </div>
         </div>
@@ -1753,8 +1908,31 @@
     let currentTaskId = INITIAL_TASK_ID;
     let pollTimer = null;
     let isByokEnabled = false;
+    let isJevByokEnabled = false;
     let currentAdminOpenId = SERVER_OPEN_ID || "";
     let currentTenantKey = SERVER_TENANT_KEY || "";
+
+    const DEFAULT_GEMINI_MODEL = "gemini-flash-latest";
+    const DEFAULT_MODEL_BY_PROVIDER = {
+        google: "gemini-flash-latest",
+        openai: "gpt-4o-mini",
+        anthropic: "claude-3-5-sonnet-20241022",
+        custom: "gpt-3.5-turbo"
+    };
+    const DEFAULT_GEMINI_MODEL_OPTIONS = [
+        { id: "gemini-flash-latest", label: "Gemini Flash Latest (Mặc định)", is_default: true },
+        { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", is_default: false },
+        { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", is_default: false },
+        { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", is_default: false },
+        { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", is_default: false },
+        { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview", is_default: false },
+        { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", is_default: false },
+        { id: "gemini-3-flash", label: "Gemini 3 Flash", is_default: false },
+        { id: "gemini-3-pro-preview", label: "Gemini 3 Pro Preview", is_default: false },
+        { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", is_default: false },
+        { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", is_default: false },
+        { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", is_default: false }
+    ];
 
     /* ================== GUIDE CONFIG ==================
        Request URL cho Event & Callback trong HiLark là /api/lark/events.
@@ -2220,80 +2398,255 @@
     function toggleCustomSection() {
         const body = document.getElementById("customBody");
         const chevron = document.getElementById("customChevron");
+        const toggleBtn = document.getElementById("customHeaderToggle");
+        if (!body) return;
         const isHidden = body.style.display === "none";
         body.style.display = isHidden ? "block" : "none";
-        if (isHidden) {
-            chevron.classList.add("open");
-        } else {
-            chevron.classList.remove("open");
+        if (chevron) chevron.classList.toggle("open", isHidden);
+        if (toggleBtn) toggleBtn.setAttribute("aria-expanded", isHidden ? "true" : "false");
+    }
+
+    // BYOK Mode Switcher (LLM)
+    function setByokMode(enabled) {
+        isByokEnabled = Boolean(enabled);
+        const optSys = document.getElementById("optSystemKey");
+        const optByok = document.getElementById("optByok");
+        const radioSys = document.getElementById("radioLlmSystem");
+        const radioByok = document.getElementById("radioLlmByok");
+        const group = document.getElementById("byokInputGroup");
+
+        if (optSys) optSys.classList.toggle("selected", !isByokEnabled);
+        if (optByok) optByok.classList.toggle("selected", isByokEnabled);
+        if (radioSys) radioSys.checked = !isByokEnabled;
+        if (radioByok) radioByok.checked = isByokEnabled;
+        if (group) group.style.display = isByokEnabled ? "block" : "none";
+    }
+
+    // BYOK Mode Switcher (JEV System 1)
+    function setJevByokMode(enabled) {
+        isJevByokEnabled = Boolean(enabled);
+        const optSys = document.getElementById("optJevSystemKey");
+        const optByok = document.getElementById("optJevByok");
+        const radioSys = document.getElementById("radioJevSystem");
+        const radioByok = document.getElementById("radioJevByok");
+        const group = document.getElementById("jevByokInputGroup");
+
+        if (optSys) optSys.classList.toggle("selected", !isJevByokEnabled);
+        if (optByok) optByok.classList.toggle("selected", isJevByokEnabled);
+        if (radioSys) radioSys.checked = !isJevByokEnabled;
+        if (radioByok) radioByok.checked = isJevByokEnabled;
+        if (group) group.style.display = isJevByokEnabled ? "block" : "none";
+    }
+
+    // Populate Gemini 2.5 -> 3.8 model options dynamically while preserving __custom__
+    function populateGeminiModelOptions(models, defaultModel) {
+        const select = document.getElementById("llmGeminiModelSelect");
+        if (!select) return;
+
+        const list = Array.isArray(models) && models.length > 0 ? models : DEFAULT_GEMINI_MODEL_OPTIONS;
+        const fallbackDefault = defaultModel || DEFAULT_GEMINI_MODEL;
+        const previousVal = select.value;
+
+        select.innerHTML = "";
+        const seen = new Set();
+        let chosenDefault = null;
+
+        list.forEach((item) => {
+            const id = typeof item === "string"
+                ? item.trim()
+                : (item && item.id ? String(item.id).trim() : "");
+            if (!id || id === "__custom__" || seen.has(id)) return;
+            seen.add(id);
+
+            const label = typeof item === "string"
+                ? id
+                : (item.label ? String(item.label) : id);
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = label;
+            if (id === fallbackDefault || (item && item.is_default && !chosenDefault)) {
+                chosenDefault = id;
+            }
+            select.appendChild(opt);
+        });
+
+        const customOpt = document.createElement("option");
+        customOpt.value = "__custom__";
+        customOpt.textContent = "Tự nhập tên mô hình...";
+        select.appendChild(customOpt);
+
+        if (previousVal && (seen.has(previousVal) || previousVal === "__custom__")) {
+            select.value = previousVal;
+        } else if (chosenDefault && seen.has(chosenDefault)) {
+            select.value = chosenDefault;
+        } else if (seen.has(DEFAULT_GEMINI_MODEL)) {
+            select.value = DEFAULT_GEMINI_MODEL;
+        } else if (select.options.length > 0) {
+            select.selectedIndex = 0;
         }
     }
 
-    // BYOK Mode Switcher
-    function setByokMode(enabled) {
-        isByokEnabled = enabled;
-        const optSys = document.getElementById("optSystemKey");
-        const optByok = document.getElementById("optByok");
-        const group = document.getElementById("byokInputGroup");
+    // Effective LLM model from Gemini preset dropdown or custom text input
+    function getEffectiveLlmModel() {
+        const prov = (document.getElementById("llmProviderSelect")?.value || "google").trim().toLowerCase();
+        const geminiSelect = document.getElementById("llmGeminiModelSelect");
+        const modelInput = document.getElementById("llmModelInput");
 
-        if (enabled) {
-            optSys.classList.remove("selected");
-            optByok.classList.add("selected");
-            group.style.display = "block";
+        if (prov === "google") {
+            const selected = geminiSelect ? geminiSelect.value : DEFAULT_GEMINI_MODEL;
+            if (selected && selected !== "__custom__") {
+                return selected;
+            }
+            return (modelInput?.value || "").trim();
+        }
+        return (modelInput?.value || "").trim();
+    }
+
+    // Gemini preset dropdown changer
+    function onGeminiModelSelect(isUserTriggered = false) {
+        const prov = (document.getElementById("llmProviderSelect")?.value || "google").trim().toLowerCase();
+        const geminiSelect = document.getElementById("llmGeminiModelSelect");
+        const customWrap = document.getElementById("llmCustomModelWrap");
+        const modelInput = document.getElementById("llmModelInput");
+        const modelLabel = document.getElementById("llmModelInputLabel");
+        if (!geminiSelect) return;
+
+        if (prov !== "google") {
+            if (customWrap) customWrap.style.display = "block";
+            if (modelLabel) modelLabel.textContent = "Tên mô hình (Model):";
+            return;
+        }
+
+        const val = geminiSelect.value;
+        if (val === "__custom__") {
+            if (customWrap) customWrap.style.display = "block";
+            if (modelLabel) modelLabel.textContent = "Tên mô hình Gemini tùy chỉnh:";
+            if (isUserTriggered && modelInput) {
+                const isPreset = Array.from(geminiSelect.options).some(
+                    (o) => o.value !== "__custom__" && o.value === modelInput.value.trim()
+                );
+                if (isPreset) {
+                    modelInput.value = "";
+                }
+                modelInput.focus();
+            }
         } else {
-            optByok.classList.remove("selected");
-            optSys.classList.add("selected");
-            group.style.display = "none";
+            if (customWrap) customWrap.style.display = "none";
+            if (modelLabel) modelLabel.textContent = "Tên mô hình (Model):";
+            if (modelInput) modelInput.value = val;
         }
     }
 
     // Provider select changer
-    function onProviderSelect() {
-        const prov = document.getElementById("llmProviderSelect").value;
+    function onProviderSelect(isUserTriggered = false) {
+        const provSelect = document.getElementById("llmProviderSelect");
+        const prov = (provSelect?.value || "google").trim().toLowerCase();
+        const geminiWrap = document.getElementById("llmGeminiModelWrap");
+        const geminiSelect = document.getElementById("llmGeminiModelSelect");
+        const customWrap = document.getElementById("llmCustomModelWrap");
         const modelInput = document.getElementById("llmModelInput");
+        const modelLabel = document.getElementById("llmModelInputLabel");
         const urlInput = document.getElementById("llmBaseUrlInput");
+        const keyInput = document.getElementById("llmKeyInput");
+        const savedHint = document.getElementById("llmSavedKeyHint");
+        const maskedCode = document.getElementById("llmMaskedKeyCode");
+        const testFb = document.getElementById("testFeedback");
+
+        if (isUserTriggered === true) {
+            if (urlInput) urlInput.value = "";
+            if (keyInput) keyInput.value = "";
+            if (savedHint) savedHint.style.display = "none";
+            if (maskedCode) maskedCode.textContent = "";
+            if (testFb) {
+                testFb.className = "test-feedback";
+                testFb.textContent = "";
+            }
+            if (prov === "google") {
+                if (geminiSelect) geminiSelect.value = DEFAULT_GEMINI_MODEL;
+                if (modelInput) modelInput.value = DEFAULT_GEMINI_MODEL;
+            } else if (modelInput) {
+                modelInput.value = "";
+            }
+        }
+
+        if (modelInput) {
+            modelInput.placeholder = DEFAULT_MODEL_BY_PROVIDER[prov] || "custom-model";
+        }
+        if (urlInput) {
+            if (prov === "google") {
+                urlInput.placeholder = "https://generativelanguage.googleapis.com";
+            } else if (prov === "openai") {
+                urlInput.placeholder = "https://api.openai.com/v1";
+            } else if (prov === "anthropic") {
+                urlInput.placeholder = "https://api.anthropic.com/v1";
+            } else {
+                urlInput.placeholder = "https://your-custom-llm-proxy.com/v1";
+            }
+        }
 
         if (prov === "google") {
-            modelInput.placeholder = "gemini-2.0-flash";
-            urlInput.placeholder = "https://generativelanguage.googleapis.com";
-        } else if (prov === "openai") {
-            modelInput.placeholder = "gpt-4o";
-            urlInput.placeholder = "https://api.openai.com/v1";
-        } else if (prov === "anthropic") {
-            modelInput.placeholder = "claude-3-5-sonnet-20241022";
-            urlInput.placeholder = "https://api.anthropic.com/v1";
+            if (geminiWrap) geminiWrap.style.display = "block";
+            const isCustom = geminiSelect && geminiSelect.value === "__custom__";
+            if (customWrap) customWrap.style.display = isCustom ? "block" : "none";
+            if (modelLabel) {
+                modelLabel.textContent = isCustom ? "Tên mô hình Gemini tùy chỉnh:" : "Tên mô hình (Model):";
+            }
         } else {
-            modelInput.placeholder = "custom-model";
-            urlInput.placeholder = "https://your-custom-llm-proxy.com/v1";
+            if (geminiWrap) geminiWrap.style.display = "none";
+            if (customWrap) customWrap.style.display = "block";
+            if (modelLabel) modelLabel.textContent = "Tên mô hình (Model):";
         }
     }
 
-    // Show/Hide password
+    // Show/Hide password (LLM)
     function toggleKeyVisibility() {
-        const inp = document.getElementById("geminiKeyInput");
+        const inp = document.getElementById("llmKeyInput");
         const btn = document.getElementById("btnToggleKey");
+        if (!inp || !btn) return;
         if (inp.type === "password") {
             inp.type = "text";
             btn.textContent = "Ẩn";
+            btn.setAttribute("aria-pressed", "true");
+            btn.setAttribute("aria-label", "Ẩn khóa API LLM");
         } else {
             inp.type = "password";
             btn.textContent = "Hiện";
+            btn.setAttribute("aria-pressed", "false");
+            btn.setAttribute("aria-label", "Hiện khóa API LLM");
         }
     }
 
-    // Live Test API Key
+    // Show/Hide password (JEV)
+    function toggleJevKeyVisibility() {
+        const inp = document.getElementById("jevKeyInput");
+        const btn = document.getElementById("btnToggleJevKey");
+        if (!inp || !btn) return;
+        if (inp.type === "password") {
+            inp.type = "text";
+            btn.textContent = "Ẩn";
+            btn.setAttribute("aria-pressed", "true");
+            btn.setAttribute("aria-label", "Ẩn khóa API JEV");
+        } else {
+            inp.type = "password";
+            btn.textContent = "Hiện";
+            btn.setAttribute("aria-pressed", "false");
+            btn.setAttribute("aria-label", "Hiện khóa API JEV");
+        }
+    }
+
+    // Live Test API Key (LLM)
     async function testApiKeyLive() {
         const btn = document.getElementById("btnTestKey");
         const fb = document.getElementById("testFeedback");
-        const key = document.getElementById("geminiKeyInput").value.trim();
+        const key = document.getElementById("llmKeyInput").value.trim();
         const provider = document.getElementById("llmProviderSelect").value;
-        const model = document.getElementById("llmModelInput").value.trim();
+        const model = getEffectiveLlmModel();
         const baseUrl = document.getElementById("llmBaseUrlInput").value.trim();
         const timeoutVal = parseFloat(document.getElementById("llmTimeoutInput").value) || 30.0;
 
         if (!key) {
             fb.className = "test-feedback error";
-            fb.textContent = "Vui lòng nhập API Key trước.";
+            fb.textContent = "✖ Vui lòng nhập API Key trước.";
             return;
         }
 
@@ -2315,20 +2668,77 @@
                 })
             });
 
-            const data = await resp.json();
-            if (data.success) {
+            let data = {};
+            try {
+                data = await resp.json();
+            } catch (_) {
+                data = {};
+            }
+            if (resp.ok && data.success) {
                 fb.className = "test-feedback success";
-                fb.textContent = `Thành công (${data.latency_ms} ms)`;
+                fb.textContent = `✔ Thành công (${data.latency_ms ?? 0} ms)`;
             } else {
                 fb.className = "test-feedback error";
-                fb.textContent = data.message || "Kết nối thất bại";
+                const msg = data.detail || data.message || `Kết nối thất bại (HTTP ${resp.status})`;
+                fb.textContent = msg.startsWith("✖") ? msg : `✖ ${msg}`;
             }
         } catch (err) {
             fb.className = "test-feedback error";
-            fb.textContent = "Lỗi kết nối: " + err.message;
+            fb.textContent = `✖ Lỗi kết nối: ${err.message}`;
         } finally {
             btn.disabled = false;
             btn.textContent = "Kiểm tra kết nối";
+        }
+    }
+
+    // Live Test API Key (JEV System 1)
+    async function testJevKeyLive() {
+        const btn = document.getElementById("btnTestJevKey");
+        const fb = document.getElementById("jevTestFeedback");
+        const key = document.getElementById("jevKeyInput").value.trim();
+
+        if (!key) {
+            fb.className = "test-feedback error";
+            fb.textContent = "✖ Vui lòng nhập JEV API Key trước.";
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = "Đang kiểm tra...";
+        fb.className = "test-feedback";
+        fb.textContent = "";
+
+        try {
+            const resp = await fetch("/onboarding/api/test-key", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    api_key: key,
+                    provider: "jev",
+                    timeout: 15.0
+                })
+            });
+
+            let data = {};
+            try {
+                data = await resp.json();
+            } catch (_) {
+                data = {};
+            }
+            if (resp.ok && data.success) {
+                fb.className = "test-feedback success";
+                fb.textContent = `✔ Thành công (${data.latency_ms ?? 0} ms)`;
+            } else {
+                fb.className = "test-feedback error";
+                const msg = data.detail || data.message || `Kết nối JEV thất bại (HTTP ${resp.status})`;
+                fb.textContent = msg.startsWith("✖") ? msg : `✖ ${msg}`;
+            }
+        } catch (err) {
+            fb.className = "test-feedback error";
+            fb.textContent = `✖ Lỗi kết nối: ${err.message}`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Kiểm tra JEV Key";
         }
     }
 
@@ -2350,24 +2760,29 @@
             !currentAdminOpenId.trim().startsWith("ou_")
         ) {
             fb.className = "save-feedback error";
-            fb.textContent = "Chưa xác định được tài khoản Lark. Vui lòng hoàn tất OAuth và chờ đồng bộ trước khi lưu.";
+            fb.textContent = "✖ Chưa xác định được tài khoản Lark. Vui lòng hoàn tất OAuth và chờ đồng bộ trước khi lưu.";
             btn.disabled = false;
             btn.textContent = "Lưu Thay Đổi Cấu Hình";
             return;
         }
 
+        const rawLlmKey = isByokEnabled ? document.getElementById("llmKeyInput").value.trim() : "";
+        const rawJevKey = isJevByokEnabled ? document.getElementById("jevKeyInput").value.trim() : "";
+
         const payload = {
             open_id: currentAdminOpenId.trim(),
             tenant_key: currentTenantKey || undefined,
             is_byok_enabled: isByokEnabled,
-            raw_gemini_key: isByokEnabled ? document.getElementById("geminiKeyInput").value.trim() : undefined,
+            raw_llm_key: rawLlmKey || undefined,
+            llm_provider: document.getElementById("llmProviderSelect").value,
+            llm_model: getEffectiveLlmModel() || null,
+            llm_base_url: document.getElementById("llmBaseUrlInput").value.trim() || null,
+            llm_timeout: parseFloat(document.getElementById("llmTimeoutInput").value) || 60.0,
+            is_jev_byok_enabled: isJevByokEnabled,
+            raw_jev_key: rawJevKey || undefined,
             digest_schedule_time: document.getElementById("digestTimeSelect").value,
             hitl_mode_enabled: document.getElementById("hitlCheckbox").checked,
-            policy_sync_interval_seconds: parseInt(document.getElementById("policySyncIntervalSelect")?.value) || 3600,
-            llm_provider: document.getElementById("llmProviderSelect").value,
-            llm_model: document.getElementById("llmModelInput").value.trim() || undefined,
-            llm_base_url: document.getElementById("llmBaseUrlInput").value.trim() || undefined,
-            llm_timeout: parseFloat(document.getElementById("llmTimeoutInput").value) || 60.0
+            policy_sync_interval_seconds: parseInt(document.getElementById("policySyncIntervalSelect")?.value, 10) || 3600
         };
 
         try {
@@ -2377,18 +2792,54 @@
                 body: JSON.stringify(payload)
             });
 
-            const res = await resp.json();
-            if (res.success) {
+            let res = {};
+            try {
+                res = await resp.json();
+            } catch (_) {
+                res = {};
+            }
+            if (resp.ok && res.success) {
                 fb.className = "save-feedback success";
-                fb.textContent = "Đã lưu cấu hình thành công!";
+                fb.textContent = "✔ Đã lưu cấu hình thành công!";
+
+                const saved = res.data || {};
+                const llmKeyInput = document.getElementById("llmKeyInput");
+                const llmHint = document.getElementById("llmSavedKeyHint");
+                const llmMasked = document.getElementById("llmMaskedKeyCode");
+                if (llmKeyInput) llmKeyInput.value = "";
+                if (llmHint && llmMasked) {
+                    if (saved.is_byok_enabled && saved.masked_llm_api_key) {
+                        llmMasked.textContent = saved.masked_llm_api_key;
+                        llmHint.style.display = "block";
+                    } else if (!saved.is_byok_enabled) {
+                        llmMasked.textContent = "";
+                        llmHint.style.display = "none";
+                    }
+                }
+
+                const jevKeyInput = document.getElementById("jevKeyInput");
+                const jevHint = document.getElementById("jevSavedKeyHint");
+                const jevMasked = document.getElementById("jevMaskedKeyCode");
+                if (jevKeyInput) jevKeyInput.value = "";
+                if (jevHint && jevMasked) {
+                    if (saved.is_jev_byok_enabled && saved.masked_jev_api_key) {
+                        jevMasked.textContent = saved.masked_jev_api_key;
+                        jevHint.style.display = "block";
+                    } else if (!saved.is_jev_byok_enabled) {
+                        jevMasked.textContent = "";
+                        jevHint.style.display = "none";
+                    }
+                }
+
                 setTimeout(() => { fb.textContent = ""; }, 4000);
             } else {
                 fb.className = "save-feedback error";
-                fb.textContent = res.message || "Lỗi khi lưu cấu hình";
+                const errMsg = res.detail || res.message || `Lỗi khi lưu cấu hình (HTTP ${resp.status})`;
+                fb.textContent = errMsg.startsWith("✖") ? errMsg : `✖ ${errMsg}`;
             }
         } catch (err) {
             fb.className = "save-feedback error";
-            fb.textContent = "Lỗi gửi yêu cầu: " + err.message;
+            fb.textContent = `✖ Lỗi gửi yêu cầu: ${err.message}`;
         } finally {
             btn.disabled = false;
             btn.textContent = "Lưu Thay Đổi Cấu Hình";
@@ -2399,28 +2850,88 @@
     async function loadExistingSettings(openId, tenantKey) {
         if (!openId) return;
         try {
-            const url = `/onboarding/api/settings/${openId}${tenantKey ? '?tenant_key=' + tenantKey : ''}`;
+            const url = `/onboarding/api/settings/${encodeURIComponent(openId)}${tenantKey ? '?tenant_key=' + encodeURIComponent(tenantKey) : ''}`;
             const resp = await fetch(url);
-            if (!resp.ok) return;
+            if (!resp.ok) {
+                loadPolicyStatusAndLogs();
+                return;
+            }
             const res = await resp.json();
             if (res.success && res.data) {
                 const s = res.data;
-                if (s.is_byok_enabled) {
-                    setByokMode(true);
+
+                populateGeminiModelOptions(s.gemini_models, s.default_gemini_model || DEFAULT_GEMINI_MODEL);
+
+                setByokMode(Boolean(s.is_byok_enabled));
+                setJevByokMode(Boolean(s.is_jev_byok_enabled));
+
+                const providerSelect = document.getElementById("llmProviderSelect");
+                let effProvider = (s.llm_provider || "google").trim().toLowerCase();
+                if (effProvider === "chatgpt") effProvider = "openai";
+                if (providerSelect) {
+                    const hasProvOption = Array.from(providerSelect.options).some((o) => o.value === effProvider);
+                    providerSelect.value = hasProvOption ? effProvider : "google";
                 }
-                if (s.llm_provider) {
-                    document.getElementById("llmProviderSelect").value = s.llm_provider;
-                    onProviderSelect();
+                onProviderSelect(false);
+
+                const activeProvider = providerSelect ? providerSelect.value : effProvider;
+                const geminiSelect = document.getElementById("llmGeminiModelSelect");
+                const modelInput = document.getElementById("llmModelInput");
+                const savedModel = (s.llm_model || "").trim();
+
+                if (activeProvider === "google") {
+                    if (geminiSelect) {
+                        const presetMatch = Array.from(geminiSelect.options).some(
+                            (o) => o.value !== "__custom__" && o.value === savedModel
+                        );
+                        if (!savedModel) {
+                            geminiSelect.value = s.default_gemini_model || DEFAULT_GEMINI_MODEL;
+                            if (modelInput) modelInput.value = geminiSelect.value;
+                        } else if (presetMatch) {
+                            geminiSelect.value = savedModel;
+                            if (modelInput) modelInput.value = savedModel;
+                        } else {
+                            geminiSelect.value = "__custom__";
+                            if (modelInput) modelInput.value = savedModel;
+                        }
+                    }
+                    onGeminiModelSelect(false);
+                } else if (modelInput) {
+                    modelInput.value = savedModel;
                 }
-                if (s.llm_model) {
-                    document.getElementById("llmModelInput").value = s.llm_model;
-                }
-                if (s.llm_base_url) {
-                    document.getElementById("llmBaseUrlInput").value = s.llm_base_url;
+
+                const baseUrlInput = document.getElementById("llmBaseUrlInput");
+                if (baseUrlInput) {
+                    baseUrlInput.value = s.llm_base_url || "";
                 }
                 if (s.llm_timeout) {
                     document.getElementById("llmTimeoutInput").value = s.llm_timeout;
                 }
+
+                const llmHint = document.getElementById("llmSavedKeyHint");
+                const llmMasked = document.getElementById("llmMaskedKeyCode");
+                if (llmHint && llmMasked) {
+                    if (s.masked_llm_api_key) {
+                        llmMasked.textContent = s.masked_llm_api_key;
+                        llmHint.style.display = "block";
+                    } else {
+                        llmMasked.textContent = "";
+                        llmHint.style.display = "none";
+                    }
+                }
+
+                const jevHint = document.getElementById("jevSavedKeyHint");
+                const jevMasked = document.getElementById("jevMaskedKeyCode");
+                if (jevHint && jevMasked) {
+                    if (s.masked_jev_api_key) {
+                        jevMasked.textContent = s.masked_jev_api_key;
+                        jevHint.style.display = "block";
+                    } else {
+                        jevMasked.textContent = "";
+                        jevHint.style.display = "none";
+                    }
+                }
+
                 if (s.digest_schedule_time) {
                     document.getElementById("digestTimeSelect").value = s.digest_schedule_time;
                 }
@@ -2609,6 +3120,8 @@
             if (customBody) customBody.style.display = "block";
             const customChevron = document.getElementById("customChevron");
             if (customChevron) customChevron.classList.add("open");
+            const customHeaderToggle = document.getElementById("customHeaderToggle");
+            if (customHeaderToggle) customHeaderToggle.setAttribute("aria-expanded", "true");
         }
         document.getElementById("mainHeading").textContent = "Cấu Hình Trợ Lý HiLark";
         document.getElementById("mainSubtitle").textContent = "Tùy chỉnh mô hình AI, giờ gửi báo cáo và phương thức phản hồi.";
@@ -2639,8 +3152,78 @@
         initGuide();
     }
 
+    function bindSettingsControls() {
+        const customHeaderToggle = document.getElementById("customHeaderToggle");
+        if (customHeaderToggle) {
+            customHeaderToggle.addEventListener("click", toggleCustomSection);
+        }
+
+        const radioLlmSystem = document.getElementById("radioLlmSystem");
+        if (radioLlmSystem) {
+            radioLlmSystem.addEventListener("change", () => {
+                if (radioLlmSystem.checked) setByokMode(false);
+            });
+        }
+        const radioLlmByok = document.getElementById("radioLlmByok");
+        if (radioLlmByok) {
+            radioLlmByok.addEventListener("change", () => {
+                if (radioLlmByok.checked) setByokMode(true);
+            });
+        }
+
+        const radioJevSystem = document.getElementById("radioJevSystem");
+        if (radioJevSystem) {
+            radioJevSystem.addEventListener("change", () => {
+                if (radioJevSystem.checked) setJevByokMode(false);
+            });
+        }
+        const radioJevByok = document.getElementById("radioJevByok");
+        if (radioJevByok) {
+            radioJevByok.addEventListener("change", () => {
+                if (radioJevByok.checked) setJevByokMode(true);
+            });
+        }
+
+        const llmProviderSelect = document.getElementById("llmProviderSelect");
+        if (llmProviderSelect) {
+            llmProviderSelect.addEventListener("change", () => onProviderSelect(true));
+        }
+        const llmGeminiModelSelect = document.getElementById("llmGeminiModelSelect");
+        if (llmGeminiModelSelect) {
+            llmGeminiModelSelect.addEventListener("change", () => onGeminiModelSelect(true));
+        }
+
+        const btnToggleKey = document.getElementById("btnToggleKey");
+        if (btnToggleKey) {
+            btnToggleKey.addEventListener("click", toggleKeyVisibility);
+        }
+        const btnTestKey = document.getElementById("btnTestKey");
+        if (btnTestKey) {
+            btnTestKey.addEventListener("click", testApiKeyLive);
+        }
+
+        const btnToggleJevKey = document.getElementById("btnToggleJevKey");
+        if (btnToggleJevKey) {
+            btnToggleJevKey.addEventListener("click", toggleJevKeyVisibility);
+        }
+        const btnTestJevKey = document.getElementById("btnTestJevKey");
+        if (btnTestJevKey) {
+            btnTestJevKey.addEventListener("click", testJevKeyLive);
+        }
+
+        const btnSaveCustom = document.getElementById("btnSaveCustom");
+        if (btnSaveCustom) {
+            btnSaveCustom.addEventListener("click", saveCustomSettings);
+        }
+    }
+
     // Khởi động trang
     document.addEventListener("DOMContentLoaded", () => {
+        populateGeminiModelOptions(DEFAULT_GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL);
+        onProviderSelect(false);
+        onGeminiModelSelect(false);
+        bindSettingsControls();
+
         if (INITIAL_TASK_ID) {
             document.getElementById("landingView").style.display = "none";
             document.getElementById("progressView").style.display = "block";

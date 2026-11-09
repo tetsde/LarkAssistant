@@ -46,7 +46,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     CallBackCard,
 )
 
-# Patch P2CardActionTriggerData to support form_value in Lark Card JSON 2.0 (Lark OpenAPI WebSocket)
+# Patch P2CardActionTriggerData to support form_value in Lark Card JSON 2.0 (EventDispatcher / Card Callback)
 if "form_value" not in P2CardActionTriggerData._types:
     P2CardActionTriggerData._types["form_value"] = dict
     setattr(P2CardActionTriggerData, "form_value", None)
@@ -239,56 +239,6 @@ class LarkDispatcherMixin:
             raw_event=event,
         )
 
-    def parse_list_message_item(self, item: Any, chat_type: str = "p2p") -> Optional[LarkMessage]:
-        """
-        Chuyển đổi một đối tượng tin nhắn trả về từ API list_messages thành LarkMessage.
-        Dùng cho DM Polling.
-        """
-        if not item:
-            return None
-
-        sender = getattr(item, "sender", None)
-        sender_id = getattr(sender, "id", "") if sender else ""
-        sender_type = getattr(sender, "sender_type", "user") if sender else "user"
-        is_bot = sender_type in ("app", "bot")
-
-        my_open_id = ""
-        if self._current_user_profile:
-            my_open_id = self._current_user_profile.get("open_id", "")
-        is_self = bool(my_open_id and sender_id == my_open_id)
-
-        body = getattr(item, "body", None)
-        raw_content = getattr(body, "content", "{}") if body else "{}"
-        clean_text = ""
-        try:
-            content_dict = json.loads(raw_content)
-            if isinstance(content_dict, dict):
-                clean_text = content_dict.get("text", "")
-            elif isinstance(content_dict, str):
-                clean_text = content_dict
-        except Exception:
-            clean_text = str(raw_content)
-
-        clean_text = re.sub(r"\s+", " ", clean_text).strip()
-        msg_type = getattr(item, "msg_type", "text")
-        create_time = int(getattr(item, "create_time", 0) or time.time() * 1000)
-
-        return LarkMessage(
-            message_id=getattr(item, "message_id", ""),
-            chat_id=getattr(item, "chat_id", ""),
-            chat_type=chat_type,
-            sender_id=sender_id,
-            sender_type=sender_type,
-            message_type=msg_type,
-            text=clean_text,
-            raw_content=raw_content,
-            create_time=create_time,
-            is_bot=is_bot,
-            is_self=is_self,
-            root_id=getattr(item, "root_id", None),
-            parent_id=getattr(item, "parent_id", None),
-        )
-
     # -------------------------------------------------------------------------
     # CHỐNG TIN NHẮN TRÙNG LẶP (DEDUPLICATION)
     # -------------------------------------------------------------------------
@@ -319,7 +269,7 @@ class LarkDispatcherMixin:
         """Hàm callback nội bộ được gọi bởi Lark Event Dispatcher."""
         lark_msg = self.parse_event(data)
         if not lark_msg:
-            print("⚠️ [LARK DISPATCHER] Nhận được event nhưng không parse được cấu trúc message.")
+            logger.warning("[DISPATCH] parse_failed event=im.message.receive_v1")
             return
 
         logger.debug("[DISPATCH] parsed msg=%s sender=%s bot=%s", lark_msg.message_id, lark_msg.sender_id, lark_msg.is_bot)
@@ -331,12 +281,12 @@ class LarkDispatcherMixin:
 
         # 2. Bỏ qua tin nhắn do chính hệ thống vừa phát ngôn gửi đi (tránh bắt lại tin nhắn reply của chính bot)
         if is_sent_message_id_global(lark_msg.message_id) or (lark_msg.message_id in self._sent_message_ids):
-            logger.info(f"🚫 [DROP] msg={lark_msg.message_id} reason=self_sent (bot reply as_user/bot)")
+            logger.info("[DROP] msg=%s reason=self_sent", lark_msg.message_id)
             return
 
         # 3. Bỏ qua tin nhắn trùng lặp (Idempotency)
         if self._is_duplicate_message(lark_msg.message_id):
-            logger.info(f"Bỏ qua tin nhắn trùng lặp: {lark_msg.message_id}")
+            logger.debug("[DROP] msg=%s reason=duplicate", lark_msg.message_id)
             return
 
         # 4. Nhận diện tin nhắn từ tài khoản của bạn (Chủ nhân)
@@ -375,7 +325,7 @@ class LarkDispatcherMixin:
                     else:
                         handler(lark_msg)
             except Exception as e:
-                logger.error(f"Lỗi khi thực thi message handler {handler.__name__}: {e}", exc_info=True)
+                logger.error("[DISPATCH] handler_failed handler=%s error=%s", handler.__name__, e, exc_info=True)
 
     def _internal_on_reaction_created_event(self, data: P2ImMessageReactionCreatedV1) -> None:
         """
@@ -399,7 +349,7 @@ class LarkDispatcherMixin:
             if not message_id or not emoji_type:
                 return
 
-            print(f"👍 [LARK REACTION] Bắt được reaction '{emoji_type}' vào tin nhắn {message_id} từ {user_open_id}")
+            logger.info("[REACTION] received emoji=%s msg=%s user=%s", emoji_type, message_id, user_open_id)
 
             # Kiểm tra xem có phải Lãnh đạo (Owner) thả reaction hay không
             is_owner = False
@@ -412,7 +362,7 @@ class LarkDispatcherMixin:
                     is_owner = True
 
             if not is_owner:
-                logger.debug(f"[Reaction Gate] User {user_open_id} không phải Owner, bỏ qua.")
+                logger.debug("[REACTION] ignored user=%s reason=not_owner", user_open_id)
                 return
 
             # Danh sách Emoji phê duyệt chính thức
@@ -421,7 +371,7 @@ class LarkDispatcherMixin:
                 "FISTBUMP", "MUSCLE", "FIRE", "+1"
             }
             if emoji_type.upper() not in APPROVAL_EMOJIS:
-                logger.debug(f"[Reaction Gate] Emoji '{emoji_type}' không phải emoji phê duyệt.")
+                logger.debug("[REACTION] ignored emoji=%s reason=not_approval", emoji_type)
                 return
 
             # Kích hoạt thăng hạng claims thành CURRENT
@@ -435,11 +385,11 @@ class LarkDispatcherMixin:
                     }
                     promoted = await promote_claims_by_message_id(message_id, approver_info=approver_info)
                     if promoted > 0:
-                        print(f"🎉 [FAST REACTION APPROVAL] Sếp đã thả {emoji_type} vào tin {message_id}! Đã thăng hạng {promoted} fact(s) thành CURRENT.")
+                        logger.info("[REACTION] claims_promoted emoji=%s msg=%s count=%d", emoji_type, message_id, promoted)
                     else:
-                        print(f"ℹ️ [FAST REACTION APPROVAL] Sếp thả {emoji_type} vào tin {message_id} (không có fact PROPOSED nào gắn với message này).")
+                        logger.debug("[REACTION] no_proposed_claims emoji=%s msg=%s", emoji_type, message_id)
                 except Exception as e:
-                    logger.error(f"Lỗi khi thăng hạng claim qua reaction: {e}", exc_info=True)
+                    logger.error("[REACTION] promote_failed msg=%s error=%s", message_id, e, exc_info=True)
 
             try:
                 loop = asyncio.get_running_loop()
@@ -448,17 +398,17 @@ class LarkDispatcherMixin:
                 try:
                     asyncio.run(_promote())
                 except Exception as e:
-                    logger.error(f"Lỗi chạy async promote: {e}")
+                    logger.error("[REACTION] async_run_failed msg=%s error=%s", message_id, e)
 
         except Exception as e:
-            logger.error(f"Lỗi xử lý reaction created event: {e}", exc_info=True)
+            logger.error("[REACTION] handler_failed error=%s", e, exc_info=True)
 
     def _internal_on_message_recalled_event(self, data: P2ImMessageRecalledV1) -> None:
         """
         Xử lý sự kiện tin nhắn bị thu hồi từ Lark (im.message.recalled_v1).
         Kích hoạt đồng bộ dọn dẹp trên 4 tầng: Staging, Claims, Drafts, và Bot Reply.
         """
-        print("⚡ [LARK DISPATCHER] Bắt được sự kiện thu hồi tin nhắn (im.message.recalled_v1) từ Lark!")
+        logger.info("[RECALL] event_received event=im.message.recalled_v1")
         try:
             from services.lark.handlers.recall_handler import handle_message_recalled
 
@@ -466,7 +416,7 @@ class LarkDispatcherMixin:
                 try:
                     await handle_message_recalled(data)
                 except Exception as e:
-                    logger.error(f"Lỗi khi thực thi handle_message_recalled: {e}", exc_info=True)
+                    logger.error("[RECALL] handler_failed error=%s", e, exc_info=True)
 
             try:
                 loop = asyncio.get_running_loop()
@@ -475,31 +425,29 @@ class LarkDispatcherMixin:
                 try:
                     asyncio.run(_run())
                 except Exception as e:
-                    logger.error(f"Lỗi chạy async recall task: {e}")
+                    logger.error("[RECALL] async_run_failed error=%s", e)
         except Exception as e:
-            logger.error(f"Lỗi khi tiếp nhận sự kiện message recalled: {e}", exc_info=True)
+            logger.error("[RECALL] dispatch_failed error=%s", e, exc_info=True)
 
     def _internal_on_bot_added_event(self, data: P2ImChatMemberBotAddedV1) -> None:
         """Xử lý sự kiện Bot được thêm vào nhóm chat (im.chat.member.bot.added_v1)."""
         try:
             event = getattr(data, "event", None)
             chat_id = getattr(event, "chat_id", "") if event else ""
-            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
+            chat_name = getattr(event, "name", "") if event else ""
             operator_id = ""
             if event and getattr(event, "operator_id", None):
                 operator_id = getattr(event.operator_id, "open_id", "") or getattr(event.operator_id, "user_id", "")
 
-            operator_name = self.get_user_name(operator_id) or operator_id or "Thành viên"
-            print(f"\n" + "=" * 65)
-            print(f"🎉 [LARK BOT EVENT] BOT ĐÃ ĐƯỢC THÊM VÀO NHÓM CHAT!")
-            print(f"   • Tên nhóm : {chat_name}")
-            print(f"   • Chat ID  : {chat_id}")
-            print(f"   • Người thêm: {operator_name}")
-            print("=" * 65 + "\n")
-            logger.info(f"🎉 Bot được thêm vào nhóm '{chat_name}' ({chat_id}) bởi {operator_name}")
+            logger.info(
+                "[BOT_EVENT] added_to_group chat_id=%s chat_name=%s operator=%s",
+                chat_id or "-",
+                chat_name or "-",
+                operator_id or "-",
+            )
 
             if not chat_id:
-                logger.warning("Không tìm thấy chat_id trong sự kiện bot_added. Bỏ qua ghi nhận Base.")
+                logger.warning("[BOT_EVENT] ignored event=bot_added reason=missing_chat_id")
                 return
 
             header = getattr(data, "header", None)
@@ -519,16 +467,18 @@ class LarkDispatcherMixin:
                     #    tenant có thể xen kẽ nhau và cùng ghi vào một đối tượng dùng chung.
                     if not tenant_key:
                         logger.error(
-                            "Sự kiện bot_added không có tenant_key trong header — bỏ qua ghi nhận Base "
-                            "thay vì đoán tenant (chat_id=%s).", chat_id,
+                            "[BOT_EVENT] base_sync_skipped chat_id=%s reason=missing_tenant_key",
+                            chat_id,
                         )
                         return
                     try:
                         resources = await tenant_resolver.resolve(tenant_key)
                     except TenantResolutionError as res_err:
                         logger.warning(
-                            "Không thao tác Lark Base cho sự kiện bot_added của tenant '%s': %s",
-                            tenant_key, res_err,
+                            "[BOT_EVENT] base_sync_skipped tenant=%s chat_id=%s error=%s",
+                            tenant_key,
+                            chat_id,
+                            res_err,
                         )
                         return
                     lark_base_service = LarkBaseService.for_tenant(resources)
@@ -540,9 +490,9 @@ class LarkDispatcherMixin:
                             record_fields = {
                                 "Chat ID": chat_id,
                                 "ID Group": chat_id,
-                                "Tên dự án": chat_name,
-                                "Dự án / Nhóm": chat_name,
-                                "Text": chat_name,
+                                "Tên dự án": chat_name or "Nhóm chat",
+                                "Dự án / Nhóm": chat_name or "Nhóm chat",
+                                "Text": chat_name or "Nhóm chat",
                                 "Trạng thái hoạt động": "active",
                             }
                             # Lark thường tạo sẵn một dòng rỗng khi tạo Base.
@@ -567,15 +517,30 @@ class LarkDispatcherMixin:
                                     empty_record.record_id,
                                     record_fields,
                                 )
-                                logger.info(f"✅ Đã điền dòng rỗng trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
+                                logger.info(
+                                    "[BOT_EVENT] base_row_updated tenant=%s chat_id=%s record_id=%s",
+                                    tenant_key,
+                                    chat_id,
+                                    base_record.record_id,
+                                )
                             else:
                                 base_record = await asyncio.to_thread(
                                     lark_base_service.create_record,
                                     record_fields,
                                 )
-                                logger.info(f"✅ Đã tự động tạo dòng mới trong Lark Base cho nhóm '{chat_name}' (Record: {base_record.record_id})")
+                                logger.info(
+                                    "[BOT_EVENT] base_row_created tenant=%s chat_id=%s record_id=%s",
+                                    tenant_key,
+                                    chat_id,
+                                    base_record.record_id,
+                                )
                         else:
-                            logger.info(f"ℹ️ Nhóm '{chat_name}' ({chat_id}) đã tồn tại trong Lark Base (Record: {base_record.record_id})")
+                            logger.info(
+                                "[BOT_EVENT] base_row_exists tenant=%s chat_id=%s record_id=%s",
+                                tenant_key,
+                                chat_id,
+                                base_record.record_id,
+                            )
 
                         # Đồng bộ tức thì nhóm chat mới vào MongoDB (chat_scopes)
                         if base_record:
@@ -583,7 +548,7 @@ class LarkDispatcherMixin:
                                 base_record, tenant_key_override=tenant_key
                             )
                     except Exception as b_err:
-                        logger.error(f"⚠️ Lỗi khi đồng bộ nhóm vào Lark Base: {b_err}", exc_info=True)
+                        logger.error("[BOT_EVENT] base_sync_failed chat_id=%s error=%s", chat_id, b_err, exc_info=True)
 
             try:
                 loop = asyncio.get_running_loop()
@@ -592,21 +557,20 @@ class LarkDispatcherMixin:
                 try:
                     asyncio.run(_async_bot_added_handler())
                 except Exception as e:
-                    logger.error(f"Lỗi chạy async bot_added task: {e}")
+                    logger.error("[BOT_EVENT] async_run_failed event=bot_added error=%s", e)
 
         except Exception as e:
-            logger.error(f"Lỗi xử lý sự kiện bot_added: {e}", exc_info=True)
+            logger.error("[BOT_EVENT] handler_failed event=bot_added error=%s", e, exc_info=True)
 
     def _internal_on_bot_deleted_event(self, data: P2ImChatMemberBotDeletedV1) -> None:
         """Xử lý sự kiện Bot bị gỡ khỏi nhóm chat (im.chat.member.bot.deleted_v1)."""
         try:
             event = getattr(data, "event", None)
             chat_id = getattr(event, "chat_id", "") if event else ""
-            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
-            print(f"\nℹ️ [LARK BOT EVENT] Bot đã bị gỡ khỏi nhóm: '{chat_name}' ({chat_id})")
-            logger.info(f"ℹ️ Bot bị gỡ khỏi nhóm '{chat_name}' ({chat_id})")
+            chat_name = getattr(event, "name", "") if event else ""
+            logger.info("[BOT_EVENT] removed_from_group chat_id=%s chat_name=%s", chat_id or "-", chat_name or "-")
         except Exception as e:
-            logger.error(f"Lỗi xử lý sự kiện bot_deleted: {e}", exc_info=True)
+            logger.error("[BOT_EVENT] handler_failed event=bot_deleted error=%s", e, exc_info=True)
 
     def _internal_on_bitable_record_changed_event(self, data: P2DriveFileBitableRecordChangedV1) -> None:
         """Xử lý sự kiện bản ghi trong Lark Base bị thay đổi (drive.file.bitable_record_changed_v1)."""
@@ -620,51 +584,28 @@ class LarkDispatcherMixin:
             operator_id = ""
             if getattr(event, "operator_id", None):
                 operator_id = getattr(event.operator_id, "open_id", "") or getattr(event.operator_id, "user_id", "")
-            operator_name = self.get_user_name(operator_id) or operator_id or "Thành viên"
 
             action_list = getattr(event, "action_list", []) or []
-            from datetime import datetime
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            print("\n" + "=" * 65)
-            print("📊 [LARK BASE EVENT] PHÁT HIỆN DỮ LIỆU BẢNG BASE THAY ĐỔI:")
-            print("-" * 65)
-            print(f"🕒 Thời gian    : {now_str}")
-            print(f"📦 Base Token   : {file_token}")
-            print(f"📊 Table ID     : {table_id}")
-            print(f"👤 Người sửa    : {operator_name} ({operator_id})")
-            print(f"📝 Số hành động : {len(action_list)}")
-
-            for idx, act in enumerate(action_list, 1):
-                rec_id = getattr(act, "record_id", "")
-                action_type = getattr(act, "action", "")
-                print(f"  [{idx}] Record ID: {rec_id} | Hành động: {action_type}")
-
-                before_list = getattr(act, "before_value", []) or []
-                after_list = getattr(act, "after_value", []) or []
-                if before_list or after_list:
-                    field_ids = set()
-                    b_map = {}
-                    a_map = {}
-                    for b in before_list:
-                        fid = getattr(b, "field_id", "")
-                        b_map[fid] = getattr(b, "field_value", "")
-                        field_ids.add(fid)
-                    for a in after_list:
-                        fid = getattr(a, "field_id", "")
-                        a_map[fid] = getattr(a, "field_value", "")
-                        field_ids.add(fid)
-
-                    for fid in field_ids:
-                        old_v = b_map.get(fid, "(trống)")
-                        new_v = a_map.get(fid, "(trống)")
-                        print(f"      • Cột {fid}: {old_v} -> {new_v}")
-
-            print("=" * 65 + "\n")
-            logger.info(f"📊 Lark Base change event received for table {table_id} by {operator_name}")
-
             header = getattr(data, "header", None)
             tenant_key = getattr(header, "tenant_key", "") if header else ""
+
+            logger.info(
+                "[BITABLE_EVENT] record_changed tenant=%s file_token=%s table=%s operator=%s actions=%d",
+                tenant_key or "-",
+                file_token or "-",
+                table_id or "-",
+                operator_id or "-",
+                len(action_list),
+            )
+            for act in action_list:
+                rec_id = getattr(act, "record_id", "")
+                action_type = getattr(act, "action", "")
+                logger.debug(
+                    "[BITABLE_EVENT] action_detail table=%s record_id=%s action=%s",
+                    table_id or "-",
+                    rec_id,
+                    action_type,
+                )
 
             for handler in self._bitable_record_handlers:
                 try:
@@ -690,9 +631,9 @@ class LarkDispatcherMixin:
                         else:
                             handler(data)
                 except Exception as e:
-                    logger.error(f"Lỗi khi thực thi bitable_record_handler: {e}", exc_info=True)
+                    logger.error("[BITABLE_EVENT] record_handler_failed error=%s", e, exc_info=True)
         except Exception as e:
-            logger.error(f"Lỗi xử lý sự kiện bitable_record_changed: {e}", exc_info=True)
+            logger.error("[BITABLE_EVENT] record_event_failed error=%s", e, exc_info=True)
 
     def _internal_on_bitable_field_changed_event(self, data: P2DriveFileBitableFieldChangedV1) -> None:
         """Xử lý sự kiện cấu trúc cột trong Lark Base bị thay đổi (drive.file.bitable_field_changed_v1)."""
@@ -700,8 +641,7 @@ class LarkDispatcherMixin:
             event = getattr(data, "event", None)
             table_id = getattr(event, "table_id", "") if event else ""
             file_token = getattr(event, "file_token", "") if event else ""
-            print(f"\n📐 [LARK BASE EVENT] Cấu trúc cột của Base '{file_token}' (bảng '{table_id}') vừa thay đổi.")
-            logger.info(f"📐 Lark Base field changed for table {table_id}")
+            logger.info("[BITABLE_EVENT] field_changed file_token=%s table=%s", file_token or "-", table_id or "-")
 
             for handler in self._bitable_field_handlers:
                 try:
@@ -714,22 +654,22 @@ class LarkDispatcherMixin:
                     else:
                         handler(data)
                 except Exception as e:
-                    logger.error(f"Lỗi khi thực thi bitable_field_handler: {e}", exc_info=True)
+                    logger.error("[BITABLE_EVENT] field_handler_failed error=%s", e, exc_info=True)
         except Exception as e:
-            logger.error(f"Lỗi xử lý sự kiện bitable_field_changed: {e}", exc_info=True)
+            logger.error("[BITABLE_EVENT] field_event_failed error=%s", e, exc_info=True)
 
     def _internal_on_drive_file_edit_event(self, data: P2DriveFileEditV1) -> None:
         """Xử lý sự kiện chỉnh sửa file trên Drive (drive.file.edit_v1)."""
-        logger.debug("Drive file edit event received (drive.file.edit_v1)")
+        logger.debug("[DRIVE_EVENT] file_edit event=drive.file.edit_v1")
 
     def _internal_on_drive_file_read_event(self, data: Any) -> None:
         """Acknowledge event đọc Drive; việc ingest tài liệu đi qua pipeline riêng."""
-        logger.debug("Drive file read event ignored (drive.file.read_v1)")
+        logger.debug("[DRIVE_EVENT] file_read_ignored event=drive.file.read_v1")
 
     def _internal_on_card_action_trigger(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         """
         Xử lý sự kiện khi người dùng bấm nút trên Thẻ tương tác (Interactive Card)
-        nhận qua WebSocket persistent connection (card.action.trigger).
+        qua EventDispatcherHandler (ví dụ callback `card.action.trigger` được mã hóa AES trên Webhook).
         """
         try:
             event = getattr(data, "event", None)
@@ -772,11 +712,16 @@ class LarkDispatcherMixin:
             if tag_name:
                 action_val["tag"] = tag_name
 
-            logger.info(f"🔘 [LARK WS CARD ACTION] Nhận tương tác nút bấm từ {open_id} trên thẻ {message_id}: {action_val}")
+            logger.info(
+                "[CARD_ACTION] trigger user=%s msg=%s action=%s",
+                open_id,
+                message_id,
+                action_val.get("action") or action_val.get("name") or "-",
+            )
 
             from services.lark.handlers.card_action_handler import handle_card_action
 
-            # Chạy an toàn trong context WebSocket thread (giới hạn timeout để kịp phản hồi Lark < 3s)
+            # Chạy an toàn trong worker thread nếu đã có event loop đang chạy (giới hạn timeout < 8s)
             try:
                 running_loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -800,7 +745,7 @@ class LarkDispatcherMixin:
                 resp.card.data = updated_card
             return resp
         except Exception as e:
-            logger.error(f"Lỗi khi xử lý card action trigger trong WebSocket: {e}", exc_info=True)
+            logger.error("[CARD_ACTION] trigger_failed error=%s", e, exc_info=True)
             err_resp = P2CardActionTriggerResponse()
             err_resp.toast = CallBackToast()
             err_resp.toast.type = "error"

@@ -311,7 +311,7 @@ async def oauth_callback(
         if not claimed_task_id:
             raise HTTPException(status_code=400, detail="OAuth state không hợp lệ hoặc đã được sử dụng.")
         eff_task_id = claimed_task_id
-        logger.info(f"🚀 [ONE-CLICK SETUP] Nhận callback tại /auth/lark/callback cho task '{eff_task_id}'")
+        logger.info("[ONE_CLICK_SETUP] callback_received task_id=%s", eff_task_id)
         asyncio.create_task(
             one_click_setup_service.run_setup_pipeline(task_id=eff_task_id, code=code, state=state)
         )

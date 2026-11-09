@@ -38,7 +38,7 @@ DEFAULT_TIMEOUT = httpx.Timeout(timeout=30.0, connect=10.0)
 def get_http_client() -> httpx.AsyncClient:
     """
     Lấy persistent HTTP client theo event loop hiện tại.
-    Mỗi event loop (FastAPI Main Loop, Lark WebSocket Thread Loop, Test Loops)
+    Mỗi event loop (FastAPI Main Loop, Background Worker Loops, Test Loops)
     sở hữu một connection pool riêng để tránh xung đột asyncio.locks giữa các loop.
     """
     try:
@@ -54,7 +54,7 @@ def get_http_client() -> httpx.AsyncClient:
             timeout=DEFAULT_TIMEOUT,
         )
         _clients_by_loop[loop_id] = client
-        logger.debug(f"Khởi tạo mới Persistent httpx.AsyncClient cho loop {loop_id}.")
+        logger.debug("[HTTP_POOL] client_created loop_id=%s", loop_id)
     return client
 
 
@@ -64,7 +64,11 @@ async def init_http_client() -> httpx.AsyncClient:
     Được gọi trong FastAPI lifespan startup.
     """
     client = get_http_client()
-    logger.info("✔ [HTTP POOL] Persistent httpx.AsyncClient đã sẵn sàng (Connection Pooling: max=100, keepalive=20).")
+    logger.info(
+        "[HTTP_POOL] ready max_connections=%d max_keepalive=%d",
+        DEFAULT_LIMITS.max_connections,
+        DEFAULT_LIMITS.max_keepalive_connections,
+    )
     return client
 
 
@@ -78,7 +82,7 @@ async def close_http_client() -> None:
         if client and not client.is_closed:
             try:
                 await client.aclose()
-                logger.info(f"✔ [HTTP POOL] Đã đóng persistent httpx.AsyncClient cho loop {loop_id} an toàn.")
+                logger.info("[HTTP_POOL] closed loop_id=%s", loop_id)
             except Exception as e:
-                logger.warning(f"Lỗi khi đóng httpx.AsyncClient loop {loop_id}: {e}")
+                logger.warning("[HTTP_POOL] close_failed loop_id=%s error=%s", loop_id, e)
     _clients_by_loop.clear()

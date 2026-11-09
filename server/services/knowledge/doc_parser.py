@@ -29,6 +29,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Set, Union
 
+from core.tenant_errors import BYOKConfigurationError
 from models.docreader import (
     DocParseResult,
     DocReaderResult,
@@ -116,8 +117,18 @@ class DocParserService:
     def _llm(self):
         if self._llm_override is not None:
             return self._llm_override
-        from services.ai.gemini_client import llm_client
+        from services.ai.llm_client import llm_client
         return llm_client
+
+    async def _resolve_llm_client(self, tenant_key: Optional[str] = None):
+        if self._llm_override is not None:
+            return self._llm_override
+        eff_tenant = (tenant_key or "").strip() or None
+        if not eff_tenant:
+            from database.scoped_query import get_current_tenant_key
+            eff_tenant = (get_current_tenant_key() or "").strip() or None
+        from services.ai.ai_config_manager import ai_config_manager
+        return await ai_config_manager.resolve_llm_client(tenant_key=eff_tenant)
 
     def is_image_file(self, file_name: str, resource_type: Optional[str] = None) -> bool:
         """Kiểm tra xem tệp hoặc resource có phải là hình ảnh hay không."""
@@ -147,22 +158,32 @@ class DocParserService:
         self,
         image_bytes: bytes,
         file_name: str = "image.png",
+        tenant_key: Optional[str] = None,
     ) -> DocParseResult:
         """
-        Nhận diện ký tự và cấu trúc tài liệu từ hình ảnh sang Markdown sạch qua Gemini Multimodal Vision.
+        Nhận diện ký tự và cấu trúc tài liệu từ hình ảnh sang Markdown sạch qua Multimodal Vision.
 
         Args:
             image_bytes: Mảng byte dữ liệu hình ảnh.
             file_name: Tên tệp ảnh (ví dụ: 'bien_ban_hop.png').
+            tenant_key: Mã tenant để phân giải LLM/BYOK đúng doanh nghiệp (Fail-Closed).
 
         Returns:
-            DocParseResult chứa Markdown được OCR từ Gemini Vision.
+            DocParseResult chứa Markdown được OCR từ Multimodal Vision.
         """
         start_time = time.perf_counter()
         mime_type = self.get_image_mime_type(file_name)
+        provider_name = "unknown"
 
         try:
-            markdown_content = await self._llm.generate_multimodal_async(
+            llm_client_to_use = await self._resolve_llm_client(tenant_key=tenant_key)
+            raw_provider = getattr(llm_client_to_use, "provider", None)
+            provider_name = (
+                raw_provider.strip()
+                if isinstance(raw_provider, str) and raw_provider.strip()
+                else "google"
+            )
+            markdown_content = await llm_client_to_use.generate_multimodal_async(
                 prompt=OCR_PROMPT,
                 image_bytes=image_bytes,
                 mime_type=mime_type,
@@ -176,7 +197,11 @@ class DocParserService:
                     source_type="image_ocr",
                     error=f"Không nhận diện được nội dung chữ từ hình ảnh '{file_name}'.",
                     execution_time_ms=elapsed_ms,
-                    metadata={"file_size_bytes": len(image_bytes), "mime_type": mime_type},
+                    metadata={
+                        "file_size_bytes": len(image_bytes),
+                        "mime_type": mime_type,
+                        "provider": provider_name,
+                    },
                 )
 
             cleaned_md = markdown_content.strip()
@@ -190,8 +215,8 @@ class DocParserService:
                     cleaned_md = cleaned_md[:-3].strip()
 
             logger.info(
-                f"✔ [DOC PARSER OCR] Nhận diện ảnh thành công qua Gemini Vision: {file_name} "
-                f"({len(cleaned_md)} chars, {elapsed_ms:.1f}ms)"
+                "[DOC_PARSER_OCR] parsed file=%r provider=%s chars=%d duration_ms=%.1f",
+                file_name, provider_name, len(cleaned_md), elapsed_ms,
             )
             return DocParseResult(
                 success=True,
@@ -200,22 +225,33 @@ class DocParserService:
                 source_type="image_ocr",
                 execution_time_ms=elapsed_ms,
                 metadata={
-                    "parser": "gemini_vision_ocr",
+                    "parser": "llm_vision_ocr",
+                    "provider": provider_name,
                     "file_size_bytes": len(image_bytes),
                     "mime_type": mime_type,
                     "char_count": len(cleaned_md),
                 },
             )
+        except BYOKConfigurationError:
+            raise
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.error(f"❌ [DOC PARSER OCR] Lỗi khi OCR ảnh {file_name} qua Gemini Vision: {e}", exc_info=True)
+            logger.error(
+                "[DOC_PARSER_OCR] error file=%r provider=%s error=%s",
+                file_name, provider_name, e,
+                exc_info=True,
+            )
             return DocParseResult(
                 success=False,
                 doc_name=file_name,
                 source_type="image_ocr",
-                error=f"Lỗi khi nhận diện hình ảnh qua Gemini Vision: {str(e)}",
+                error=f"Lỗi khi nhận diện hình ảnh qua Multimodal Vision ({provider_name}): {str(e)}",
                 execution_time_ms=elapsed_ms,
-                metadata={"file_size_bytes": len(image_bytes), "mime_type": mime_type},
+                metadata={
+                    "file_size_bytes": len(image_bytes),
+                    "mime_type": mime_type,
+                    "provider": provider_name,
+                },
             )
 
 
@@ -339,8 +375,8 @@ class DocParserService:
                 )
 
             logger.info(
-                f"✔ [DOC PARSER] Phân giải Lark DocX thành công: {doc_name} "
-                f"({len(content)} chars, {elapsed_ms:.1f}ms)"
+                "[DOC_PARSER] docx_parsed name=%r chars=%d duration_ms=%.1f",
+                doc_name, len(content), elapsed_ms,
             )
             return DocParseResult(
                 success=True,
@@ -352,7 +388,7 @@ class DocParserService:
             )
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.error(f"❌ [DOC PARSER] Exception khi đọc Lark DocX {document_id}: {e}", exc_info=True)
+            logger.error("[DOC_PARSER] docx_error document_id=%s error=%s", document_id, e, exc_info=True)
             return DocParseResult(
                 success=False,
                 doc_name=doc_name,
@@ -405,7 +441,8 @@ class DocParserService:
             else:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
                 logger.warning(
-                    f"⚠️ [DOC PARSER] Trang Wiki '{title}' có kiểu '{obj_type}' chưa hỗ trợ trích xuất Markdown."
+                    "[DOC_PARSER] wiki_unsupported title=%r obj_type=%s",
+                    title, obj_type,
                 )
                 return DocParseResult(
                     success=False,
@@ -417,7 +454,7 @@ class DocParserService:
                 )
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.error(f"❌ [DOC PARSER] Exception khi đọc Wiki {wiki_token}: {e}", exc_info=True)
+            logger.error("[DOC_PARSER] wiki_error wiki_token=%s error=%s", wiki_token, e, exc_info=True)
             return DocParseResult(
                 success=False,
                 doc_name=f"Lark Wiki ({wiki_token})",
@@ -461,7 +498,7 @@ class DocParserService:
                 f"Định dạng tệp '{file_name}' không nằm trong danh mục hỗ trợ. "
                 f"Chỉ hỗ trợ: {', '.join(sorted(SUPPORTED_DOCUMENT_EXTENSIONS))}"
             )
-            logger.warning(f"🚫 [DOC PARSER GATE] {error_msg}")
+            logger.warning("[DOC_PARSER] file_rejected file=%r reason=unsupported_extension", file_name)
             return DocParseResult(
                 success=False,
                 doc_name=file_name,
@@ -473,7 +510,7 @@ class DocParserService:
 
         # 2. Tải binary content từ Lark IM
         # Sử dụng _get_lark_for_tenant để định tuyến đúng bot token của tenant gửi file
-        logger.info(f"📥 [DOC PARSER] Đang tải tệp đính kèm: {file_name} (key: {file_key})...")
+        logger.info("[DOC_PARSER] attachment_downloading file=%r key=%s", file_name, file_key)
         lark = self._get_lark_for_tenant(tenant_key)
         file_bytes = await lark.adownload_message_resource(
             message_id=message_id,
@@ -492,11 +529,12 @@ class DocParserService:
                 metadata={"file_key": file_key, "message_id": message_id},
             )
 
-        # 3. Phân nhánh xử lý: Nếu là hình ảnh, ưu tiên dùng Gemini Multimodal Vision OCR
+        # 3. Phân nhánh xử lý: Nếu là hình ảnh, ưu tiên dùng Multimodal Vision OCR
         if self.is_image_file(file_name, resource_type):
             ocr_res = await self.ocr_image_to_markdown(
                 image_bytes=file_bytes,
                 file_name=file_name,
+                tenant_key=tenant_key,
             )
             ocr_res.metadata["file_key"] = file_key
             ocr_res.metadata["message_id"] = message_id
@@ -521,8 +559,8 @@ class DocParserService:
             )
 
         logger.info(
-            f"✔ [DOC PARSER] Phân giải tệp đính kèm thành công: {file_name} "
-            f"({len(reader_res.markdown_content)} chars, {elapsed_ms:.1f}ms)"
+            "[DOC_PARSER] attachment_parsed file=%r chars=%d duration_ms=%.1f",
+            file_name, len(reader_res.markdown_content), elapsed_ms,
         )
         return DocParseResult(
             success=True,
@@ -542,13 +580,18 @@ class DocParserService:
         self,
         file_content: bytes,
         file_name: str,
+        tenant_key: Optional[str] = None,
     ) -> DocParseResult:
         """
         Phân giải trực tiếp mảng bytes nhị phân sang Markdown (hỗ trợ API upload ngoài).
-        Tự động nhận diện hình ảnh để gọi Gemini Multimodal Vision OCR.
+        Tự động nhận diện hình ảnh để gọi Multimodal Vision OCR.
         """
         if self.is_image_file(file_name):
-            return await self.ocr_image_to_markdown(file_content, file_name)
+            return await self.ocr_image_to_markdown(
+                file_content,
+                file_name,
+                tenant_key=tenant_key,
+            )
 
         start_time = time.perf_counter()
         reader_res = await self._docreader.read(file_content, file_name)
@@ -602,14 +645,14 @@ class DocParserService:
             return []
 
         logger.info(
-            f"📁 [DOC PARSER FOLDER] Bắt đầu quét thư mục {folder_token} "
-            f"(depth={current_depth}/{max_depth}, recursive={recursive}, tenant={tenant_key})..."
+            "[DOC_PARSER] folder_scan_started folder=%s depth=%d/%d recursive=%s tenant=%s",
+            folder_token, current_depth, max_depth, recursive, tenant_key or "-",
         )
 
         list_kwargs = {"tenant_key": tenant_key} if tenant_key else {}
         files = await self._lark.alist_drive_folder_files(folder_token, **list_kwargs)
         if not files:
-            logger.info(f"ℹ️ [DOC PARSER FOLDER] Thư mục {folder_token} rỗng hoặc không thể truy cập.")
+            logger.info("[DOC_PARSER] folder_empty folder=%s", folder_token)
             return []
 
         results: List[DocParseResult] = []
@@ -624,14 +667,14 @@ class DocParserService:
                 continue
 
             if ftype == "docx":
-                logger.info(f"📄 [FOLDER ITEM] Phân giải DocX: '{fname}' ({ftoken}) [tenant={tenant_key}]")
+                logger.info("[DOC_PARSER] folder_item type=docx name=%r token=%s tenant=%s", fname, ftoken, tenant_key or "-")
                 doc_res = await self.parse_lark_docx(document_id=ftoken, title=fname, tenant_key=tenant_key)
                 doc_res.metadata["folder_token"] = folder_token
                 doc_res.metadata["url"] = furl
                 results.append(doc_res)
 
             elif ftype == "wiki":
-                logger.info(f"🌐 [FOLDER ITEM] Phân giải Wiki: '{fname}' ({ftoken}) [tenant={tenant_key}]")
+                logger.info("[DOC_PARSER] folder_item type=wiki name=%r token=%s tenant=%s", fname, ftoken, tenant_key or "-")
                 doc_res = await self.parse_lark_wiki(wiki_token=ftoken, tenant_key=tenant_key)
                 doc_res.metadata["folder_token"] = folder_token
                 doc_res.metadata["url"] = furl
@@ -639,7 +682,7 @@ class DocParserService:
 
             elif ftype == "folder":
                 if recursive and current_depth < max_depth:
-                    logger.info(f"📂 [FOLDER ITEM] Phát hiện thư mục con '{fname}' ({ftoken}), tiến hành đệ quy...")
+                    logger.info("[DOC_PARSER] folder_recurse name=%r token=%s", fname, ftoken)
                     sub_results = await self.parse_lark_folder(
                         folder_token=ftoken,
                         recursive=True,
@@ -653,14 +696,15 @@ class DocParserService:
                 # Tệp nhị phân trên Lark Drive (PDF, Word, Excel, PPTX, TXT, MD, hình ảnh...)
                 if not self._docreader.is_supported_file(fname) and not self.is_image_file(fname):
                     logger.warning(
-                        f"🚫 [FOLDER ITEM] Bỏ qua file '{fname}' ({ftoken}) vì không nằm trong định dạng hỗ trợ."
+                        "[DOC_PARSER] folder_item_skipped name=%r token=%s reason=unsupported_extension",
+                        fname, ftoken,
                     )
                     continue
 
-                logger.info(f"📥 [FOLDER ITEM] Tải tệp nhị phân Drive: '{fname}' ({ftoken}) [tenant={tenant_key}]...")
+                logger.info("[DOC_PARSER] folder_item_downloading name=%r token=%s tenant=%s", fname, ftoken, tenant_key or "-")
                 file_bytes = await self._lark.adownload_drive_file(ftoken, tenant_key=tenant_key)
                 if not file_bytes:
-                    logger.error(f"❌ [FOLDER ITEM] Không thể tải tệp '{fname}' ({ftoken}) từ Lark Drive.")
+                    logger.error("[DOC_PARSER] folder_item_download_failed name=%r token=%s", fname, ftoken)
                     results.append(DocParseResult(
                         success=False,
                         doc_name=fname,
@@ -671,14 +715,18 @@ class DocParserService:
                     continue
 
                 if self.is_image_file(fname):
-                    logger.info(f"🖼️ [FOLDER ITEM] Chuyển tiếp hình ảnh '{fname}' sang Gemini OCR...")
-                    ocr_res = await self.ocr_image_to_markdown(file_bytes, fname)
+                    logger.info("[DOC_PARSER] folder_item_ocr name=%r tenant=%s", fname, tenant_key or "-")
+                    ocr_res = await self.ocr_image_to_markdown(
+                        file_bytes,
+                        fname,
+                        tenant_key=tenant_key,
+                    )
                     ocr_res.metadata["folder_token"] = folder_token
                     ocr_res.metadata["file_token"] = ftoken
                     ocr_res.metadata["url"] = furl
                     results.append(ocr_res)
                 else:
-                    logger.info(f"⚙️ [FOLDER ITEM] Chuyển đổi tệp '{fname}' qua AnyDoc gRPC...")
+                    logger.info("[DOC_PARSER] folder_item_docreader name=%r", fname)
                     reader_res = await self._docreader.read(file_bytes, fname)
                     results.append(DocParseResult(
                         success=reader_res.success,
@@ -694,10 +742,7 @@ class DocParserService:
                         },
                     ))
 
-        logger.info(
-            f"✔ [DOC PARSER FOLDER] Hoàn thành quét thư mục {folder_token}: "
-            f"{len(results)} tài liệu đã được phân giải."
-        )
+        logger.info("[DOC_PARSER] folder_scan_completed folder=%s resolved=%d", folder_token, len(results))
         return results
 
     # =========================================================================

@@ -115,7 +115,7 @@ class DocReaderService:
                 ("grpc.http2.max_pings_without_data", 2),
             ]
 
-            logger.info(f"🔌 Khởi tạo kênh kết nối gRPC tới {self.target} (buffer 50MB)...")
+            logger.info("[DOCREADER] channel_init target=%s buffer_mb=50", self.target)
             self._async_channel = grpc.aio.insecure_channel(
                 self.target,
                 options=channel_options,
@@ -127,7 +127,7 @@ class DocReaderService:
         """Đóng kênh kết nối gRPC khi tắt server hoặc reload lifespan."""
         async with self._lock:
             if self._async_channel is not None:
-                logger.info(f"🔌 Đang đóng kết nối gRPC {self.target}...")
+                logger.info("[DOCREADER] channel_closing target=%s", self.target)
                 await self._async_channel.close()
                 self._async_channel = None
                 self._async_stub = None
@@ -168,7 +168,7 @@ class DocReaderService:
                 f"Định dạng tệp '{ext or '(không có đuôi)'}' không được hỗ trợ. "
                 f"Hệ thống chỉ xử lý các tệp tài liệu: {valid_list}"
             )
-            logger.warning(f"🚫 [DOCREADER GATE REJECT] {clean_filename}: {err_msg}")
+            logger.warning("[DOCREADER] rejected reason=unsupported_extension file=%r ext=%s", clean_filename, ext or "-")
             return DocReaderResult(
                 success=False,
                 file_name=clean_filename,
@@ -193,7 +193,7 @@ class DocReaderService:
         if file_size > MAX_FILE_SIZE_BYTES:
             size_mb = file_size / (1024 * 1024)
             err_msg = f"Kích thước tệp ({size_mb:.2f}MB) vượt quá giới hạn tối đa cho phép (50MB)."
-            logger.warning(f"🚫 [DOCREADER SIZE REJECT] {clean_filename}: {err_msg}")
+            logger.warning("[DOCREADER] rejected reason=size_exceeded file=%r size_mb=%.2f", clean_filename, size_mb)
             return DocReaderResult(
                 success=False,
                 file_name=clean_filename,
@@ -218,15 +218,18 @@ class DocReaderService:
             )
 
             logger.info(
-                f"🚀 [DOCREADER REQUEST] Gửi tệp '{clean_filename}' "
-                f"({file_size / 1024:.1f} KB, type={inferred_type}) tới gRPC {self.target}..."
+                "[DOCREADER] request file=%r size_kb=%.1f type=%s target=%s",
+                clean_filename,
+                file_size / 1024,
+                inferred_type,
+                self.target,
             )
 
             resp = await stub.Read(req, timeout=effective_timeout)
             exec_ms = (time.perf_counter() - start_time) * 1000
 
             if resp.error:
-                logger.error(f"❌ [DOCREADER SERVER ERROR] {clean_filename}: {resp.error}")
+                logger.error("[DOCREADER] server_error file=%r error=%s", clean_filename, resp.error)
                 return DocReaderResult(
                     success=False,
                     file_name=clean_filename,
@@ -238,8 +241,10 @@ class DocReaderService:
 
             md_text = resp.markdown_content or ""
             logger.info(
-                f"✔ [DOCREADER SUCCESS] Đã phân giải '{clean_filename}' thành công: "
-                f"{len(md_text)} ký tự ({exec_ms:.1f}ms)"
+                "[DOCREADER] parsed file=%r chars=%d duration_ms=%.1f",
+                clean_filename,
+                len(md_text),
+                exec_ms,
             )
 
             return DocReaderResult(
@@ -256,7 +261,7 @@ class DocReaderService:
             code = rpc_err.code()
             details = rpc_err.details() or str(rpc_err)
             err_msg = f"Lỗi kết nối gRPC AnyDoc ({code}): {details}"
-            logger.error(f"❌ [DOCREADER RPC ERROR] {clean_filename}: {err_msg}")
+            logger.error("[DOCREADER] rpc_error file=%r code=%s details=%s", clean_filename, code, details)
             return DocReaderResult(
                 success=False,
                 file_name=clean_filename,
@@ -267,7 +272,7 @@ class DocReaderService:
         except asyncio.TimeoutError:
             exec_ms = (time.perf_counter() - start_time) * 1000
             err_msg = f"Timeout khi phân giải tệp sau {effective_timeout}s."
-            logger.error(f"❌ [DOCREADER TIMEOUT] {clean_filename}: {err_msg}")
+            logger.error("[DOCREADER] timeout file=%r timeout_s=%s", clean_filename, effective_timeout)
             return DocReaderResult(
                 success=False,
                 file_name=clean_filename,
@@ -278,7 +283,7 @@ class DocReaderService:
         except Exception as e:
             exec_ms = (time.perf_counter() - start_time) * 1000
             err_msg = f"Ngoại lệ không xác định khi phân giải tệp: {e}"
-            logger.error(f"❌ [DOCREADER UNKNOWN ERROR] {clean_filename}: {err_msg}", exc_info=True)
+            logger.error("[DOCREADER] error file=%r error=%s", clean_filename, e, exc_info=True)
             return DocReaderResult(
                 success=False,
                 file_name=clean_filename,

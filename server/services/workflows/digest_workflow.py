@@ -27,8 +27,9 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from core.config import settings
+from core.tenant_errors import BYOKConfigurationError
 from database.scoped_query import get_current_tenant_key, inject_tenant_filter
-from services.ai.gemini_client import LLMClient, llm_client
+from services.ai.llm_client import LLMClient, llm_client
 from database.db import (
     get_staging_collection,
     get_daily_digests_collection,
@@ -161,9 +162,11 @@ Trả về DUY NHẤT một JSON Object hợp lệ (không kèm markdown ```json
 class DigestService:
     """Service điều phối toàn bộ chu trình Staging -> Digest Extraction -> WeKnora Sync."""
 
-    def __init__(self, gemini_api_key: Optional[str] = None):
-        self.api_key = gemini_api_key or settings.GEMINI_API_KEY or settings.gemini_api
+    def __init__(self, api_key: Optional[str] = None):
+        self._explicit_api_key = api_key
+        self.api_key = api_key or settings.GEMINI_API_KEY or settings.gemini_api
         self.llm_client = LLMClient(api_key=self.api_key)
+        self._initial_llm_client = self.llm_client
         self.fallback_models = self.llm_client.default_models
 
     # -------------------------------------------------------------------------
@@ -245,13 +248,39 @@ class DigestService:
     # 2. TRÍCH XUẤT THÔNG MINH BẰNG LLM
     # -------------------------------------------------------------------------
 
-    async def _call_gemini(self, prompt: str) -> str:
-        """Gọi Gemini API thông qua unified llm_client với thinkingBudget: 0."""
-        return await self.llm_client.generate_text_async(
+    async def _resolve_llm_client(
+        self,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
+    ):
+        """Phân giải LLMClient theo cấu hình tenant/BYOK, bảo toàn mock test và key truyền tường minh."""
+        has_explicit_key = (
+            bool(self._explicit_api_key.strip())
+            if isinstance(self._explicit_api_key, str)
+            else bool(self._explicit_api_key)
+        )
+        if self.llm_client is not self._initial_llm_client or has_explicit_key:
+            return self.llm_client
+
+        eff_tenant = ((tenant_key or "").strip() or (get_current_tenant_key() or "").strip()) or None
+        from services.ai.ai_config_manager import ai_config_manager
+        return await ai_config_manager.resolve_llm_client(
+            tenant_key=eff_tenant,
+            open_id=open_id,
+        )
+
+    async def _call_llm(
+        self,
+        prompt: str,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
+    ) -> str:
+        """Gọi LLM API thông qua client được phân giải theo tenant/BYOK."""
+        client = await self._resolve_llm_client(tenant_key=tenant_key, open_id=open_id)
+        return await client.generate_text_async(
             prompt=prompt,
             temperature=0.1,
             max_output_tokens=4096,
-            thinking_budget=0,
         )
 
 
@@ -356,7 +385,7 @@ class DigestService:
     ) -> DailyDigestRecord:
         """Dùng LLM đọc danh sách tin nhắn và Claims để trích xuất thành đối tượng DailyDigestRecord."""
         target_date = date or get_current_digest_date()
-        eff_tenant = tenant_key or get_current_tenant_key()
+        eff_tenant = ((tenant_key or "").strip() or (get_current_tenant_key() or "").strip()) or None
         digest_prefix = f"digest_{eff_tenant}_" if eff_tenant else "digest_"
         digest_id = f"{digest_prefix}{target_date.replace('-', '')}_{chat_id}"
 
@@ -390,6 +419,7 @@ class DigestService:
                 chat_id=chat_id,
                 chat_name=chat_name,
                 project_tag=project_tag,
+                tenant_key=eff_tenant,
                 overview_summary=fallback_summary,
                 previous_overview_summary=previous_overview_summary,
                 previous_digest_date=previous_digest_date,
@@ -446,7 +476,10 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
 """
 
         full_prompt = f"{EXTRACTION_SYSTEM_PROMPT}\n\n{user_prompt}"
-        raw_response = await self._call_gemini(full_prompt)
+        if eff_tenant:
+            raw_response = await self._call_llm(full_prompt, tenant_key=eff_tenant)
+        else:
+            raw_response = await self._call_llm(full_prompt)
 
         # Làm sạch JSON bọc trong markdown ```json ... ```
         clean_json = raw_response.strip()
@@ -538,6 +571,7 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             chat_id=chat_id,
             chat_name=chat_name,
             project_tag=project_tag,
+            tenant_key=eff_tenant,
             overview_summary=parsed_data.get("overview_summary", ""),
             previous_overview_summary=previous_overview_summary,
             previous_digest_date=previous_digest_date,
@@ -613,11 +647,7 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
             target_kb = target_kb.split(",")[0].strip()
 
         if not target_kb:
-            logger.warning(
-                "⚠️ Không tìm thấy wiki KB riêng cho tenant '%s' - bỏ qua đồng bộ digest "
-                "sang WeKnora thay vì ghi vào kho của doanh nghiệp khác.",
-                eff_tenant,
-            )
+            logger.warning("[DIGEST_SYNC] skipped reason=missing_wiki_kb tenant=%s", eff_tenant or "-")
             digest.sync_status = "failed"
             return False
 
@@ -763,16 +793,17 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
                 res = await lark_service.send_bot_dm_to_owner(msg_text, target_open_id=target_approver)
                 if not res.get("success"):
                     logger.error(
-                        f"❌ [DIGEST APPROVAL] Thất bại khi gửi tin duyệt tới approver: "
-                        f"code={res.get('code')}, msg={res.get('msg') or res.get('error')}"
+                        "[DIGEST_APPROVAL] dm_send_failed code=%s error=%s",
+                        res.get("code"),
+                        res.get("msg") or res.get("error"),
                     )
                     return False
-                logger.info(f"✔ [DIGEST APPROVAL] Đã gửi tin nhắn xin duyệt thành công tới approver: {target_approver}")
+                logger.info("[DIGEST_APPROVAL] dm_sent approver=%s", target_approver)
                 return True
-            logger.warning("⚠️ [DIGEST APPROVAL] Không có target_approver (chưa cấu hình open_id)")
+            logger.warning("[DIGEST_APPROVAL] dm_skipped reason=missing_approver")
             return False
         except Exception as e:
-            logger.error(f"❌ [DIGEST APPROVAL] Lỗi ngoại lệ khi gửi tin duyệt: {e}", exc_info=True)
+            logger.error("[DIGEST_APPROVAL] dm_error error=%s", e, exc_info=True)
             return False
 
     async def get_latest_pending_approval_digest(self, tenant_key: Optional[str] = None) -> Optional[DailyDigestRecord]:
@@ -811,7 +842,11 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         if digest.sync_status == "synced":
             return True, f"Digest {digest.id} đã được đồng bộ lên WeKnora trước đó.", digest
 
-        success = await self.sync_digest_to_weknora(digest, dataset_id=dataset_id)
+        success = await self.sync_digest_to_weknora(
+            digest,
+            dataset_id=dataset_id,
+            tenant_key=tenant_key,
+        )
         if success:
             try:
                 from database.db import promote_proposed_claims_for_chat
@@ -820,7 +855,7 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
                     approver_info={"user_name": "Lãnh đạo", "role": "owner"},
                 )
                 if promoted > 0:
-                    logger.info(f"✔ [Digest Approval] Đã tự động thăng hạng {promoted} claims của nhóm {digest.chat_id} thành CURRENT.")
+                    logger.info("[DIGEST_APPROVAL] claims_promoted chat=%s count=%d", digest.chat_id, promoted)
             except Exception as e:
                 logger.warning(f"Lỗi khi auto-promote claims theo digest: {e}")
             return True, f"Đã duyệt và nạp thành công Daily Digest ({digest.id}) vào WeKnora KB!", digest
@@ -878,13 +913,19 @@ Hãy phân tích kết hợp bối cảnh ngày trước (nếu có), tin nhắn
         target_date: str,
         previous_executive_summary: Optional[str] = None,
         previous_master_date: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> str:
         """Dùng LLM tổng hợp bức tranh toàn cảnh cấp điều hành từ tóm tắt của các nhóm."""
         if not group_digests:
             return "Hôm nay không có hoạt động trao đổi đáng chú ý nào trên các nhóm dự án."
 
+        eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() or "").strip() or None
+
         if previous_executive_summary is None:
-            prev_master = await self.get_previous_master_digest(before_date=target_date)
+            prev_master = await self.get_previous_master_digest(
+                before_date=target_date,
+                tenant_key=eff_tenant,
+            )
             if prev_master and prev_master.executive_summary:
                 previous_executive_summary = prev_master.executive_summary.strip()
                 previous_master_date = prev_master.date
@@ -913,12 +954,17 @@ Yêu cầu:
 - Ngắn gọn, súc tích, mang tính chỉ đạo điều hành, không liệt kê máy móc.
 - Trả về văn bản thuần túy không dấu ngoặc kép hay markdown header."""
         try:
-            res = await self._call_gemini(prompt)
+            if eff_tenant:
+                res = await self._call_llm(prompt, tenant_key=eff_tenant)
+            else:
+                res = await self._call_llm(prompt)
             clean_res = res.strip()
             if clean_res.startswith("```"):
                 clean_res = re.sub(r"^```[a-zA-Z]*\s*", "", clean_res)
                 clean_res = re.sub(r"\s*```$", "", clean_res)
             return clean_res.strip()
+        except BYOKConfigurationError:
+            raise
         except Exception as e:
             logger.warning(f"Lỗi khi gọi LLM sinh executive overview: {e}")
             return f"Tổng hợp trao đổi và tiến độ công việc trên {len(group_digests)} nhóm dự án ngày {target_date}."
@@ -1079,7 +1125,7 @@ Yêu cầu:
         try:
             from decorators.cost_telemetry import get_cost_telemetry_summary
 
-            cost_summary = await get_cost_telemetry_summary(hours=24)
+            cost_summary = await get_cost_telemetry_summary(hours=24, tenant_key=eff_tenant)
         except Exception as e:
             logger.warning(
                 "Không thể lấy tổng hợp chi phí telemetry "
@@ -1149,7 +1195,7 @@ Yêu cầu:
         eff_tenant = tenant_key or get_current_tenant_key()
         target_date = date or get_current_digest_date()
         chat_ids = await self.get_active_chat_ids_today(date=target_date, tenant_key=eff_tenant)
-        logger.info(f"🏛️ [MASTER DIGEST] Bắt đầu tổng hợp Master Digest cho ngày {target_date} (tenant: {eff_tenant}, {len(chat_ids)} nhóm)")
+        logger.info("[MASTER_DIGEST] synthesis_started date=%s tenant=%s groups=%d", target_date, eff_tenant or "-", len(chat_ids))
 
         from services.knowledge.chat_scopes import scope_service
 
@@ -1182,6 +1228,8 @@ Yêu cầu:
                 # Lưu từng digest vào MongoDB và đánh dấu staging đã xử lý
                 await self.save_digest_to_mongo(digest)
                 group_digests.append(digest)
+            except BYOKConfigurationError:
+                raise
             except Exception as e:
                 logger.error(f"Lỗi khi tổng hợp digest cho nhóm {cid}: {e}", exc_info=True)
 
@@ -1198,6 +1246,7 @@ Yêu cầu:
             target_date=target_date,
             previous_executive_summary=prev_exec_summary,
             previous_master_date=prev_master_date,
+            tenant_key=eff_tenant,
         )
         if eff_tenant:
             master_id = f"master_digest_{eff_tenant}_{target_date.replace('-', '')}"
@@ -1229,9 +1278,9 @@ Yêu cầu:
         if needs_approval:
             sent_ok = await self.send_master_approval_request(master_digest, tenant_key=eff_tenant)
             if sent_ok:
-                print(f"✔ [MASTER DIGEST APPROVAL] Đã gửi báo cáo Master Digest ngày {target_date} (tenant: {eff_tenant}) tới Chủ nhân thành công!")
+                logger.info("[MASTER_DIGEST] approval_dm_sent date=%s tenant=%s", target_date, eff_tenant or "-")
             else:
-                print(f"⚠️ [MASTER DIGEST APPROVAL] Đã lưu Master Digest nhưng không thể gửi DM cho Chủ nhân (tenant: {eff_tenant}).")
+                logger.warning("[MASTER_DIGEST] approval_dm_failed date=%s tenant=%s", target_date, eff_tenant or "-")
         else:
             await self.approve_and_sync_master_digest(master_digest.id, tenant_key=eff_tenant)
 
@@ -1270,7 +1319,7 @@ Yêu cầu:
         synced_count = 0
         failed_count = 0
         for gd in master_digest.group_digests:
-            ok = await self.sync_digest_to_weknora(gd)
+            ok = await self.sync_digest_to_weknora(gd, tenant_key=eff_tenant)
             if ok:
                 synced_count += 1
             else:
@@ -1306,7 +1355,7 @@ Yêu cầu:
                     )
                     total_promoted += cnt
             if total_promoted > 0:
-                print(f"🎉 [TIER 3 MASTER DIGEST APPROVAL] Đã tự động thăng hạng {total_promoted} claims tồn đọng thành CURRENT (tenant: {eff_tenant}).")
+                logger.info("[TIER3_PROMOTE] claims_promoted count=%d tenant=%s", total_promoted, eff_tenant or "-")
         except Exception as e:
             logger.warning(f"Lỗi auto-promote claims khi duyệt Master Digest: {e}")
 
@@ -1394,13 +1443,20 @@ Yêu cầu:
         target_date = date or get_current_digest_date()
         messages = await self.get_staging_messages(chat_id=chat_id, date=target_date, tenant_key=eff_tenant)
 
-        logger.info(f"Bắt đầu tổng hợp DailyDigest cho nhóm {chat_id} ngày {target_date} (tenant: {eff_tenant}, {len(messages)} tin nhắn)")
+        logger.info(
+            "[DIGEST] extract_start chat=%s date=%s tenant=%s messages=%d",
+            chat_id,
+            target_date,
+            eff_tenant or "-",
+            len(messages),
+        )
         digest = await self.extract_digest_from_messages(
             messages=messages,
             chat_id=chat_id,
             chat_name=chat_name,
             date=target_date,
             project_tag=project_tag,
+            tenant_key=eff_tenant,
         )
 
         from services.knowledge.chat_scopes import scope_service
@@ -1415,17 +1471,16 @@ Yêu cầu:
             await self.save_digest_to_mongo(digest)
             sent_ok = await self.send_approval_request(digest)
             if sent_ok:
-                print(f"✔ [DIGEST APPROVAL] Đã gửi tin nhắn xin duyệt Daily Digest ({digest.id}) tới approver thành công!")
-                logger.info(f"✔ Đã lưu DailyDigest {digest.id} và gửi tin nhắn chờ duyệt tới approver thành công.")
+                logger.info("[DIGEST] approval_dm_sent digest_id=%s", digest.id)
             else:
-                print(f"❌ [DIGEST APPROVAL] Đã lưu DailyDigest {digest.id} vào MongoDB nhưng KHÔNG THỂ gửi tin nhắn duyệt qua Lark (Lỗi API/Quota 429)!")
-                logger.warning(
-                    f"⚠️ [DIGEST APPROVAL] Đã lưu DailyDigest {digest.id} vào MongoDB nhưng KHÔNG THỂ gửi tin nhắn duyệt qua Lark "
-                    f"(Vui lòng kiểm tra API quota hoặc cấu hình Lark Bot)!"
-                )
+                logger.warning("[DIGEST] approval_dm_failed digest_id=%s", digest.id)
         else:
             await self.save_digest_to_mongo(digest)
-            await self.sync_digest_to_weknora(digest, dataset_id=weknora_kb_id)
+            await self.sync_digest_to_weknora(
+                digest,
+                dataset_id=weknora_kb_id,
+                tenant_key=eff_tenant,
+            )
 
         return digest
 

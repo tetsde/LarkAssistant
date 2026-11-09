@@ -128,3 +128,21 @@ class AppCredentialMissing(TenantResolutionError):
             "hoặc credential đã bị thu hồi.",
             tenant_key=tenant_key,
         )
+
+
+class BYOKConfigurationError(TenantResolutionError):
+    """Cấu hình BYOK không hợp lệ hoặc thiếu API key khi đã kích hoạt chế độ BYOK."""
+
+    error_code: str = "byok_config_error"
+    http_status: int = 400
+
+    def __init__(
+        self,
+        message: str,
+        tenant_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        service_type: str = "llm",
+    ) -> None:
+        super().__init__(message, tenant_key=tenant_key)
+        self.provider = provider
+        self.service_type = service_type

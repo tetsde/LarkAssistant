@@ -167,7 +167,7 @@ class TenantTokenManager:
         self.custom_app_provider = CustomAppProvider()
         self.isv_provider = ISVProvider()
         self.user_provider = UserTokenProvider()
-        logger.info("✅ TenantTokenManager initialized (single-loop broker, 3-dimension cache key)")
+        logger.debug("[TOKEN_BROKER] initialized cache_dims=3")
 
     # -------------------------------------------------------------------------
     # CREDENTIAL LOOKUP
@@ -193,7 +193,7 @@ class TenantTokenManager:
     def _set_entry(self, key: CacheKey, entry: TokenCacheEntry) -> None:
         self._cache[key] = entry
         logger.debug(
-            "💾 Cached %s token tenant='%s' app='%s' (expires in %ss)",
+            "[TOKEN_BROKER] cached kind=%s tenant=%s app=%s ttl_s=%d",
             key[2], key[0], key[1], int(entry.expires_at - time.time()),
         )
 
@@ -279,8 +279,8 @@ class TenantTokenManager:
                     return cached.token
 
             logger.info(
-                "🔄 Fetching %s token for tenant '%s' (app '%s')%s",
-                kind, tenant_key, app_id, " [force]" if force_refresh else "",
+                "[TOKEN_BROKER] fetch kind=%s tenant=%s app=%s force=%s",
+                kind, tenant_key, app_id, bool(force_refresh),
             )
             try:
                 entry = await self._fetch_fresh(tenant_key, app_id, app_secret, kind)
@@ -395,7 +395,7 @@ class TenantTokenManager:
         kind = _normalize_kind(token_type) if token_type else None
         removed = await token_loop.asubmit(self._invalidate_on_token_loop(tenant_key.strip(), kind))
         logger.info(
-            "🗑️ Invalidated %s token cache cho tenant '%s' (%s entry)",
+            "[TOKEN_BROKER] cache_invalidated kind=%s tenant=%s entries=%d",
             token_type or "all", tenant_key, removed,
         )
 

@@ -16,7 +16,6 @@ from services.lark import (
     LarkClientMixin,
     LarkDispatcherMixin,
     LarkMessengerMixin,
-    LarkRunnerMixin,
 )
 
 __all__ = [
@@ -29,5 +28,4 @@ __all__ = [
     "LarkClientMixin",
     "LarkDispatcherMixin",
     "LarkMessengerMixin",
-    "LarkRunnerMixin",
 ]

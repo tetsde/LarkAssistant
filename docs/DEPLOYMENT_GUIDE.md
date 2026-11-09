@@ -18,8 +18,8 @@ flowchart TD
     subgraph HiLark_Infra["Hạ tầng Triển khai Sản xuất HiLark (hilark-network)"]
         direction TB
 
-        subgraph Security_Boundary["Vành đai Không Ingress (Zero-Ingress Attack Surface)"]
-            WS["WebSocket Outbound Long Connection<br/>(Không mở port inbound từ Internet)"]
+        subgraph Security_Boundary["Cổng Tiếp nhận & Xác thực Sự kiện (HTTP Webhook Gateway)"]
+            Webhook["HTTPS Webhook Endpoint<br/>(/api/lark/events, Verify Token & AES Decrypt)"]
         end
 
         subgraph Core_Services["HiLark Application Services"]
@@ -39,8 +39,8 @@ flowchart TD
     end
 
     LarkClient -- "Lark Applink (Modal Webview)" --> WizardUI
-    LarkGateway <-- "WebSocket Bi-directional" --> WS
-    WS --> FastAPI
+    LarkGateway -- "HTTPS Webhook POST" --> Webhook
+    Webhook --> FastAPI
     FastAPI --> BYOKService
     BYOKService -- "AES-256 Encrypted" --> MongoDB
     FastAPI --> WeKnoraApp
@@ -50,12 +50,12 @@ flowchart TD
     WeKnoraApp --> Redis
 ```
 
-### 1.1. Vành đai Bảo mật Zero-Ingress (Zero Attack Surface)
-- HiLark giao tiếp với máy chủ Lark Open Platform hoàn toàn thông qua giao thức **WebSocket Outbound Long Connection** do Lark OAPI cung cấp.
-- **Ưu điểm vượt trội:**
-  1. Không yêu cầu mở cổng Inbound (port forwarding) từ Internet vào hạ tầng nội bộ.
-  2. Miễn nhiễm trước các cuộc tấn công DDoS vào webhook endpoint hoặc port scanning.
-  3. Hoạt động trơn tru phía sau mọi tường lửa doanh nghiệp (Enterprise NAT/Firewall) mà không cần cấu hình Reverse Proxy phức tạp.
+### 1.1. Cổng Tiếp nhận Sự kiện HTTP Webhook Multi-Tenant
+- HiLark giao tiếp chiều nhận sự kiện với Lark Open Platform qua **HTTP Webhook Gateway** (`POST /api/lark/events` & `/api/lark/card-action`, hoặc biến thể kèm `/{app_id}`).
+- **Cơ chế bảo mật & cô lập:**
+  1. Xác thực `Verification Token` và giải mã AES-256 (`Encrypt Key`) theo từng Custom App đăng ký trong MongoDB (`lark_app_credentials`).
+  2. Định tuyến cô lập theo `tenant_key` thông qua `TenantContext` và `LarkAppRuntime`, không dùng chung state giữa các doanh nghiệp.
+  3. Hỗ trợ triển khai sau Reverse Proxy / Cloudflare Tunnel trong mạng nội bộ.
 
 ---
 
@@ -169,7 +169,7 @@ docker compose -f docker-compose.prod.yml logs -f hilark-server
 1. **Khóa API của User bị rò rỉ:**  
    Nếu người dùng nghi ngờ khóa bị lộ bên ngoài, họ chỉ cần mở lại Screen Guide và cập nhật khóa mới, hoặc tắt tùy chọn BYOK để quay về khóa hệ thống.
 2. **WeKnora bảo trì tạm thời:**  
-   Khi WeKnora tạm ngưng phục vụ, HiLark Server vẫn duy trì kết nối Lark WebSocket, trả lời các câu hỏi dựa trên Conversation Memory nội bộ trong MongoDB và thông báo lịch sự cho người dùng nếu cần truy xuất tri thức sâu.
+   Khi WeKnora tạm ngưng phục vụ, HiLark Server vẫn tiếp nhận Webhook từ Lark, trả lời các câu hỏi dựa trên Conversation Memory nội bộ trong MongoDB và thông báo lịch sự cho người dùng nếu cần truy xuất tri thức sâu.
 3. **Xoay vòng khóa mã hóa (Key Rotation):**  
    Khi cần đổi `ENCRYPTION_SECRET_KEY`, chạy script migration chuyên dụng để giải mã bằng khóa cũ và mã hóa lại bằng khóa mới trước khi cập nhật `.env`.
 

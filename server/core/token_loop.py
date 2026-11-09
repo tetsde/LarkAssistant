@@ -75,7 +75,7 @@ def get_loop() -> asyncio.AbstractEventLoop:
         )
         _loop, _thread = loop, thread
         thread.start()
-        logger.info("Token event loop started on thread '%s'", THREAD_NAME)
+        logger.info("[TOKEN_LOOP] started thread=%s", THREAD_NAME)
         return loop
 
 
@@ -146,4 +146,4 @@ def stop(timeout: float = 5.0) -> None:
         thread.join(timeout=timeout)
     if not loop.is_closed():
         loop.close()
-    logger.info("Token event loop stopped")
+    logger.info("[TOKEN_LOOP] stopped")

@@ -168,11 +168,11 @@ class TenantStateService:
             await self._invalidate(tenant_key)
 
         logger.info(
-            "🧬 [TENANT STATE] '%s': %s -> %s%s",
+            "[TENANT_STATE] transitioned tenant=%s from=%s to=%s fields=%s",
             tenant_key,
-            from_status or "<new>",
+            from_status or "new",
             to_status,
-            f" (fields={sorted(extra_fields)})" if extra_fields else "",
+            sorted(extra_fields) if extra_fields else [],
         )
         return {
             "tenant_key": tenant_key,

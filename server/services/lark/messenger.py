@@ -93,7 +93,7 @@ class LarkMessengerMixin:
 
         owner_open_id = target_open_id or self.owner_open_id
         if not owner_open_id:
-            logger.error("[LARK BOT DM] Không tìm thấy open_id của chủ nhân để gửi tin.")
+            logger.error("[LARK_DM] owner_missing")
             return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -115,14 +115,14 @@ class LarkMessengerMixin:
             opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             response = await self.client.im.v1.message.acreate(request, option=opt)
             if not response.success():
-                logger.error(f"[LARK BOT DM] Thất bại khi gửi tin tới chủ nhân ({owner_open_id}): code={response.code}, msg={response.msg}")
+                logger.error("[LARK_DM] send_failed owner=%s code=%s msg=%s", owner_open_id, response.code, response.msg)
                 return {"success": False, "code": response.code, "msg": response.msg}
             if response.data and getattr(response.data, "message_id", None):
                 self._record_sent_message_id(getattr(response.data, "message_id"))
-            logger.info(f"[LARK BOT DM] Đã gửi tin nhắn tới chủ nhân ({owner_open_id}) thành công")
+            logger.info("[LARK_DM] sent owner=%s", owner_open_id)
             return {"success": True, "data": response.data}
         except Exception as e:
-            logger.error(f"[LARK BOT DM] Lỗi ngoại lệ khi gửi tin nhắn tới chủ nhân: {e}", exc_info=True)
+            logger.error("[LARK_DM] send_error owner=%s error=%s", owner_open_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     # Tương thích ngược tên hàm cũ
@@ -147,7 +147,7 @@ class LarkMessengerMixin:
 
         owner_open_id = target_open_id or self.owner_open_id
         if not owner_open_id:
-            logger.error("[LARK BOT DM CARD] Không tìm thấy open_id của chủ nhân để gửi thẻ.")
+            logger.error("[LARK_DM_CARD] owner_missing")
             return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
 
         content_json = (
@@ -173,23 +173,25 @@ class LarkMessengerMixin:
             response = await self.client.im.v1.message.acreate(request, option=opt)
             if not response.success():
                 logger.error(
-                    f"[LARK BOT DM CARD] Thất bại khi gửi thẻ tới chủ nhân ({owner_open_id}): "
-                    f"code={response.code}, msg={response.msg}"
+                    "[LARK_DM_CARD] send_failed owner=%s code=%s msg=%s",
+                    owner_open_id,
+                    response.code,
+                    response.msg,
                 )
                 if response.code == 230013:
                     logger.warning(
-                        f"[LARK BOT DM CARD] Tài khoản {owner_open_id} chưa nằm trong phạm vi khả dụng (Availability) của Lark Bot. "
-                        "Vui lòng vào Lark Developer Console -> Version Management & Release -> Availability -> Thêm thành viên này hoặc chọn 'All employees'."
+                        "[LARK_DM_CARD] bot_unavailable owner=%s code=230013 hint=check_app_availability",
+                        owner_open_id,
                     )
                 return {"success": False, "code": response.code, "msg": response.msg}
 
             mid = getattr(response.data, "message_id", None) if response.data else None
             if mid:
                 self._record_sent_message_id(mid)
-            logger.info(f"[LARK BOT DM CARD] Đã gửi thẻ tương tác tới chủ nhân ({owner_open_id}) thành công, message_id={mid}")
+            logger.info("[LARK_DM_CARD] sent owner=%s msg=%s", owner_open_id, mid)
             return {"success": True, "data": response.data, "message_id": mid}
         except Exception as e:
-            logger.error(f"[LARK BOT DM CARD] Lỗi ngoại lệ khi gửi thẻ tới chủ nhân: {e}", exc_info=True)
+            logger.error("[LARK_DM_CARD] send_error owner=%s error=%s", owner_open_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     # -------------------------------------------------------------------------
@@ -232,16 +234,13 @@ class LarkMessengerMixin:
         try:
             response = await self.client.im.v1.message.apatch(request, option=opt)
             if not response.success():
-                logger.error(
-                    f"[LARK CARD UPDATE] Cập nhật thẻ {message_id} thất bại: "
-                    f"code={response.code}, msg={response.msg}"
-                )
+                logger.error("[LARK_CARD] update_failed msg=%s code=%s msg_text=%s", message_id, response.code, response.msg)
                 return {"success": False, "code": response.code, "msg": response.msg}
 
-            logger.info(f"[LARK CARD UPDATE] Cập nhật thẻ {message_id} thành công")
+            logger.info("[LARK_CARD] updated msg=%s", message_id)
             return {"success": True, "data": getattr(response, "data", None)}
         except Exception as e:
-            logger.error(f"[LARK CARD UPDATE] Lỗi ngoại lệ khi cập nhật thẻ {message_id}: {e}", exc_info=True)
+            logger.error("[LARK_CARD] update_error msg=%s error=%s", message_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     # -------------------------------------------------------------------------
@@ -262,7 +261,7 @@ class LarkMessengerMixin:
         token_check = self.check_user_access_token()
         if not token_check.is_valid:
             warn_msg = f"User Access Token không hợp lệ hoặc đã hết hạn: {token_check.message}"
-            logger.warning(f"⚠️ [SAFE FALLBACK] {warn_msg}")
+            logger.warning("[LARK_IM] user_token_invalid reason=%s", token_check.message)
             return None, None, {
                 "success": False,
                 "error": "token_expired",
@@ -273,7 +272,7 @@ class LarkMessengerMixin:
         try:
             opt = self._get_user_request_option()
         except ValueError as e:
-            logger.error(f"Từ chối thao tác gửi tin nhắn: {e}")
+            logger.error("[LARK_IM] user_token_option_failed error=%s", e)
             return None, None, {"success": False, "error": str(e), "msg": "Không có User Access Token hợp lệ"}
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -309,7 +308,7 @@ class LarkMessengerMixin:
             eff_tenant = self._resolve_msg_tenant(tenant_key)
             
             if not eff_tenant:
-                logger.warning("⚠️ Không có tenant_key, không thể lấy token qua TenantTokenManager")
+                logger.warning("[LARK_IM] missing_tenant_key action=prepare_user_msg")
                 return None, None, {
                     "success": False,
                     "error": "missing_tenant_key",
@@ -322,15 +321,15 @@ class LarkMessengerMixin:
             )
             
             if not valid_token:
-                logger.warning("⚠️ [TOKEN AUTO-REFRESH FAILED] User token không hợp lệ")
+                logger.warning("[LARK_IM] user_token_invalid tenant=%s", eff_tenant)
                 return None, None, {
                     "success": False,
                     "error": "token_expired",
                     "msg": "User Access Token không hợp lệ hoặc đã hết hạn",
                 }
-            logger.info("✅ [TOKEN AUTO-REFRESH] Token đã được làm mới hoặc vẫn còn hạn")
+            logger.debug("[LARK_IM] user_token_ready tenant=%s", eff_tenant)
         except Exception as e:
-            logger.error(f"Lỗi khi lấy/refresh user token: {e}")
+            logger.error("[LARK_IM] user_token_error tenant=%s error=%s", eff_tenant or "-", e)
             return None, None, {"success": False, "error": str(e)}
 
         # Cập nhật RAM instance và trực tiếp tạo RequestOption từ valid_token
@@ -371,7 +370,7 @@ class LarkMessengerMixin:
     def _handle_im_response(self, response: Any, action_desc: str) -> Dict[str, Any]:
         """Xử lý response từ Lark IM, ghi nhận cache message_id chống loop và log lỗi."""
         if not response.success():
-            logger.error(f"Lỗi {action_desc}: code={response.code}, msg={response.msg}")
+            logger.error("[LARK_IM] request_failed action=%s code=%s msg=%s", action_desc, response.code, response.msg)
             return {
                 "success": False,
                 "code": response.code,
@@ -380,11 +379,11 @@ class LarkMessengerMixin:
 
         # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình (có TTL & Bounded Cache)
         resp_data = getattr(response, "data", None)
-        if resp_data and getattr(resp_data, "message_id", None):
-            sent_mid = getattr(resp_data, "message_id")
+        sent_mid = getattr(resp_data, "message_id", None) if resp_data else None
+        if sent_mid:
             self._record_sent_message_id(sent_mid)
 
-        logger.info(f"✔ Đã {action_desc} thành công")
+        logger.info("[LARK_IM] request_ok action=%s sent_msg=%s", action_desc, sent_mid or "-")
         return {"success": True, "data": resp_data}
 
     # -------------------------------------------------------------------------
@@ -405,7 +404,7 @@ class LarkMessengerMixin:
                 message_id, text, "message_id", tenant_key=tenant_key
             )
             if err:
-                logger.info(f"Fallback sang Bot do: {err.get('msg')}")
+                logger.info("[LARK_IM] reply_fallback_bot msg=%s reason=%s", message_id, err.get("error") or err.get("msg"))
                 opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                 content_json = json.dumps({"text": text}, ensure_ascii=False)
         else:
@@ -423,11 +422,11 @@ class LarkMessengerMixin:
             # ✅ HANDLE BOT NOT IN CHAT ERROR
             if not response.success():
                 if response.code == 230002:  # Bot/User can NOT be out of the chat
-                    logger.warning(f"Bot không ở trong chat, không thể reply message {message_id}")
+                    logger.warning("[LARK_IM] reply_skipped msg=%s code=230002 reason=bot_not_in_chat", message_id)
                     return {"success": False, "code": 230002, "skipped": True, "msg": "Bot not in chat"}
             return self._handle_im_response(response, f"reply tin nhắn {message_id}")
         except Exception as e:
-            logger.error(f"Exception khi reply tin nhắn {message_id}: {e}", exc_info=True)
+            logger.error("[LARK_IM] reply_error msg=%s error=%s", message_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     def reply_text(
@@ -441,7 +440,7 @@ class LarkMessengerMixin:
         if as_user:
             opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
             if err:
-                logger.info(f"Fallback sang danh tính Bot để reply tin nhắn {message_id} do: {err.get('msg')}")
+                logger.info("[LARK_IM] reply_sync_fallback_bot msg=%s reason=%s", message_id, err.get("error") or err.get("msg"))
                 opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
                 content_json = json.dumps({"text": text}, ensure_ascii=False)
         else:
@@ -458,7 +457,7 @@ class LarkMessengerMixin:
             response = self.client.im.v1.message.reply(request, option=opt)
             return self._handle_im_response(response, f"reply sync tin nhắn {message_id}")
         except Exception as e:
-            logger.error(f"Exception khi reply sync tin nhắn {message_id}: {e}", exc_info=True)
+            logger.error("[LARK_IM] reply_sync_error msg=%s error=%s", message_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     # -------------------------------------------------------------------------
@@ -495,7 +494,7 @@ class LarkMessengerMixin:
             response = await self.client.im.v1.message.acreate(request, option=opt)
             return self._handle_im_response(response, f"gửi tin nhắn tới {receive_id}")
         except Exception as e:
-            logger.error(f"Exception khi gửi tin nhắn tới {receive_id}: {e}", exc_info=True)
+            logger.error("[LARK_IM] send_error target=%s error=%s", receive_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     def send_text(
@@ -525,7 +524,7 @@ class LarkMessengerMixin:
             response = self.client.im.v1.message.create(request, option=opt)
             return self._handle_im_response(response, f"gửi sync tin nhắn tới {receive_id}")
         except Exception as e:
-            logger.error(f"Exception khi gửi sync tin nhắn tới {receive_id}: {e}", exc_info=True)
+            logger.error("[LARK_IM] send_sync_error target=%s error=%s", receive_id, e, exc_info=True)
             return {"success": False, "error": str(e)}
 
     # -------------------------------------------------------------------------
@@ -572,7 +571,7 @@ class LarkMessengerMixin:
                         builder.tenant_key(eff_tenant)
                     return builder.build()
             except Exception as e:
-                logger.debug(f"Không thể lấy fresh user token để recall: {e}")
+                logger.debug("[LARK_IM] recall_user_token_failed tenant=%s error=%s", eff_tenant or "-", e)
             if self.user_access_token:
                 return self._get_request_option(as_user=True, tenant_key=eff_tenant)
             return None
@@ -585,7 +584,7 @@ class LarkMessengerMixin:
                 response = await _do_delete(opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
             except Exception as e:
-                logger.error(f"Lỗi khi thu hồi tin nhắn {message_id} as user: {e}", exc_info=True)
+                logger.error("[LARK_IM] recall_error mode=user msg=%s error=%s", message_id, e, exc_info=True)
                 return {"success": False, "error": str(e)}
 
         elif as_user is False:
@@ -593,7 +592,7 @@ class LarkMessengerMixin:
                 response = await _do_delete(bot_opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as bot")
             except Exception as e:
-                logger.error(f"Lỗi khi thu hồi tin nhắn {message_id} as bot: {e}", exc_info=True)
+                logger.error("[LARK_IM] recall_error mode=bot msg=%s error=%s", message_id, e, exc_info=True)
                 return {"success": False, "error": str(e)}
 
         else:
@@ -604,16 +603,16 @@ class LarkMessengerMixin:
                     response = await _do_delete(user_opt)
                     if response.success():
                         return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as user")
-                    logger.info(f"Thu hồi tin nhắn {message_id} bằng User token không thành công (code {response.code}), thử bằng Bot token...")
+                    logger.debug("[LARK_IM] recall_fallback_bot msg=%s code=%s", message_id, response.code)
                 except Exception as ex:
-                    logger.debug(f"Thử thu hồi {message_id} bằng user token gặp lỗi: {ex}")
+                    logger.debug("[LARK_IM] recall_user_failed msg=%s error=%s", message_id, ex)
 
             # Thử bằng Bot token
             try:
                 response = await _do_delete(bot_opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id} as bot")
             except Exception as e:
-                logger.error(f"Exception khi thu hồi tin nhắn {message_id}: {e}", exc_info=True)
+                logger.error("[LARK_IM] recall_error msg=%s error=%s", message_id, e, exc_info=True)
                 return {"success": False, "error": str(e)}
 
     def recall_message(
@@ -698,7 +697,7 @@ class LarkMessengerMixin:
             payload = json.loads(body_bytes.decode(UTF_8)) if body_bytes else {}
             if isinstance(payload, dict) and payload.get("type") == "url_verification":
                 challenge = payload.get("challenge", "")
-                logger.info(f"✔ Đã phản hồi Lark URL Verification Challenge: {challenge}")
+                logger.info("[WEBHOOK] url_verification challenge=%s", challenge)
                 return Response(
                     content=json.dumps({"challenge": challenge}),
                     media_type="application/json",
@@ -777,28 +776,28 @@ class LarkMessengerMixin:
                                 media_type=getattr(candidate_response, "content_type", None) or "application/json",
                             )
                         logger.debug(
-                            "Candidate Custom App %s failed event dispatch (status %s): %s",
+                            "[WEBHOOK] candidate_app_failed app_id=%s status=%s body=%s",
                             candidate.get("app_id"),
                             candidate_response.status_code,
                             candidate_response.content,
                         )
                     except Exception as candidate_error:
                         logger.debug(
-                            "Encrypted event không khớp Custom App %s: %s",
+                            "[WEBHOOK] candidate_decrypt_failed app_id=%s error=%s",
                             candidate.get("app_id"),
                             candidate_error,
                         )
                     finally:
                         reset_current_lark_service(candidate_context_token)
 
-                logger.error("Không giải mã được encrypted Lark event bằng bất kỳ Custom App nào đã đăng ký")
+                logger.error("[WEBHOOK] decrypt_failed reason=no_matching_app_encrypt_key")
                 return Response(
                     content=json.dumps({"code": 403, "msg": "no matching Custom App encrypt_key"}),
                     media_type="application/json",
                     status_code=403,
                 )
             except Exception as encrypted_err:
-                logger.error("Lỗi resolve encrypted Custom App event: %s", encrypted_err, exc_info=True)
+                logger.error("[WEBHOOK] encrypted_dispatch_failed error=%s", encrypted_err, exc_info=True)
                 return Response(
                     content=json.dumps({"code": 500, "msg": "custom app encrypted event dispatch failed"}),
                     media_type="application/json",
@@ -827,7 +826,7 @@ class LarkMessengerMixin:
                         or payload.get("event", {}).get("token", "")
                     )
                     if not inbound_token or inbound_token != app_record["verification_token"]:
-                        logger.error("Lark event bị từ chối: verification_token không khớp App %s", inbound_app_id)
+                        logger.error("[WEBHOOK] rejected reason=invalid_verification_token app_id=%s", inbound_app_id)
                         return Response(
                             content=json.dumps({"code": 403, "msg": "invalid verification_token"}),
                             media_type="application/json",
@@ -838,7 +837,7 @@ class LarkMessengerMixin:
                     # dispatch path can skip that global validation later.
                     app_specific_validated = True
             except Exception as app_event_err:
-                logger.error("Lỗi định tuyến event theo Custom App %s: %s", inbound_app_id, app_event_err, exc_info=True)
+                logger.error("[WEBHOOK] custom_app_routing_failed app_id=%s error=%s", inbound_app_id, app_event_err, exc_info=True)
                 return Response(
                     content=json.dumps({"code": 500, "msg": "custom app event dispatch failed"}),
                     media_type="application/json",
@@ -846,7 +845,7 @@ class LarkMessengerMixin:
                 )
 
         if inbound_app_id and not app_record and inbound_app_id != getattr(settings, "LARK_APP_ID", ""):
-            logger.error("Từ chối event từ Custom App chưa đăng ký: %s", inbound_app_id)
+            logger.error("[WEBHOOK] rejected reason=unknown_custom_app app_id=%s", inbound_app_id)
             return Response(
                 content=json.dumps({"code": 403, "msg": "unknown Custom App"}),
                 media_type="application/json",
@@ -867,7 +866,7 @@ class LarkMessengerMixin:
                             status_code=200,
                         )
                 except Exception as ex:
-                    logger.error(f"Lỗi khi xử lý app_ticket event: {ex}")
+                    logger.error("[WEBHOOK] app_ticket_failed error=%s", ex)
 
         # 1.6. Xử lý sự kiện Tenant Lifecycle (app_status_change / app_uninstalled / open_app - EDL-0020)
         if isinstance(payload, dict):
@@ -883,7 +882,7 @@ class LarkMessengerMixin:
                             status_code=200,
                         )
                 except Exception as ex:
-                    logger.error(f"Lỗi khi xử lý tenant lifecycle event: {ex}")
+                    logger.error("[WEBHOOK] tenant_lifecycle_failed error=%s", ex)
 
         # 2. Xử lý sự kiện Card Action Callback (khi người dùng bấm nút trên Thẻ tương tác)
         is_card_action = False
@@ -917,7 +916,7 @@ class LarkMessengerMixin:
                     app_record = await lark_app_service.get_by_tenant_key(card_tenant)
                 except Exception as resolve_err:
                     logger.warning(
-                        "Không resolve được Custom App cho card tenant=%s: %s",
+                        "[WEBHOOK] card_app_resolve_failed tenant=%s error=%s",
                         card_tenant,
                         resolve_err,
                     )
@@ -972,7 +971,7 @@ class LarkMessengerMixin:
                 runtime_context_token = set_current_lark_service(runtime_service)
                 app_specific_validated = True
             except Exception as runtime_err:
-                logger.error("Không tạo được runtime client cho Custom App %s: %s", inbound_app_id, runtime_err, exc_info=True)
+                logger.error("[WEBHOOK] runtime_init_failed app_id=%s error=%s", inbound_app_id, runtime_err, exc_info=True)
                 return Response(
                     content=json.dumps({"code": 500, "msg": "custom app runtime unavailable"}),
                     media_type="application/json",
@@ -991,7 +990,7 @@ class LarkMessengerMixin:
                 media_type=getattr(raw_resp, "content_type", None) or "application/json",
             )
         except Exception as e:
-            logger.warning(f"Fallback do_without_validation do: {e}")
+            logger.warning("[WEBHOOK] fallback_without_validation error=%s", e)
             try:
                 runtime_service.event_dispatcher._do_without_validation(body_bytes)
                 return Response(
@@ -1000,7 +999,7 @@ class LarkMessengerMixin:
                     status_code=200,
                 )
             except Exception as inner_e:
-                logger.error(f"Lỗi khi xử lý sự kiện Lark: {inner_e}", exc_info=True)
+                logger.error("[WEBHOOK] dispatch_failed error=%s", inner_e, exc_info=True)
                 return Response(
                     content=json.dumps({"msg": str(inner_e)}),
                     status_code=500,

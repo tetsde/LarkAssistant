@@ -13,22 +13,11 @@ import json
 import logging
 import os
 import sys
-import threading
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
-import lark_oapi as lark
-from lark_oapi.api.drive.v1 import (
-    P2DriveFileBitableRecordChangedV1,
-    P2DriveFileBitableFieldChangedV1,
-    P2DriveFileEditV1,
-)
-from lark_oapi.api.im.v1 import (
-    P2ImChatMemberBotAddedV1,
-    P2ImChatMemberBotDeletedV1,
-)
 
 # Tự động nạp thư mục gốc của server vào sys.path để import nhất quán
 SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,7 +40,6 @@ from services.auth.token_verifier import decode_jwt_token_payload
 from services.auth.tenant_token_manager import token_broker
 from services.tenancy.tenant_resolver import TenantResources
 from core.tenant_errors import (
-    AppCredentialMissing,
     TenantConfigIncomplete,
     TenantContextMissing,
 )
@@ -757,7 +745,7 @@ class LarkBaseService:
 
         synced_count = len(added) + len(updated)
         if synced_count > 0:
-            logger.info(f"🔄 Đã tự động đồng bộ {synced_count} nhóm chat vào Base (Cập nhật dòng trống: {len(updated)}, Thêm mới: {len(added)})")
+            logger.info("[BITABLE] chats_synced total=%d updated=%d added=%d", synced_count, len(updated), len(added))
         return {"total_chats": len(chats), "added": added, "updated": updated}
 
     def subscribe_events(self, app_token: Optional[str] = None, tenant_key: Optional[str] = None) -> bool:
@@ -782,10 +770,10 @@ class LarkBaseService:
             }
             resp = self.sync_client.post(url, headers=headers, json={})
             if resp.status_code == 200 and resp.json().get("code") == 0:
-                logger.info(f"✅ Đã đăng ký (subscribe) thành công sự kiện cho Base: {target_token} (tenant: {eff_tenant})")
+                logger.info("[BITABLE] subscribed app_token=%s tenant=%s", target_token, eff_tenant)
                 return True
             else:
-                logger.warning(f"⚠️ Subscribe Base {target_token} trả về mã HTTP {resp.status_code}: {resp.text}")
+                logger.warning("[BITABLE] subscribe_failed app_token=%s status=%d body=%s", target_token, resp.status_code, resp.text)
                 return False
         except Exception as e:
             logger.warning(f"Không thể gọi API subscribe Base {target_token}: {e}")
@@ -889,196 +877,6 @@ async def aread_lark_base_records(*args, **kwargs) -> List[Dict[str, Any]]:
 
 
 # =============================================================================
-# STANDALONE BITABLE REAL-TIME LISTENER (WEBSOCKET)
-# =============================================================================
-
-def start_bitable_ws_listener(service: LarkBaseService) -> None:
-    """
-    Khởi động tiến trình Đồng bộ và Lắng nghe sự kiện Lark Base (Bitable) Real-time:
-      - Tự động đồng bộ toàn bộ nhóm chat của Bot vào bảng Lark Base.
-      - Lắng nghe sự kiện thay đổi dữ liệu bảng (Bitable) và sự kiện Bot tham gia nhóm theo thời gian thực.
-    """
-
-    # Listener này là công cụ dev chạy cho MỘT tenant. Trước đây nó lấy "App bất kỳ
-    # mới nhất trong DB" rồi fallback `.env`, nên có thể gắn nhầm App của tenant khác.
-    if not service.tenant_key:
-        raise TenantContextMissing(
-            "start_bitable_ws_listener() yêu cầu LarkBaseService được tạo kèm tenant_key."
-        )
-    app_id, app_secret = _app_credentials_sync(service.tenant_key)
-
-    from database.db import get_sync_db
-    from services.user_settings_service import user_settings_service
-
-    db = get_sync_db()
-    collection = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
-    app_record = db[collection].find_one(
-        {"tenant_key": service.tenant_key, "status": {"$ne": "revoked"}}
-    ) or {}
-    encrypt_key = user_settings_service.decrypt_key(app_record.get("encrypted_encrypt_key", ""))
-    verification_token = user_settings_service.decrypt_key(
-        app_record.get("encrypted_verification_token", "")
-    )
-    if not encrypt_key or not verification_token:
-        raise AppCredentialMissing(service.tenant_key)
-
-    print("\n" + "=" * 70)
-    print("⚡ HILARK - ĐỒNG BỘ VÀ LẮNG NGHE SỰ KIỆN LARK BASE REAL-TIME")
-    print("=" * 70)
-    print(f"App ID     : {app_id}")
-    print(f"Domain     : {service.domain}")
-    print(f"Base Token : {service.app_token}")
-    print(f"Table ID   : {service.table_id}")
-
-    # 1. ĐỒNG BỘ NHÓM CHAT BOT VÀO LARK BASE
-    print("\n🔄 Đang quét và đồng bộ nhóm chat của Bot vào Base...")
-    try:
-        res = service.sync_bot_chats()
-        total_chats = res.get("total_chats", 0)
-        added = res.get("added", [])
-        updated = res.get("updated", [])
-        print(f"✔ Tổng số nhóm chat tìm thấy : {total_chats}")
-        print(f"✔ Đã thêm mới vào Base       : {len(added)}")
-        print(f"✔ Đã cập nhật vào dòng trống : {len(updated)}")
-        for item in added + updated:
-            print(f"   • {item.get('name')}: {item.get('chat_id')} -> Record: {item.get('record_id')}")
-    except Exception as e:
-        logger.warning(f"⚠️  Không thể đồng bộ nhóm chat vào Base: {e}")
-
-    # Bước 2: Đọc trước schema các trường để hiển thị tên cột thay vì field_id khó hiểu
-    field_name_map: Dict[str, str] = {}
-    try:
-        fields = service.get_fields(use_tenant_token=True)
-        for f in fields:
-            field_name_map[f.field_id] = f.field_name
-    except Exception as e:
-        logger.warning(f"Không thể tải schema cột để map tên: {e}")
-
-    def on_record_changed(data: P2DriveFileBitableRecordChangedV1) -> None:
-        try:
-            event = getattr(data, "event", None)
-            if not event:
-                return
-            file_token = getattr(event, "file_token", "")
-            table_id = getattr(event, "table_id", "")
-            action_list = getattr(event, "action_list", []) or []
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            print("\n" + "=" * 65)
-            print("📊 [LARK BASE] PHÁT HIỆN DỮ LIỆU THAY ĐỔI:")
-            print("-" * 65)
-            print(f"🕒 Thời gian    : {now_str}")
-            print(f"📦 Base Token   : {file_token}")
-            print(f"📊 Table ID     : {table_id}")
-            print(f"📝 Số hành động : {len(action_list)}")
-
-            for idx, act in enumerate(action_list, 1):
-                rec_id = getattr(act, "record_id", "")
-                action_type = getattr(act, "action", "")
-                print(f"  [{idx}] Record ID: {rec_id} | Hành động: {action_type}")
-
-                before_list = getattr(act, "before_value", []) or []
-                after_list = getattr(act, "after_value", []) or []
-                if before_list or after_list:
-                    b_map = {getattr(b, "field_id", ""): getattr(b, "field_value", "") for b in before_list}
-                    a_map = {getattr(a, "field_id", ""): getattr(a, "field_value", "") for a in after_list}
-                    all_fids = set(b_map.keys()) | set(a_map.keys())
-                    for fid in all_fids:
-                        col_label = field_name_map.get(fid, fid)
-                        old_v = b_map.get(fid, "(trống)")
-                        new_v = a_map.get(fid, "(trống)")
-                        print(f"      • {col_label} ({fid}): {old_v} -> {new_v}")
-            print("=" * 65 + "\n")
-        except Exception as e:
-            logger.error(f"Lỗi khi xử lý sự kiện bitable_record_changed: {e}")
-
-    def on_field_changed(data: P2DriveFileBitableFieldChangedV1) -> None:
-        try:
-            event = getattr(data, "event", None)
-            table_id = getattr(event, "table_id", "") if event else ""
-            print(f"\n📐 [LARK BASE] Cấu trúc cột của bảng '{table_id}' vừa thay đổi.")
-        except Exception as e:
-            logger.error(f"Lỗi khi xử lý sự kiện bitable_field_changed: {e}")
-
-    def on_bot_added(data: P2ImChatMemberBotAddedV1) -> None:
-        try:
-            event = getattr(data, "event", None)
-            chat_id = getattr(event, "chat_id", "") if event else ""
-            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            print("\n" + "=" * 65)
-            print("🎉 [LARK BOT] PHÁT HIỆN BOT VỪA ĐƯỢC THÊM VÀO NHÓM CHAT MỚI!")
-            print("-" * 65)
-            print(f"🕒 Thời gian : {now_str}")
-            print(f"💬 Tên nhóm  : {chat_name}")
-            print(f"🆔 Chat ID   : {chat_id}")
-            print("🔄 Đang tự động đồng bộ nhóm mới vào Lark Base...")
-
-            res = service.sync_bot_chats()
-            items = res.get("added", []) + res.get("updated", [])
-            if items:
-                for item in items:
-                    print(f"✔ Đã cập nhật vào Base: {item.get('name')} -> Record: {item.get('record_id')}")
-            else:
-                print(f"ℹ️ Nhóm đã tồn tại trong Lark Base.")
-            print("=" * 65 + "\n")
-        except Exception as e:
-            logger.error(f"Lỗi khi xử lý sự kiện bot_added: {e}")
-
-    def on_bot_deleted(data: P2ImChatMemberBotDeletedV1) -> None:
-        try:
-            event = getattr(data, "event", None)
-            chat_id = getattr(event, "chat_id", "") if event else ""
-            chat_name = getattr(event, "name", "") if event else "Nhóm chat"
-            print(f"\nℹ️ [LARK BOT] Bot vừa bị gỡ khỏi nhóm: '{chat_name}' ({chat_id})\n")
-        except Exception as e:
-            logger.error(f"Lỗi khi xử lý sự kiện bot_deleted: {e}")
-
-    def on_file_edit(data: P2DriveFileEditV1) -> None:
-        # Sự kiện cấp Drive đi kèm khi sửa bảng Base, bỏ qua vì đã xử lý chi tiết ở on_record_changed
-        pass
-
-    # Build EventDispatcher cho Base và Sự kiện thành viên Bot (Không can thiệp vào IM text chat)
-    dispatcher = (
-        lark.EventDispatcherHandler.builder(encrypt_key, verification_token)
-        .register_p2_drive_file_bitable_record_changed_v1(on_record_changed)
-        .register_p2_drive_file_bitable_field_changed_v1(on_field_changed)
-        .register_p2_drive_file_edit_v1(on_file_edit)
-        .register_p2_im_chat_member_bot_added_v1(on_bot_added)
-        .register_p2_im_chat_member_bot_deleted_v1(on_bot_deleted)
-        .build()
-    )
-
-    ws_client = lark.ws.Client(
-        app_id=app_id,
-        app_secret=app_secret,
-        event_handler=dispatcher,
-        domain=service.domain,
-        log_level=lark.LogLevel.INFO,
-    )
-
-    # Đăng ký subscribe sự kiện trên Lark Cloud
-    sub_ok = service.subscribe_events()
-    if sub_ok:
-        print("✅ Đã kích hoạt theo dõi bảng Bitable thành công trên Lark Cloud!")
-    else:
-        print("ℹ️ Đang kết nối trực tiếp với Lark WebSocket...")
-
-    print("👉 Hãy thử mở Lark Base trên trình duyệt, thêm dòng hoặc sửa 1 ô bất kỳ...")
-    print("-" * 70)
-
-    try:
-        ws_client.start()
-    except (KeyboardInterrupt, SystemExit):
-        print("\n🛑 Đã dừng lắng nghe sự kiện Lark Base an toàn.")
-        os._exit(0)
-    except Exception as e:
-        logger.error(f"Lỗi khi chạy WebSocket client: {e}")
-        os._exit(1)
-
-
-# =============================================================================
 # CLI / STANDALONE EXECUTABLE RUNNER
 # =============================================================================
 
@@ -1132,11 +930,6 @@ def main():
         action="store_true",
         help="Giữ nguyên trường thô không chuẩn hóa (clean)",
     )
-    parser.add_argument(
-        "--listen",
-        action="store_true",
-        help="Đồng bộ toàn bộ nhóm chat bot vào Lark Base và lắng nghe sự kiện thay đổi dữ liệu thời gian thực (WebSocket)",
-    )
 
     args = parser.parse_args()
 
@@ -1146,11 +939,6 @@ def main():
 
     eff_tenant = args.tenant_key or get_current_tenant_key()
     resources = tenant_resolver.resolve_sync(eff_tenant)
-
-    if args.listen:
-        service = LarkBaseService.for_tenant(resources, app_token=args.app_token, table_id=args.table_id)
-        start_bitable_ws_listener(service)
-        return
 
     service = LarkBaseService.for_tenant(
         resources,

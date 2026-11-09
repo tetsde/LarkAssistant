@@ -5,11 +5,12 @@ Vị trí: server/routers/onboarding.py
 
 Cung cấp:
   1. GET  /onboarding/wizard       : Giao diện Stepper Wizard 4 bước bằng HTML/CSS/JS (Apple Native SF Pro).
-  2. POST /onboarding/api/test-key : Endpoint AJAX kiểm tra tính sống còn và latency của Gemini Key.
-  3. POST /onboarding/api/save     : Lưu toàn bộ cấu hình vào MongoDB collection 'user_settings'.
-  4. GET  /onboarding/api/settings/{open_id} : Lấy cấu hình hiện tại để điền sẵn vào Wizard.
-  5. GET  /onboarding/api/auth-status        : Tra cứu nhanh tình trạng xác thực Lark OAuth.
-  6. POST /onboarding/api/provision-base     : Tự động khởi tạo 100% Lark Base Doanh nghiệp.
+  2. GET  /onboarding/api/models   : Danh mục model Gemini chuẩn và model mặc định theo nhà cung cấp.
+  3. POST /onboarding/api/test-key : Endpoint AJAX kiểm tra tính sống còn và latency của LLM/JEV API Key.
+  4. POST /onboarding/api/save     : Lưu toàn bộ cấu hình vào MongoDB collection 'user_settings'.
+  5. GET  /onboarding/api/settings/{open_id} : Lấy cấu hình hiện tại để điền sẵn vào Wizard.
+  6. GET  /onboarding/api/auth-status        : Tra cứu nhanh tình trạng xác thực Lark OAuth.
+  7. POST /onboarding/api/provision-base     : Tự động khởi tạo 100% Lark Base Doanh nghiệp.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.config import settings
+from core.tenant_errors import BYOKConfigurationError
 from database.db import get_system_config_collection
 from models.onboarding import (
     ProvisionBaseRequest,
@@ -34,6 +36,13 @@ from models.onboarding import (
     TestBotCredentialsRequest,
     TestKeyRequest,
     TestMongoRequest,
+)
+from services.ai.ai_config_manager import _UNSET, ai_config_manager
+from services.ai.model_catalog import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_MODEL_BY_PROVIDER,
+    GEMINI_MODEL_OPTIONS,
+    normalize_provider,
 )
 from services.user_settings_service import user_settings_service
 
@@ -188,8 +197,6 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
         # Cập nhật LarkService singleton nếu có
         try:
             from services.lark import lark_service
-            old_app_id = getattr(lark_service, "app_id", "")
-            old_secret = getattr(lark_service, "app_secret", "")
 
             lark_service.app_id = app_id_clean
             if req.app_secret and req.app_secret.strip():
@@ -198,13 +205,6 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
                 app_id=app_id_clean,
                 app_secret=settings.LARK_APP_SECRET,
             )
-            # Chỉ tái kết nối WebSocket ngầm nếu App ID hoặc Secret thật sự thay đổi và có đủ cặp credentials
-            current_secret = getattr(settings, "LARK_APP_SECRET", "")
-            if getattr(settings, "ENABLE_LARK_WEBSOCKET", False) and (old_app_id != app_id_clean or old_secret != current_secret) and app_id_clean and current_secret:
-                # Dọn thread cũ nếu cần trước khi kết nối mới
-                if hasattr(lark_service, "_ws_thread"):
-                    lark_service._ws_thread = None
-                lark_service.start_ws_client(background=True)
         except Exception as e:
             logger.debug(f"Không thể reinit LarkService runtime: {e}")
 
@@ -309,20 +309,30 @@ async def provision_weknora_endpoint(req: ProvisionWeKnoraRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/models")
+async def get_models_endpoint():
+    """Trả về danh mục Google Gemini chuẩn và model mặc định theo nhà cung cấp."""
+    return {
+        "success": True,
+        "data": {
+            "default_gemini_model": DEFAULT_GEMINI_MODEL,
+            "gemini_models": GEMINI_MODEL_OPTIONS,
+            "default_models_by_provider": DEFAULT_MODEL_BY_PROVIDER,
+        },
+    }
+
+
 @router.post("/api/test-key")
 async def test_key_endpoint(req: TestKeyRequest):
-    """Kiểm tra trực tiếp độ sống và độ trễ của LLM API Key qua AJAX."""
-    provider_norm = (req.provider or "google").strip().lower()
-    if provider_norm == "google" and not req.base_url:
-        ok, msg, latency = await user_settings_service.test_gemini_key(req.api_key)
-    else:
-        ok, msg, latency = await user_settings_service.test_llm_connection(
-            raw_key=req.api_key,
-            provider=provider_norm,
-            base_url=req.base_url,
-            model=req.model_name,
-            timeout=req.timeout or 30.0,
-        )
+    """Kiểm tra trực tiếp độ sống và độ trễ của LLM/JEV API Key qua AJAX."""
+    provider_norm = normalize_provider(req.provider)
+    ok, msg, latency = await user_settings_service.test_llm_connection(
+        raw_key=req.api_key,
+        provider=provider_norm,
+        base_url=req.base_url,
+        model=req.model_name,
+        timeout=req.timeout or (15.0 if provider_norm == "jev" else 30.0),
+    )
     return {
         "success": ok,
         "message": msg,
@@ -347,19 +357,39 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
         )
 
     try:
+        fields_set = req.model_fields_set
+        is_jev_byok_val = (
+            req.is_jev_byok_enabled if "is_jev_byok_enabled" in fields_set else None
+        )
+        llm_base_url_val = (
+            req.llm_base_url if "llm_base_url" in fields_set else _UNSET
+        )
+        llm_model_val = req.llm_model if "llm_model" in fields_set else _UNSET
+        llm_timeout_val = (
+            req.llm_timeout
+            if ("llm_timeout" in fields_set and req.llm_timeout is not None)
+            else None
+        )
+
         record = await user_settings_service.save_user_settings(
             open_id=clean_open_id,
             is_byok_enabled=req.is_byok_enabled,
-            raw_gemini_key=req.raw_gemini_key,
+            raw_llm_key=req.raw_llm_key,
             digest_schedule_time=req.digest_schedule_time,
             hitl_mode_enabled=req.hitl_mode_enabled,
             user_name=req.user_name,
             llm_provider=req.llm_provider or "google",
-            llm_base_url=req.llm_base_url,
-            llm_model=req.llm_model,
-            llm_timeout=req.llm_timeout or 60.0,
+            llm_base_url=llm_base_url_val,
+            llm_model=llm_model_val,
+            llm_timeout=llm_timeout_val,
             policy_sync_interval_seconds=req.policy_sync_interval_seconds,
             tenant_key=req.tenant_key,
+            is_jev_byok_enabled=is_jev_byok_val,
+            raw_jev_key=req.raw_jev_key,
+        )
+        ai_config_manager.invalidate(
+            tenant_key=req.tenant_key or getattr(record, "tenant_key", None),
+            open_id=clean_open_id,
         )
 
         clean_open_id = req.open_id.strip() if req.open_id else ""
@@ -422,6 +452,12 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
             "message": "Đã lưu cấu hình trợ lý thành công!",
             "data": record.to_dict(),
         }
+    except BYOKConfigurationError as e:
+        raise HTTPException(status_code=getattr(e, "http_status", 400), detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Lỗi khi lưu cấu hình onboarding: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -472,23 +508,35 @@ async def get_settings_endpoint(
             "data": {
                 "open_id": open_id,
                 "is_byok_enabled": False,
+                "llm_mode": "system",
                 "llm_provider": "google",
-                "masked_gemini_api_key": "",
+                "masked_llm_api_key": "",
                 "llm_base_url": "",
-                "llm_model": "gemini-2.5-flash",
+                "llm_model": DEFAULT_GEMINI_MODEL,
                 "llm_timeout": 60.0,
+                "is_jev_byok_enabled": False,
+                "jev_mode": "system",
+                "masked_jev_api_key": "",
                 "digest_schedule_time": "18:00",
                 "hitl_mode_enabled": True,
                 "policy_sync_interval_seconds": 3600,
                 "base_info": base_info,
                 "weknora_info": weknora_info,
                 "tenant_key": effective_tenant_key,
+                "default_gemini_model": DEFAULT_GEMINI_MODEL,
+                "gemini_models": GEMINI_MODEL_OPTIONS,
+                "default_models_by_provider": DEFAULT_MODEL_BY_PROVIDER,
             },
         }
     data = record.to_dict()
+    if not data.get("llm_model") and normalize_provider(data.get("llm_provider")) == "google":
+        data["llm_model"] = DEFAULT_GEMINI_MODEL
     data["base_info"] = base_info
     data["weknora_info"] = weknora_info
-    data["tenant_key"] = effective_tenant_key
+    data["tenant_key"] = effective_tenant_key or data.get("tenant_key")
+    data["default_gemini_model"] = DEFAULT_GEMINI_MODEL
+    data["gemini_models"] = GEMINI_MODEL_OPTIONS
+    data["default_models_by_provider"] = DEFAULT_MODEL_BY_PROVIDER
     return {
         "success": True,
         "data": data,

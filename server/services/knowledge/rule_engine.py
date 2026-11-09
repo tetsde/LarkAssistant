@@ -437,7 +437,8 @@ class UnifiedRuleEngine:
             if is_vio:
                 claim_id = cl_dict.get("id") or cl_dict.get("_id") or "unknown"
                 logger.warning(
-                    f"🛡️ [RULE ENGINE - CLAIM DROP] Claim '{claim_id}' (prop='{prop}') bị loại bỏ. Lý do: {reason}"
+                    "[RULE_ENGINE] claim_dropped claim_id=%s prop=%r reason=%r",
+                    claim_id, prop, reason,
                 )
                 dropped_item = dict(cl_dict)
                 dropped_item["_drop_reason"] = reason
@@ -466,7 +467,8 @@ class UnifiedRuleEngine:
             if is_doc_vio:
                 cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
                 logger.warning(
-                    f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ vì tên tài liệu chứa từ khóa cấm '{doc_matched}'"
+                    "[RULE_ENGINE] chunk_dropped reason=forbidden_doc_name chunk_id=%s doc=%r keyword=%r",
+                    cid, doc_name, doc_matched,
                 )
                 dropped_item = dict(c_dict)
                 dropped_item["_drop_reason"] = f"document_name='{doc_name}' chứa từ khóa cấm '{doc_matched}'"
@@ -480,7 +482,8 @@ class UnifiedRuleEngine:
                 if len(content) <= 150:
                     cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
                     logger.warning(
-                        f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ. Lý do: content chứa từ khóa cấm '{content_matched}'"
+                        "[RULE_ENGINE] chunk_dropped reason=forbidden_content chunk_id=%s doc=%r keyword=%r",
+                        cid, doc_name, content_matched,
                     )
                     dropped_item = dict(c_dict)
                     dropped_item["_drop_reason"] = f"content chứa từ khóa cấm '{content_matched}'"
@@ -499,14 +502,15 @@ class UnifiedRuleEngine:
                     sanitized_chunk["content"] = redacted_content
                     cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
                     logger.info(
-                        f"🛡️ [RULE ENGINE - CHUNK REDACT] Đã khử trùng {num_redacted} dòng nhạy cảm trong chunk '{cid}' từ '{doc_name}'. "
-                        f"Bảo tồn {non_sensitive_len} ký tự nghiệp vụ an toàn."
+                        "[RULE_ENGINE] chunk_redacted chunk_id=%s doc=%r redacted_lines=%d safe_chars=%d",
+                        cid, doc_name, num_redacted, non_sensitive_len,
                     )
                     clean_chunks.append(sanitized_chunk)
                 else:
                     cid = c_dict.get("chunk_id") or c_dict.get("id") or "unknown"
                     logger.warning(
-                        f"🛡️ [RULE ENGINE - CHUNK DROP] Chunk '{cid}' từ '{doc_name}' bị loại bỏ vì toàn bộ nội dung thuộc chủ đề cấm '{content_matched}'"
+                        "[RULE_ENGINE] chunk_dropped reason=fully_forbidden chunk_id=%s doc=%r keyword=%r",
+                        cid, doc_name, content_matched,
                     )
                     dropped_item = dict(c_dict)
                     dropped_item["_drop_reason"] = f"content chứa từ khóa cấm '{content_matched}'"
@@ -531,9 +535,8 @@ class UnifiedRuleEngine:
         )
 
         logger.info(
-            f"🛡️ [RULE ENGINE] Đã khử nhiễm ngữ cảnh với {len(labels)} nhãn cấm: "
-            f"Chunks ({len(clean_chunks)}/{len(raw_chunks)} giữ lại), "
-            f"Claims ({len(clean_claims)}/{len(raw_claims)} giữ lại)."
+            "[RULE_ENGINE] sanitized labels=%d chunks=%d/%d claims=%d/%d",
+            len(labels), len(clean_chunks), len(raw_chunks), len(clean_claims), len(raw_claims),
         )
         return result
 

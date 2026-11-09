@@ -23,6 +23,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from core.config import settings
+from core.tenant_errors import BYOKConfigurationError
 from database.scoped_query import get_current_tenant_key, async_tenant_context
 from database import (
     get_all_entities as get_mongo_entities,
@@ -32,7 +33,7 @@ from database import (
 from models import ChatRequest, DocParseResult
 from services.workflows.draft_store import PendingDraft, draft_store
 from services.ai.jev_classifier import jev_service
-from services.ai.gemini_client import LLMClient, llm_client
+from services.ai.llm_client import LLMClient, llm_client
 from services.knowledge.chat_scopes import scope_service
 from services.knowledge.weknora_client import weknora_service
 from services.knowledge.context_composer import ContextComposer
@@ -446,6 +447,7 @@ async def process_document_to_claims(
     is_owner: bool = False,
     notify_realtime: bool = False,
     tenant_key: Optional[str] = None,
+    llm_client_override: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Tiếp nhận tài liệu đã chuẩn hóa (DocParseResult từ AnyDoc gRPC hoặc Lark OpenAPI)
@@ -500,6 +502,16 @@ async def process_document_to_claims(
 
     from services.ai.llm_extractor import extract_async
 
+    effective_client = llm_client_override
+    if effective_client is None:
+        from services.ai.ai_config_manager import ai_config_manager
+
+        owner_id_hint = sender_id if is_owner else None
+        effective_client = await ai_config_manager.resolve_llm_client(
+            tenant_key=eff_tenant,
+            open_id=owner_id_hint,
+        )
+
     asserted_by = {
         "user_id": sender_id or "",
         "user_name": sender or "User",
@@ -517,6 +529,7 @@ async def process_document_to_claims(
         existing_entities=existing_entities,
         existing_facts=existing_facts,
         tenant_key=eff_tenant,
+        client=effective_client,
     )
 
     # Đính kèm metadata nguồn tài liệu vào từng fact & phân loại quyền hạn:
@@ -572,8 +585,10 @@ async def process_document_to_claims(
             logger.warning(f"Lỗi khi gửi thẻ duyệt Claim đề xuất từ tài liệu tới lãnh đạo: {e}")
 
     logger.info(
-        f"✔ [DOC CLAIMS PIPELINE] Tiếp thu thành công tài liệu '{doc_result.doc_name}': "
-        f"+{len(new_facts)} facts/claims mới, {len(superseded)} facts bị thay thế."
+        "[DOC_CLAIMS] saved doc=%s new_facts=%d superseded=%d",
+        doc_result.doc_name,
+        len(new_facts),
+        len(superseded),
     )
 
     return {
@@ -610,12 +625,6 @@ async def generate_grounded_answer(
 ) -> str:
     """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, multi-provider BYOK)."""
     client = llm_client_override or (LLMClient(api_key=api_key) if api_key else llm_client)
-    if not client.api_key and getattr(client, "provider", "google") == "google":
-        key = getattr(settings, "GEMINI_API_KEY", "") or getattr(settings, "gemini_api", "")
-        if not key:
-            logger.warning("Không tìm thấy GEMINI_API_KEY trong cấu hình. Bỏ qua LLM Grounded QA.")
-            return ""
-        client.api_key = key
 
     effective_role = role or getattr(settings, "LARK_USER_ROLE", "") or "CEO / Founder / CTO"
     effective_responder = responder_name or getattr(settings, "LARK_USER_NAME", "") or ""
@@ -642,6 +651,8 @@ async def generate_grounded_answer(
                 max_output_tokens=max_output_tokens,
             )
         return ans.strip()
+    except BYOKConfigurationError:
+        raise
     except Exception as e:
         logger.warning(f"Lỗi khi gọi LLM generate_text_async: {e}")
         return ""
@@ -763,9 +774,7 @@ async def process_chat_pipeline(
 
     # ── [CHỐT CHẶN 1: KIỂM TRA TRẠNG THÁI NHÓM] (Active vs Inactive) ──
     if scope_record and not scope_record.is_active:
-        logger.info(
-            f"🛑 [GROUP INACTIVE] Nhóm '{scope_record.chat_name}' ({chat_id}) đang ở trạng thái '{scope_record.status}'. Bỏ qua hoàn toàn tin nhắn."
-        )
+        logger.info("[DROP] chat=%s reason=group_inactive status=%s", chat_id, scope_record.status)
         return {
             "status": "group_inactive",
             "jev_action": "IGNORE",
@@ -781,17 +790,17 @@ async def process_chat_pipeline(
             forbidden_res = await _jev.check_forbidden_query(
                 query=clean_query,
                 forbidden_labels=scope_record.forbidden_labels,
+                tenant_key=eff_tenant,
             )
             if forbidden_res.get("is_forbidden"):
                 matched_label = forbidden_res.get("matched_label") or "Chủ đề bảo mật bị cấm"
                 conf = forbidden_res.get("confidence", 1.0)
                 logger.warning(
-                    f"⛔ [FORBIDDEN DROP] Thành viên '{user_name}' ({sender}) trong nhóm '{scope_record.chat_name}' "
-                    f"hỏi vào chủ đề cấm '{matched_label}' (Độ tin cậy: {conf:.2f}). Kích hoạt Zero-response."
-                )
-                print(
-                    f"⛔ [FORBIDDEN DROP] Thành viên '{user_name}' hỏi vào chủ đề cấm '{matched_label}'. "
-                    f"Bot IM LẶNG HOÀN TOÀN (Zero-response)."
+                    "[FORBIDDEN_DROP] chat=%s sender=%s label=%s confidence=%.2f",
+                    chat_id,
+                    sender,
+                    matched_label,
+                    conf,
                 )
 
                 # Cảnh báo âm thầm tới DM của Chủ nhân nếu tin nhắn xuất phát từ group
@@ -820,6 +829,8 @@ async def process_chat_pipeline(
                     "message": f"Câu hỏi vi phạm nhãn cấm xem '{matched_label}'. Đã kích hoạt cơ chế Zero-response.",
                     "forbidden_check": forbidden_res,
                 }
+        except BYOKConfigurationError:
+            raise
         except Exception as e:
             logger.error(f"Lỗi khi kiểm tra forbidden_query qua JEV: {e}")
 
@@ -830,11 +841,14 @@ async def process_chat_pipeline(
         jev_result = await _jev.classify_message(
             clean_query,
             speaker_role="owner" if is_owner else "member",
+            tenant_key=eff_tenant,
         )
         jev_action = jev_result.get("action", "IGNORE")
         jev_confidence = jev_result.get("confidence", 0.0)
         jev_domain = jev_result.get("knowledge_domain", "HYBRID")
         jev_domain_conf = jev_result.get("domain_confidence", 0.50)
+    except BYOKConfigurationError:
+        raise
     except Exception as e:
         logger.error(f"Lỗi phân loại JEV: {e}")
         # [SAFETY] Khi JEV API lỗi/timeout, TUYỆT ĐỐI không tự ý phát ngôn vào nhóm.
@@ -849,13 +863,7 @@ async def process_chat_pipeline(
     # block này sửa kết quả JEV thành MEMORY_ONLY hoặc IGNORE, khiến mọi phát
     # ngôn có vẻ "có tri thức" của chủ nhân đều bị lưu memory.
     if is_owner and channel == "lark_group":
-        logger.info(
-            "👑 [OWNER SHIELD] Giữ nguyên quyết định JEV=%s; chỉ tắt reply trực tiếp để chống loop.",
-            jev_action,
-        )
-        print(
-            f"👑 [OWNER SHIELD] Giữ nguyên JEV={jev_action}; không reply trực tiếp vào group."
-        )
+        logger.info("[OWNER_SHIELD] action=%s reply=disabled reason=anti_loop", jev_action)
 
     # TH1: IGNORE - Tin rác, chào hỏi vô thưởng vô phạt
     if jev_action == "IGNORE":
@@ -879,23 +887,26 @@ async def process_chat_pipeline(
             chat_scope_record=scope_record,
             sender_open_id=None,
         )
+        resolved_owner_id = (
+            owner_open_id
+            if (owner_open_id and owner_open_id != "ou_admin_fallback")
+            else None
+        )
 
-        if owner_open_id and owner_open_id != "ou_admin_fallback":
-            from services.user_settings_service import user_settings_service
+        if eff_tenant or resolved_owner_id:
+            from services.ai.ai_config_manager import ai_config_manager
 
-            effective_client = await user_settings_service.resolve_effective_llm_client(
-                user_id=owner_open_id,
+            effective_client = await ai_config_manager.resolve_llm_client(
                 tenant_key=eff_tenant,
+                open_id=resolved_owner_id,
             )
-            from services.ai.gemini_client import llm_client
-
-            is_byok = effective_client is not llm_client
+            mode = "BYOK" if getattr(effective_client, "is_byok", False) else "SYSTEM"
 
             logger.info(
                 "[BYOK RESOLVER] owner=%s tenant=%s mode=%s provider=%s model=%s",
-                owner_open_id,
+                resolved_owner_id or owner_open_id,
                 eff_tenant,
-                "BYOK" if is_byok else "SYSTEM",
+                mode,
                 getattr(effective_client, "provider", "unknown"),
                 getattr(effective_client, "model_name", None) or "default",
             )
@@ -904,6 +915,8 @@ async def process_chat_pipeline(
                 "[BYOK RESOLVER] Không xác định được chủ bot tenant=%s; dùng LLM mặc định.",
                 eff_tenant,
             )
+    except BYOKConfigurationError:
+        raise
     except Exception as key_err:
         logger.warning(
             "[BYOK RESOLVER] Resolve thất bại, dùng LLM mặc định: %s",
@@ -921,17 +934,27 @@ async def process_chat_pipeline(
     # Bước 3: Lưu memory cho các intent cần ghi nhớ theo scope nhóm
     extraction_data = None
     if jev_action in ("MEMORY_ONLY", "MEMORY_AND_DRAFT"):
-        extraction_data = await _process_memory(
-            query_text=clean_query,
-            sender=sender,
-            asserted_by=asserted_by,
-            chat_id=chat_id,
-            project_tag=proj_context_name,
-            scope_type="chat" if chat_id else "global",
-            is_owner=is_owner,
-            tenant_key=eff_tenant,
-            llm_client_override=effective_client,
-        )
+        try:
+            extraction_data = await _process_memory(
+                query_text=clean_query,
+                sender=sender,
+                asserted_by=asserted_by,
+                chat_id=chat_id,
+                project_tag=proj_context_name,
+                scope_type="chat" if chat_id else "global",
+                is_owner=is_owner,
+                tenant_key=eff_tenant,
+                llm_client_override=effective_client,
+            )
+        except BYOKConfigurationError:
+            raise
+        except Exception as mem_err:
+            logger.warning(
+                "[MEMORY EXTRACTION] Lỗi trích xuất memory (tiếp tục luồng %s): %s",
+                jev_action,
+                mem_err,
+            )
+            extraction_data = {"error": str(mem_err), "entities": [], "facts": []}
 
     # TH2: MEMORY_ONLY - Đã trích xuất xong, không cần tạo câu trả lời
     if jev_action == "MEMORY_ONLY":
@@ -987,7 +1010,7 @@ async def process_chat_pipeline(
     # ── [DOMAIN SEPARATION GATE & CHAT SCOPE CURRENT-ONLY CLAIMS] ──
     # 1. Nếu câu hỏi là Chính sách toàn công ty (COMPANY_POLICY), cấm hoàn toàn nạp Project Claims
     if jev_domain == "COMPANY_POLICY":
-        logger.info(f"🏛️ [Domain Separation] Câu hỏi Chính sách công ty -> Cấm nạp Project Claims ({len(all_facts)} facts bị loại bỏ).")
+        logger.info("[DOMAIN_GATE] domain=COMPANY_POLICY dropped_project_facts=%d", len(all_facts))
         active_claims = [f for f in all_facts if f.get("scope_type") == "global" and f.get("is_policy")]
     else:
         # 2. Với câu hỏi Dự án: chỉ nạp facts current của đúng chat_id.
@@ -1049,9 +1072,7 @@ async def process_chat_pipeline(
 
         if eff_tenant and not (project_dataset_id or policy_dataset_id):
             logger.warning(
-                "⚠️ Tenant '%s' chưa có dataset WeKnora trong collection 'tenants' "
-                "(weknora_default_dataset_id / weknora_policy_dataset_id) - truy xuất chỉ "
-                "dựa trên phạm vi nhóm chat, không mượn kho của .env.",
+                "[RAG] missing_tenant_datasets tenant=%s scope_fallback=chat_scope_only",
                 eff_tenant,
             )
 
@@ -1101,7 +1122,8 @@ async def process_chat_pipeline(
 
         if jev_domain == "COMPANY_POLICY" and global_policy_kbs:
             logger.info(
-                f"🏛️ [RAG Routing] Định tuyến đơn kho -> Global Policy KBs ({global_policy_kbs}) | Confidence: {jev_domain_conf:.2f}"
+                "[RAG_ROUTE] mode=policy kbs=%s conf=%.2f",
+                global_policy_kbs, jev_domain_conf,
             )
             chunks = await _weknora.retrieve(
                 query=clean_query,
@@ -1112,13 +1134,14 @@ async def process_chat_pipeline(
             )
         elif jev_domain == "PROJECT" and project_dataset_id:
             logger.info(
-                f"📁 [RAG Routing] Định tuyến đơn kho -> Project Scoped KB ({project_dataset_id}) | Confidence: {jev_domain_conf:.2f}"
+                "[RAG_ROUTE] mode=project kb=%s conf=%.2f",
+                project_dataset_id, jev_domain_conf,
             )
             # CHỐT CHẶN BẢO MẬT: Nếu nhóm chưa được gán tài liệu dự án nào, tuyệt đối không quét kho dùng chung!
             if not has_group_docs:
                 logger.info(
-                    f"🔒 [RAG Isolation] Nhóm '{scope_record.chat_name if scope_record else chat_id}' "
-                    f"không có tài liệu dự án nào trong Base -> Bỏ qua truy vấn kho dự án dùng chung để chống lộ chéo."
+                    "[RAG_ISOLATION] chat=%s reason=no_group_docs action=skip_shared_kb",
+                    chat_id,
                 )
                 chunks = []
             else:
@@ -1133,7 +1156,8 @@ async def process_chat_pipeline(
             # HYBRID MODE hoặc Phân vân (Confidence < 0.85): Truy vấn song song cả kho dự án và kho chính sách
             if project_dataset_id and global_policy_kbs:
                 logger.info(
-                    f"🔀 [RAG Routing] Kích hoạt HYBRID parallel search (Project: {project_dataset_id}, Policy KBs: {global_policy_kbs})"
+                    "[RAG_ROUTE] mode=hybrid project_kb=%s policy_kbs=%s",
+                    project_dataset_id, global_policy_kbs,
                 )
                 tasks = []
                 # Chỉ truy vấn kho dự án nếu nhóm có tài liệu dự án được cấu hình!
@@ -1232,8 +1256,8 @@ async def process_chat_pipeline(
             if not has_group_docs:
                 cid = c.get("id") or c.get("chunk_id") or "unknown"
                 logger.warning(
-                    f"🚫 [DOCUMENT ISOLATION DROP] Nhóm '{scope_record.chat_name if scope_record else chat_id}' "
-                    f"không có tài liệu dự án nào trong Base. Loại bỏ chunk '{cid}' từ '{doc_name}' để chống lộ chéo."
+                    "[DOC_ISOLATION] chunk_dropped reason=no_group_docs chat=%s chunk_id=%s doc=%r",
+                    chat_id, cid, doc_name,
                 )
                 continue
 
@@ -1257,8 +1281,8 @@ async def process_chat_pipeline(
             if not kid_match and not name_match:
                 cid = c.get("id") or c.get("chunk_id") or "unknown"
                 logger.warning(
-                    f"🚫 [DOCUMENT ISOLATION DROP] Chunk '{cid}' từ '{doc_name}' (kid={chunk_kid}) "
-                    f"bị loại bỏ vì không thuộc phạm vi tài liệu được cấu hình của nhóm '{scope_record.chat_name if scope_record else chat_id}'."
+                    "[DOC_ISOLATION] chunk_dropped reason=outside_scope chat=%s chunk_id=%s doc=%r kid=%s",
+                    chat_id, cid, doc_name, chunk_kid,
                 )
                 continue
 
@@ -1309,7 +1333,10 @@ async def process_chat_pipeline(
                 clean_query,
                 clean_chunks,
                 project_context=proj_ctx,
+                tenant_key=eff_tenant,
             )
+        except BYOKConfigurationError:
+            raise
         except Exception as e:
             logger.warning(f"Lỗi khi lọc chunks qua JEV: {e}")
 
@@ -1328,8 +1355,8 @@ async def process_chat_pipeline(
     is_confidential_group = bool(scope_record and scope_record.is_confidential)
     if is_confidential_group and jev_action == "REPLY_ONLY":
         logger.warning(
-            f"🔒 [SECURITY LEVEL - TUYỆT MẬT] Nhóm '{scope_record.chat_name}' ({chat_id}) được thiết lập 'Tuyệt mật'. "
-            f"Kích hoạt Zero Auto-reply: Ép chuyển REPLY_ONLY sang DRAFT_PENDING_APPROVAL."
+            "[SECURITY_GATE] confidential_group chat=%s action_override=REPLY_ONLY->DRAFT_PENDING_APPROVAL",
+            chat_id,
         )
         jev_action = "DRAFT_PENDING_APPROVAL"
 
@@ -1392,8 +1419,9 @@ async def process_chat_pipeline(
         llm_client_override=effective_client,
     )
 
-    # Fallback WeKnora chat nếu LLM answer trống
-    if not answer:
+    # Fallback WeKnora chat nếu LLM answer trống (tuyệt đối không fallback khi đang bật BYOK)
+    is_byok_active = bool(getattr(effective_client, "is_byok", False))
+    if not answer and not is_byok_active:
         try:
             fallback = await _weknora.get_chat_response(ChatRequest(query=clean_query))
             if isinstance(fallback, dict) and "answer" in fallback:

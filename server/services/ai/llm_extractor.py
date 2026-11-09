@@ -140,7 +140,7 @@ def safe_parse_json_list(raw_text: str, fallback_type: str = "items") -> List[Di
         except json.JSONDecodeError:
             pass
 
-    print(f"[CẢNH BÁO] Không thể parse JSON từ phản hồi LLM cho {fallback_type}. Nội dung: {raw_text[:200]}")
+    logger.warning("[LLM_EXTRACTOR] invalid_json fallback_type=%s preview=%r", fallback_type, raw_text[:200])
     return []
 
 
@@ -352,10 +352,10 @@ CLAIM_EXTRACTION_PROMPT = FACT_EXTRACTION_PROMPT
 
 
 # ==============================================================================
-# 4. LLM API CLIENT (GEMINI VIA SERVICES.LLM_CLIENT)
+# 4. LLM API CLIENT (MULTI-PROVIDER VIA SERVICES.AI.LLM_CLIENT)
 # ==============================================================================
 
-from services.ai.gemini_client import GeminiClient, LLMClient, llm_client
+from services.ai.llm_client import LLMClient, llm_client
 
 
 
@@ -503,11 +503,11 @@ def extract_entities(
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
-    client: Optional[GeminiClient] = None,
+    client: Optional[LLMClient] = None,
     tenant_key: str = "",
 ) -> List[Dict[str, Any]]:
     """Trích xuất Nhánh 1: Entities (Sync)."""
-    llm_client = client or GeminiClient(api_key=api_key)
+    active_client = client or LLMClient(api_key=api_key)
 
     context_str = ""
     if existing_entities:
@@ -546,7 +546,7 @@ def extract_entities(
         query=query,
         context_existing_entities=context_str,
     )
-    raw_response = llm_client.generate(prompt)
+    raw_response = active_client.generate(prompt)
     entities = parse_entities(
         raw_response=raw_response,
         workspace_id=workspace_id,
@@ -568,11 +568,11 @@ async def extract_entities_async(
     existing_entities: Optional[List[Union[Entity, Dict[str, Any]]]] = None,
     existing_facts: Optional[List[Union[Fact, Dict[str, Any]]]] = None,
     api_key: Optional[str] = None,
-    client: Optional[GeminiClient] = None,
+    client: Optional[LLMClient] = None,
     tenant_key: str = "",
 ) -> List[Dict[str, Any]]:
     """Trích xuất Nhánh 1: Entities (Async)."""
-    llm_client = client or GeminiClient(api_key=api_key)
+    active_client = client or LLMClient(api_key=api_key)
 
     context_str = ""
     if existing_entities:
@@ -611,7 +611,7 @@ async def extract_entities_async(
         query=query,
         context_existing_entities=context_str,
     )
-    raw_response = await llm_client.generate_async(prompt)
+    raw_response = await active_client.generate_async(prompt)
     entities = parse_entities(
         raw_response=raw_response,
         workspace_id=workspace_id,
@@ -700,12 +700,12 @@ def parse_facts(
         val_clean = str(value).strip().lower()
         QUESTION_PRONOUNS = {"ai", "gì", "đâu", "nào", "sao", "ai ạ", "ai vậy", "ai nhỉ", "ai đó", "?"}
         if val_clean in QUESTION_PRONOUNS or val_clean.endswith("?") or val_clean.startswith("ai "):
-            logger.info(f"🚫 [Fact Sanitizer] Loại bỏ fact câu hỏi nghi vấn: prop='{prop}', value='{value}'")
+            logger.info("[FACT_SANITIZER] dropped reason=interrogative prop=%r value=%r", prop, value)
             continue
 
         PERSONAL_LEAVE_KEYWORDS = {"ốm", "nghỉ ốm", "bận việc riêng", "đi viện", "việc gia đình", "đám cưới"}
         if prop in ("status", "scope") and any(kw in val_clean for kw in PERSONAL_LEAVE_KEYWORDS):
-            logger.info(f"🚫 [Fact Sanitizer] Loại bỏ fact sinh hoạt cá nhân: prop='{prop}', value='{value}'")
+            logger.info("[FACT_SANITIZER] dropped reason=personal_leave prop=%r value=%r", prop, value)
             continue
 
         # Source context
@@ -812,7 +812,7 @@ def extract_facts(
     sender: Optional[str] = None,
     asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     api_key: Optional[str] = None,
-    client: Optional[GeminiClient] = None,
+    client: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     """
     Trích xuất Nhánh 2: Facts (Sync).
@@ -831,7 +831,7 @@ def extract_facts(
             "superseded_claims": [],
         }
 
-    llm_client = client or GeminiClient(api_key=api_key)
+    active_client = client or LLMClient(api_key=api_key)
 
     entities_dicts = [e.to_dict() if isinstance(e, Entity) else e for e in entities]
     clean_entities = [
@@ -870,7 +870,7 @@ def extract_facts(
         reference_time_vn=now_vn_str,
     )
 
-    raw_response = llm_client.generate(prompt)
+    raw_response = active_client.generate(prompt)
     new_facts = parse_facts(
         raw_response=raw_response,
         resolved_entities=entities_dicts,
@@ -917,7 +917,7 @@ async def extract_facts_async(
     sender: Optional[str] = None,
     asserted_by: Optional[Union[AssertedBy, Dict[str, Any]]] = None,
     api_key: Optional[str] = None,
-    client: Optional[GeminiClient] = None,
+    client: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     """Trích xuất Nhánh 2: Facts (Async)."""
     if not entities:
@@ -928,7 +928,7 @@ async def extract_facts_async(
             "superseded_claims": [],
         }
 
-    llm_client = client or GeminiClient(api_key=api_key)
+    active_client = client or LLMClient(api_key=api_key)
 
     entities_dicts = [e.to_dict() if isinstance(e, Entity) else e for e in entities]
     clean_entities = [
@@ -966,7 +966,7 @@ async def extract_facts_async(
         reference_time_vn=now_vn_str,
     )
 
-    raw_response = await llm_client.generate_async(prompt)
+    raw_response = await active_client.generate_async(prompt)
     new_facts = parse_facts(
         raw_response=raw_response,
         resolved_entities=entities_dicts,
@@ -1017,7 +1017,7 @@ class LLMExtractor:
 
     def __init__(self, api_key: Optional[str] = None, client: Any = None):
         # Ưu tiên client được truyền vào (BYOK); giữ tương thích api_key cũ.
-        self.client = client if client is not None else GeminiClient(api_key=api_key)
+        self.client = client if client is not None else LLMClient(api_key=api_key)
 
     def extract_entities(
         self,

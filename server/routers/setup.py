@@ -116,7 +116,7 @@ async def start_install_redirect(
         state=auth_state,
         app_id=app_id,
     )
-    logger.info(f"🚀 [ONE-CLICK SETUP] Khởi tạo task '{task_id}', redirect_uri='{final_redirect_uri}', auth_url='{auth_url}'")
+    logger.info("[ONE_CLICK_SETUP] task_initialized task_id=%s redirect_uri=%s", task_id, final_redirect_uri)
     return RedirectResponse(url=auth_url)
 
 

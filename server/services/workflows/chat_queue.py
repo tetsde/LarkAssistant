@@ -100,7 +100,12 @@ class MessageDebouncer:
         all_ids = [m.message_id for m in messages if m.message_id]
 
         if len(messages) > 1:
-            print(f"🧩 [DEBOUNCE] Đã gom {len(messages)} tin nhắn từ '{user_name}' ({sender_id}) trong {self.debounce_seconds}s:\n\"{combined_text}\"")
+            logger.debug(
+                "[DEBOUNCE] flushed count=%d sender=%s window_s=%.2f",
+                len(messages),
+                sender_id,
+                self.debounce_seconds,
+            )
 
         item = ChatQueueItem(
             chat_id=chat_id,
@@ -137,6 +142,7 @@ class ThrottledChatQueue:
         pipeline_executor: Optional[Callable[[ChatQueueItem], Coroutine[Any, Any, None]]] = None,
     ):
         self.cooldown_seconds = cooldown_seconds
+        self.max_concurrent = max_concurrent
         self.max_size = max_size
         self.enqueue_timeout = enqueue_timeout
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -154,7 +160,12 @@ class ThrottledChatQueue:
         try:
             target_loop = loop or asyncio.get_running_loop()
             self._worker_task = target_loop.create_task(self._worker_loop(), name="ThrottledChatQueueWorker")
-            logger.info("🚀 ThrottledChatQueue Worker đã khởi động.")
+            logger.info(
+                "[QUEUE] started cooldown_s=%.1f max_concurrent=%d max_size=%d",
+                self.cooldown_seconds,
+                self.max_concurrent,
+                self.max_size,
+            )
         except RuntimeError:
             # Chưa có loop chạy ở thread hiện tại, sẽ lazy-start khi enqueue
             pass
@@ -164,7 +175,7 @@ class ThrottledChatQueue:
         self._running = False
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
-        logger.info("🛑 ThrottledChatQueue Worker đã dừng.")
+        logger.info("[QUEUE] stopped")
 
     async def enqueue(self, item: ChatQueueItem) -> bool:
         """
@@ -181,20 +192,18 @@ class ThrottledChatQueue:
             await asyncio.wait_for(self._queue.put(item), timeout=self.enqueue_timeout)
             return True
         except asyncio.TimeoutError:
-            err_msg = (
-                f"❌ [QUEUE OVERFLOW] Hàng đợi Layer 1 đã đầy ({self._queue.qsize()}/{self.max_size}). "
-                f"Đã chờ {self.enqueue_timeout}s nhưng không có chỗ trống! "
-                f"Bỏ qua tin nhắn mới của '{item.user_name}' ({item.sender_id}) trong chat '{item.chat_id}' "
-                f"(Anchor MsgID: {item.anchor_message_id}, Nội dung: \"{item.combined_text[:60]}...\"). "
-                f"Tạm thời giữ nguyên các tin cũ trong hàng đợi."
+            logger.error(
+                "[QUEUE] overflow size=%d/%d timeout_s=%.1f sender=%s chat=%s msg=%s",
+                self._queue.qsize(),
+                self.max_size,
+                self.enqueue_timeout,
+                item.sender_id,
+                item.chat_id,
+                item.anchor_message_id,
             )
-            print(f"\n{err_msg}")
-            logger.error(err_msg)
             return False
         except Exception as e:
-            err_msg = f"❌ [QUEUE ERROR] Lỗi không xác định khi đưa tin vào hàng đợi: {e}"
-            print(f"\n{err_msg}")
-            logger.error(err_msg, exc_info=True)
+            logger.error("[QUEUE] enqueue_failed error=%s", e, exc_info=True)
             return False
 
     async def _worker_loop(self) -> None:
@@ -213,7 +222,7 @@ class ThrottledChatQueue:
             # Tự động chờ bù thời gian (Silent Throttling)
             if elapsed < self.cooldown_seconds and not item.is_owner:
                 delay = self.cooldown_seconds - elapsed
-                print(f"⏳ [QUEUE COOLDOWN] Giãn cách {delay:.1f}s cho user '{item.user_name}' ({item.sender_id})...")
+                logger.debug("[QUEUE] cooldown delay_s=%.1f sender=%s", delay, item.sender_id)
                 await asyncio.sleep(delay)
 
             # Cập nhật mốc thời gian xử lý của user
@@ -231,7 +240,9 @@ class ThrottledChatQueue:
                     await self.pipeline_executor(item)
                 except Exception as e:
                     logger.error(
-                        f"Lỗi thực thi pipeline trong queue cho msg {item.anchor_message_id}: {e}",
+                        "[QUEUE] pipeline_failed msg=%s error=%s",
+                        item.anchor_message_id,
+                        e,
                         exc_info=True,
                     )
 
@@ -275,8 +286,10 @@ class ChatQueueService:
         enqueued = await self.queue.enqueue(item)
         if not enqueued:
             logger.warning(
-                f"⚠️ [CHAT QUEUE DROP] Không thể xếp hàng tin nhắn từ '{item.user_name}' "
-                f"sau {self.queue.enqueue_timeout}s chờ đợi do hàng đợi đầy."
+                "[QUEUE] drop reason=enqueue_timeout timeout_s=%.1f sender=%s msg=%s",
+                self.queue.enqueue_timeout,
+                item.sender_id,
+                item.anchor_message_id,
             )
 
     async def _execute_pipeline(self, item: ChatQueueItem) -> None:
@@ -327,7 +340,7 @@ class ChatQueueService:
                 logger.info("[REPLY] msg=%s answer_chars=%d", item.anchor_message_id, len(answer))
                 lark_res = result.get("lark_response") or {}
                 if lark_res.get("success"):
-                    logger.info("[REPLY] msg=%s sent=yes identity=%s", item.anchor_message_id, item.responder_name or "User")
+                    logger.info("[REPLY] msg=%s sent=yes identity=%s", item.anchor_message_id, item.responder_name or "-")
                 else:
                     logger.warning("[REPLY] msg=%s sent=no result=%s", item.anchor_message_id, lark_res)
         except (TenantResolutionError, TokenUnavailable) as e:
@@ -343,7 +356,7 @@ class ChatQueueService:
                 tenant_key=item.tenant_key,
             )
         except Exception as e:
-            logger.error(f"Lỗi khi thực thi pipeline từ Queue: {e}", exc_info=True)
+            logger.error("[QUEUE] execute_failed msg=%s error=%s", item.anchor_message_id, e, exc_info=True)
 
 
 chat_queue_service = ChatQueueService()

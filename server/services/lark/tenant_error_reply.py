@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 
 from core.tenant_errors import (
     AppCredentialMissing,
+    BYOKConfigurationError,
     TenantConfigIncomplete,
     TenantNotReady,
     TenantResolutionError,
@@ -43,6 +44,10 @@ USER_REAUTH_REPLY = (
     "Cần uỷ quyền lại tài khoản Lark. "
     "Quản trị viên vui lòng mở trang Setup và hoàn tất bước uỷ quyền."
 )
+BYOK_CONFIG_ERROR_REPLY = (
+    "Cấu hình AI Key (BYOK) của doanh nghiệp chưa hợp lệ hoặc đã hết hạn. "
+    "Quản trị viên vui lòng mở trang Setup để kiểm tra lại."
+)
 
 # Những lỗi mà người dùng trong chat có thể làm gì đó được.
 REPLYABLE_ERRORS = (
@@ -50,6 +55,7 @@ REPLYABLE_ERRORS = (
     TenantConfigIncomplete,
     AppCredentialMissing,
     UserTokenMissing,
+    BYOKConfigurationError,
 )
 
 
@@ -59,9 +65,13 @@ def reply_text_for_error(exc: BaseException) -> Optional[str]:
 
     Thứ tự quan trọng: `UserTokenMissing` là subclass của `TokenUnavailable` nhưng
     mang thông điệp khác (cần uỷ quyền lại), nên phải kiểm tra trước.
+    `BYOKConfigurationError` cũng mang thông điệp riêng về cấu hình AI Key (BYOK),
+    nên phải kiểm tra trước nhóm `REPLYABLE_ERRORS` chung.
     """
     if isinstance(exc, UserTokenMissing):
         return USER_REAUTH_REPLY
+    if isinstance(exc, BYOKConfigurationError):
+        return BYOK_CONFIG_ERROR_REPLY
     if isinstance(exc, REPLYABLE_ERRORS):
         return SETUP_INCOMPLETE_REPLY
     return None
@@ -164,6 +174,7 @@ async def notify_tenant_error(
 __all__ = [
     "SETUP_INCOMPLETE_REPLY",
     "USER_REAUTH_REPLY",
+    "BYOK_CONFIG_ERROR_REPLY",
     "REPLYABLE_ERRORS",
     "reply_text_for_error",
     "reply_tenant_error",

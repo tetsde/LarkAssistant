@@ -101,7 +101,7 @@ class WeKnoraProvisionService:
                     f"Tenant '{tenant_key}' đã tồn tại nhưng thiếu credential WeKnora; "
                     "không thể tự sinh password chỉ trong MongoDB. Cần reset/re-provision user trên WeKnora."
                 )
-            logger.info(f"✔ Doanh nghiệp '{tenant_key}' đã có sẵn WeKnora Tenant: {existing.get('weknora_tenant_id')}")
+            logger.info("[WEKNORA_PROVISION] reused tenant=%s weknora_tenant_id=%s", tenant_key, existing.get("weknora_tenant_id"))
             return TenantConfigRecord(**existing)
 
         # 2. Sinh thông tin tài khoản WeKnora Admin (Giải pháp B)
@@ -239,8 +239,8 @@ class WeKnoraProvisionService:
 
         saved_doc = await upsert_tenant_config(tenant_dict)
         logger.info(
-            f"🎉 Đã cấp phát WeKnora Tenant thành công cho '{ent_name}': "
-            f"tenant_id={weknora_tenant_id}, wiki_kb={wiki_kb_id}, policy_kb={policy_kb_id}"
+            "[WEKNORA_PROVISION] provisioned tenant=%s weknora_tenant_id=%s wiki_kb=%s policy_kb=%s",
+            tenant_key, weknora_tenant_id, wiki_kb_id, policy_kb_id,
         )
         return TenantConfigRecord(**saved_doc)
 

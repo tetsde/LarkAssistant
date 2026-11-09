@@ -2,11 +2,10 @@
 
 `docs/lark_scope_import.json` chỉ import permission scopes. Events phải cấu hình riêng tại **Events & Callbacks**.
 
-## Cách nhanh nhất cho local: Long Connection/WebSocket
+## Chế độ tiếp nhận sự kiện: HTTP Webhook Gateway
 
-Code HiLark đã khởi động `lark_oapi.ws.Client` trong `bot_runner.py`, nên khi test local hãy chọn **Receive events through persistent connection / Long connection** trong Lark Console. Cách này không cần ngrok và không cần Request URL public cho message events. Lark hỗ trợ cả persistent connection và webhook; tài liệu hướng dẫn event subscription mô tả hai chế độ này. [Lark event subscription](https://open.larksuite.com/document/home/develop-a-bot-in-5-minutes/step-5-configure-event-subscription)
-
-Sau đó chỉ cần bật tối thiểu `im.message.receive_v1`, restart container để WebSocket reconnect, rồi nhắn vào Bot.
+HiLark tiếp nhận 100% sự kiện và Card Action callback qua HTTP Webhook Gateway (FastAPI router [`server/routers/lark.py`](../server/routers/lark.py)).
+Trên Lark Developer Console tại mục **Events & Callbacks → Delivery Method**, chọn **Send notifications to developer's server (Webhook)** và cấu hình URL công khai HTTPS (khi test local có thể expose port `8000` qua ngrok/cloudflared).
 
 ## Callback URLs — Kiến trúc Định danh App ID (EDL-0072)
 

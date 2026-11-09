@@ -96,7 +96,6 @@ card_action_handler.py                 ├─► Lưu staging MongoDB (conversat
 
 | Tên biến | Kiểu dữ liệu | Mặc định | Ý nghĩa kỹ thuật |
 | :--- | :---: | :---: | :--- |
-| `ENABLE_LARK_WEBSOCKET` | boolean | `false` | Bật/tắt chế độ WebSocket ngầm (ưu tiên Webhook Gateway trong production). |
 | `DEBOUNCE_DELAY_SECONDS` | float | `1.75` | Thời gian chờ để gom các dòng gõ ngắt quãng của một người dùng. |
 | `USER_COOLDOWN_SECONDS` | float | `4.0` | Khoảng thời gian giãn cách tối thiểu giữa 2 lần hỏi liên tiếp. |
 | `MAX_CONCURRENT_CHAT_PIPELINES` | int | `3` | Số lượng tác vụ hội thoại được phép chạy đồng thời trên toàn server. |

@@ -50,11 +50,7 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
         return False
 
     if not tenant_key:
-        logger.error(
-            "[TENANT LIFECYCLE] Sự kiện '%s' không có tenant_key — bỏ qua, không ghi nhận "
-            "trạng thái cho một doanh nghiệp vô danh.",
-            event_type,
-        )
+        logger.error("[TENANT_LIFECYCLE] ignored event=%s reason=missing_tenant_key", event_type)
         return False
 
     # Xác định trạng thái chuẩn hóa
@@ -76,8 +72,7 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
     app_id = event.get("app_id") or header.get("app_id") or ""
     if not app_id:
         logger.error(
-            "[TENANT LIFECYCLE] Sự kiện '%s' không có app_id trong payload/header — bỏ qua "
-            "thay vì gán tenant '%s' cho App mặc định trong .env.",
+            "[TENANT_LIFECYCLE] ignored event=%s tenant=%s reason=missing_app_id",
             event_type,
             tenant_key,
         )
@@ -114,7 +109,7 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
 
         if normalized_status == "active" and current_status in {READY, PROVISIONING}:
             logger.info(
-                "[TENANT LIFECYCLE] Bỏ qua provisioning lặp cho tenant '%s' (status=%s)",
+                "[TENANT_LIFECYCLE] provisioning_skipped tenant=%s status=%s",
                 tenant_key,
                 current_status,
             )
@@ -133,8 +128,10 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                     tenant_key, normalized_status, raw_event_type=event_type, app_id=app_id
                 )
             logger.info(
-                f"✔ [TENANT LIFECYCLE] Doanh nghiệp '{tenant_key}' đã ghi nhận trạng thái: "
-                f"'{normalized_status}' (Sự kiện: {event_type})"
+                "[TENANT_LIFECYCLE] status_updated tenant=%s status=%s event=%s",
+                tenant_key,
+                normalized_status,
+                event_type,
             )
             return True
 
@@ -193,27 +190,27 @@ async def handle_tenant_lifecycle_event(payload: Dict[str, Any]) -> bool:
                         )
                         if not res.get("success"):
                             raise RuntimeError(f"Gửi card thất bại: {res.get('msg')}")
-                        logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi Welcome Card tương tác tới Admin ({operator_id})")
+                        logger.info("[TENANT_LIFECYCLE] welcome_card_sent tenant=%s admin=%s", tenant_key, operator_id)
                     except Exception as card_err:
-                        logger.warning(f"Lỗi khi gửi Welcome Card, fallback sang tin nhắn văn bản: {card_err}")
+                        logger.warning("[TENANT_LIFECYCLE] welcome_card_failed tenant=%s error=%s action=text_fallback", tenant_key, card_err)
                         handover_text = weknora_provision_service.build_handover_message(tenant_cfg)
                         await lark_service.send_bot_dm_to_owner(
                             text=handover_text,
                             target_open_id=operator_id,
                             tenant_key=tenant_key,
                         )
-                        logger.info(f"✔ [TENANT LIFECYCLE] Đã gửi thông điệp bàn giao WeKnora (text fallback) tới Admin ({operator_id})")
+                        logger.info("[TENANT_LIFECYCLE] welcome_text_sent tenant=%s admin=%s", tenant_key, operator_id)
             except Exception as prov_err:
-                logger.error(f"Lỗi khi tự động cấp phát tài nguyên cho tenant {tenant_key}: {prov_err}", exc_info=True)
+                logger.error("[TENANT_LIFECYCLE] provision_failed tenant=%s error=%s", tenant_key, prov_err, exc_info=True)
                 await tenant_state.mark_provisioning_failed(tenant_key, str(prov_err))
                 return False
 
         return True
     except InvalidTenantTransition as trans_err:
         # Hai luồng đang tự viết status sai thứ tự — ghi log rõ ràng, không âm thầm ghi đè.
-        logger.error("[TENANT LIFECYCLE] %s", trans_err)
+        logger.error("[TENANT_LIFECYCLE] invalid_transition error=%s", trans_err)
         return False
     except Exception as e:
-        logger.error(f"Lỗi khi lưu trạng thái tenant lifecycle: {e}", exc_info=True)
+        logger.error("[TENANT_LIFECYCLE] save_failed error=%s", e, exc_info=True)
         return False
 

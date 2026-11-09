@@ -4,7 +4,7 @@ HiLark Bot Service - Unified Background Runner & Event Dispatcher
 Vị trí: server/services/bot_service.py
 
 Mục đích:
-    - Điều phối toàn bộ vòng đời của Lark Bot (WebSocket Connection, Handlers, Scheduler).
+    - Điều phối toàn bộ vòng đời của Lark Bot (Webhook Event Handlers, Queue, Scheduler, Base Sync).
     - Tích hợp trực tiếp vào FastAPI Lifespan để chạy trên 1 tiến trình duy nhất.
     - Cung cấp Root Dispatcher thanh lịch điều phối tới các bot_handlers chuyên biệt.
 """
@@ -14,9 +14,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from core.config import settings
 from models.lark import LarkMessage
@@ -49,24 +48,26 @@ logger = logging.getLogger("hilark.bot")
 # Quản lý trạng thái background thread
 _scheduler_stop_event = threading.Event()
 _scheduler_thread: Optional[threading.Thread] = None
-_ws_thread: Optional[threading.Thread] = None
 _bot_started = False
 
 
-def _has_registered_custom_apps() -> bool:
-    """Return whether this server is running tenant-scoped Custom Apps."""
+def _get_startup_tenant_counts() -> Tuple[int, int]:
+    """Return (registered_apps, ready_tenants) counts stored in MongoDB."""
     try:
         from database.db import get_sync_db
 
         db = get_sync_db()
-        collection = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
-        return bool(db[collection].find_one({
+        app_col = getattr(settings, "MONGO_LARK_APPS_COLLECTION", "lark_app_credentials")
+        tenant_col = getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants")
+        registered_apps = db[app_col].count_documents({
             "tenant_key": {"$exists": True, "$nin": [None, ""]},
             "status": {"$ne": "revoked"},
-        }, {"_id": 1}))
+        })
+        ready_tenants = db[tenant_col].count_documents({"status": "ready"})
+        return int(registered_apps), int(ready_tenants)
     except Exception as exc:
-        logger.debug("Không kiểm tra được chế độ Custom App scoped: %s", exc)
-        return False
+        logger.debug("[BOT] tenant_count_lookup_failed error=%s", exc)
+        return 0, 0
 
 
 # =============================================================================
@@ -75,7 +76,7 @@ def _has_registered_custom_apps() -> bool:
 
 async def handle_lark_incoming_message(msg: LarkMessage) -> None:
     """
-    Dispatcher xử lý mọi tin nhắn đến từ Lark (cả WebSocket lẫn Webhook):
+    Dispatcher xử lý mọi tin nhắn đến từ Lark (qua HTTP Webhook Gateway):
       1. Bỏ qua tin nhắn từ Bot / App.
       2. Phân giải tệp đính kèm nhị phân hoặc liên kết tài liệu Lark (document_handler).
       3. Điều phối câu lệnh điều hành của Chủ nhân trong DM 1-1 (owner_command_handler).
@@ -105,7 +106,7 @@ async def handle_lark_incoming_message(msg: LarkMessage) -> None:
                     tenant_admin_open_id = t_cfg["admin_open_id"]
                     active_lark_service.register_tenant_admin(msg.tenant_key, tenant_admin_open_id)
             except Exception as te:
-                logger.debug(f"Không thể tra cứu admin_open_id cho tenant {msg.tenant_key}: {te}")
+                logger.debug("[BOT] tenant_admin_lookup_failed tenant=%s error=%s", msg.tenant_key, te)
 
     if tenant_admin_open_id:
         is_owner = bool(msg.sender_id == tenant_admin_open_id)
@@ -144,7 +145,7 @@ def start_digest_scheduler_daemon() -> threading.Thread:
     def _worker():
         last_run_slots: Dict[str, str] = {}
         default_target_hm = (settings.DIGEST_SCHEDULE_TIME or "23:00").strip()
-        logger.info("[SCHEDULER] Digest scheduler started default_time=%s", default_target_hm)
+        logger.info("[SCHEDULER] started default_time=%s source=mongo_tenants", default_target_hm)
 
         while not _scheduler_stop_event.is_set():
             try:
@@ -173,7 +174,7 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                                     if tk:
                                         active_tenants.append(tk)
                             except Exception as te:
-                                logger.debug(f"Không thể tra cứu danh sách tenant cho scheduler: {te}")
+                                logger.debug("[SCHEDULER] tenant_list_failed error=%s", te)
 
                             # Không còn nhánh "single-tenant fallback": chạy digest mà không có
                             # tenant_key sẽ lấy KB/dataset của doanh nghiệp khác (GĐ2/GĐ5).
@@ -192,25 +193,28 @@ def start_digest_scheduler_daemon() -> threading.Thread:
                                     if current_hm != target_hm or last_run_slots.get(tk) == schedule_key:
                                         continue
 
+                                    logger.info("[SCHEDULER] digest_started tenant=%s time=%s", tk, target_hm)
                                     m = await digest_service.run_scheduled_daily_digests(
                                         date=today_str,
                                         require_approval=settings.DIGEST_REQUIRE_APPROVAL,
                                         tenant_key=tk,
                                     )
                                     last_run_slots[tk] = schedule_key
-                                    logger.info("[SCHEDULER] tenant=%s time=%s digest=started", tk, target_hm)
                                     if m and m.total_groups > 0:
-                                        logger.info("[SCHEDULER] tenant=%s digest=completed groups=%d messages=%d", tk, m.total_groups, m.total_messages)
+                                        logger.info(
+                                            "[SCHEDULER] digest_completed tenant=%s groups=%d messages=%d",
+                                            tk, m.total_groups, m.total_messages,
+                                        )
                                 except Exception as ex:
-                                    logger.error(f"Lỗi khi chạy scheduled digest cho tenant {tk}: {ex}")
+                                    logger.error("[SCHEDULER] digest_failed tenant=%s error=%s", tk, ex)
 
                         loop.run_until_complete(_run_all_tenants())
                     finally:
                         loop.close()
             except Exception as e:
-                logger.error("[SCHEDULER] digest scheduler error: %s", e, exc_info=True)
+                logger.error("[SCHEDULER] loop_error error=%s", e, exc_info=True)
 
-        logger.info("Digest Scheduler đã dừng an toàn.")
+        logger.info("[SCHEDULER] stopped")
 
     thread = threading.Thread(target=_worker, daemon=True, name="DigestScheduler")
     thread.start()
@@ -226,20 +230,23 @@ def start_bot_service() -> None:
     """
     Khởi động toàn bộ dịch vụ Lark Bot:
       - Đăng ký hàm handle_lark_incoming_message vào Lark Service
+      - Khởi động Chat Queue Service (Debouncer & Cooldown Worker)
       - Bật Digest Scheduler daemon thread
-      - Kết nối Lark WebSocket Client (Pure WebSocket) ở background thread
+      - Kích hoạt chế độ nhận sự kiện qua HTTP Webhook Gateway (/api/lark/events)
     """
-    global _bot_started, _ws_thread
+    global _bot_started
 
     if _bot_started:
-        logger.info("Lark Bot Service đã được khởi động trước đó.")
+        logger.debug("[BOT] start_skipped reason=already_started")
         return
 
-    print("\n" + "=" * 65)
-    print("🚀 KHỞI ĐỘNG HILARK BOT SERVICE (INTEGRATED LIFESPAN)")
-    print("=================================================================")
-    print(f"App ID : {lark_service.app_id}")
-    print(f"Domain : {lark_service.domain}")
+    registered_apps, ready_tenants = _get_startup_tenant_counts()
+    logger.info(
+        "[BOT] starting mode=webhook domain=%s registered_apps=%d ready_tenants=%d",
+        lark_service.domain,
+        registered_apps,
+        ready_tenants,
+    )
 
     # 0. Không nạp `primary_user_token` legacy vào singleton nữa.
     #    Document đó thuộc về MỘT App/tenant cụ thể. Nạp vào `lark_service`/
@@ -247,10 +254,7 @@ def start_bot_service() -> None:
     #    danh tính của doanh nghiệp A. User token giờ chỉ đi qua token broker theo
     #    `(tenant_key, app_id, "user")`; sweeper giữ cho các tenant 'ready' còn hạn.
     if getattr(settings, "LARK_USER_ACCESS_TOKEN", ""):
-        logger.info(
-            "ℹ️ Bỏ qua LARK_USER_ACCESS_TOKEN trong .env khi startup: token khởi chạy "
-            "được cấp theo tenant qua broker, không nạp vào singleton."
-        )
+        logger.debug("[BOT] env_user_token_ignored=true reason=tenant_broker_active")
 
     # 1. Đăng ký Message Handler vào Lark Service
     lark_service.register_handler(handle_lark_incoming_message)
@@ -261,88 +265,7 @@ def start_bot_service() -> None:
     # 2. Khởi động Digest Scheduler
     start_digest_scheduler_daemon()
 
-    # 3. Kiểm tra token. Với nhiều Custom App, không được ping token legacy
-    # của singleton vì token thật được resolve/refresh theo từng tenant + app.
-    scoped_apps_mode = _has_registered_custom_apps()
-    if scoped_apps_mode:
-        token_res = None
-        print("🔐 TOKEN MODE: tenant-scoped Custom App (kiểm tra/refresh theo từng tenant)")
-    else:
-        from services.auth.token_verifier import check_and_warn_token
-        token_res = check_and_warn_token(token=lark_service.user_access_token)
-
-    # 4. Thông tin người dùng
-    user_info = {} if scoped_apps_mode else lark_service.get_current_user()
-    if "name" in user_info:
-        status_suffix = "" if token_res and token_res.is_valid else " ⚠️ [Chế độ An Toàn - Token hết hạn]"
-        print(f"👤 DANH TÍNH HOẠT ĐỘNG: {user_info['name']}{status_suffix}")
-        print(f"   - Open ID           : {user_info.get('open_id')}")
-
-    enable_polling = getattr(settings, "ENABLE_DM_POLLING", False)
-    poll_interval = getattr(settings, "DM_POLL_INTERVAL", 60.0)
-    enable_ws = getattr(settings, "ENABLE_LARK_WEBSOCKET", False)
-
-    if enable_ws:
-        if enable_polling:
-            print(f"   - DM 1-1 Chats      : 🔄 User Token Polling (Chu kỳ {poll_interval}s)")
-            print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
-        else:
-            print(f"   - Group & DM        : ⚡ Pure WebSocket Real-time (0 Quota used!)")
-            print(f"   - Chế độ gửi tin    : 100% USER IDENTITY (as_user=True)")
-    else:
-        print("   - Event Delivery    : 🌐 HTTP Webhook Gateway (Multi-Tenant Routing)")
-        print("   - WebSocket Mode    : ⚪ Tắt (Sử dụng Webhook)")
-
-    print("-" * 65)
-    print(f"💡 Danh tính phản hồi: {user_info.get('name') or settings.LARK_USER_NAME or 'User'}")
-    print("=" * 65)
-
-    # 4. Khởi động WebSocket Client ở background thread (chỉ khi ENABLE_LARK_WEBSOCKET=True)
-    if enable_ws:
-        if scoped_apps_mode:
-            # Multi-tenant: start WebSocket cho từng Custom App đã đăng ký trong MongoDB
-            # thay vì singleton .env (app_id khác → WebSocket nhận sai event)
-            print("🚀 Đang kết nối Lark WebSocket cho từng Custom App (Multi-Tenant Mode)...")
-
-            async def _async_start_ws_for_custom_apps():
-                try:
-                    from services.lark_app_service import lark_app_service
-                    from services.lark.runtime import get_or_create_lark_service
-                    registrations = await lark_app_service.list_registrations()
-                    for app_rec in registrations:
-                        if not app_rec.get("app_id"):
-                            continue
-                        try:
-                            svc = await get_or_create_lark_service(app_rec)
-                            svc.start_ws_client(background=True)
-                            print(f"  ✔ WebSocket connected for App {app_rec['app_id']} (tenant: {app_rec.get('tenant_key', 'N/A')})")
-                        except Exception as ws_err:
-                            logger.error(f"  ✗ WebSocket failed for App {app_rec.get('app_id')}: {ws_err}")
-                except Exception as e:
-                    logger.error(f"Lỗi khởi động WebSocket multi-tenant: {e}", exc_info=True)
-
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.create_task(_async_start_ws_for_custom_apps())
-
-        elif enable_polling:
-            _ws_thread = threading.Thread(
-                target=lark_service.start_hybrid_runner,
-                kwargs={"dm_poll_interval": poll_interval},
-                daemon=True,
-                name="LarkHybridRunner",
-            )
-            _ws_thread.start()
-        else:
-            print("🚀 Đang kết nối Lark WebSocket Client (Pure WebSocket Mode)...")
-            _ws_thread = lark_service.start_ws_client(background=True)
-    else:
-        logger.info("ℹ️ Chế độ Lark WebSocket đang tắt (ENABLE_LARK_WEBSOCKET=False). Mọi sự kiện và tương tác nhận qua Webhook Gateway (/api/lark/events).")
-
-    # 5. Khởi động Lark Base (Bitable) Sync & Subscribe Service
+    # 3. Khởi động Lark Base (Bitable) Sync & Subscribe Service
     try:
         from services.knowledge.chat_scopes import scope_service
         # D. Đăng ký handler tự động đồng bộ Documents sang WeKnora & MongoDB khi có sự kiện Bitable
@@ -370,14 +293,14 @@ def start_bot_service() -> None:
                     if tk:
                         tenant_keys.append(str(tk))
             except Exception as t_err:
-                logger.debug(f"Không thể đọc danh sách tenants để bootstrap Base: {t_err}")
+                logger.debug("[BITABLE] tenant_list_failed error=%s", t_err)
 
             for tk in tenant_keys:
                 try:
                     resources = await tenant_resolver.resolve(tk)
                 except TenantResolutionError as res_err:
                     logger.info(
-                        "ℹ️ [LARK BASE] Bỏ bootstrap cho tenant '%s' (%s): %s",
+                        "[BITABLE] bootstrap_skipped tenant=%s reason=%s error=%s",
                         tk, type(res_err).__name__, res_err,
                     )
                     continue
@@ -389,37 +312,37 @@ def start_bot_service() -> None:
                         base_service.subscribe_events, resources.base_app_token
                     )
                     if sub_ok:
-                        print(f"📊 [LARK BASE] tenant={tk} đã đăng ký theo dõi Bitable (App: {resources.base_app_token})")
+                        logger.info("[BITABLE] subscribed tenant=%s app_token=%s", tk, resources.base_app_token)
                 except Exception as sub_err:
-                    logger.warning("⚠️ [LARK BASE] tenant=%s subscribe_events lỗi: %s", tk, sub_err)
+                    logger.warning("[BITABLE] subscribe_failed tenant=%s error=%s", tk, sub_err)
 
                 try:
                     await base_provision_service.repair_enterprise_base_schema(tk)
                 except Exception as rep_err:
-                    logger.debug(f"repair schema error cho tenant {tk}: {rep_err}")
+                    logger.debug("[BITABLE] repair_schema_failed tenant=%s error=%s", tk, rep_err)
 
                 try:
                     # force=False: dùng hash so sánh, chỉ upload khi doc thực sự thay đổi.
                     # force=True chỉ nên dùng khi user bấm nút "Đồng bộ ngay" trên UI.
                     await policy_sync_service.sync_policies(force=False, tenant_key=tk)
                 except Exception as pol_err:
-                    logger.debug(f"policy sync error cho tenant {tk}: {pol_err}")
+                    logger.debug("[BITABLE] policy_sync_failed tenant=%s error=%s", tk, pol_err)
 
                 try:
                     sync_res = await asyncio.to_thread(base_service.sync_bot_chats)
                     items = sync_res.get("added", []) + sync_res.get("updated", [])
                     if items:
-                        print(f"🔄 [LARK BASE] tenant={tk} đã đồng bộ ban đầu {len(items)} nhóm chat vào Base.")
+                        logger.info("[BITABLE] chats_synced tenant=%s count=%d", tk, len(items))
                 except Exception as sync_err:
-                    logger.warning("⚠️ [LARK BASE] tenant=%s sync_bot_chats lỗi: %s", tk, sync_err)
+                    logger.warning("[BITABLE] sync_chats_failed tenant=%s error=%s", tk, sync_err)
 
                 try:
                     await scope_service.sync_all_groups_from_base(tenant_key=tk)
                 except Exception as ex:
-                    logger.warning(f"Lỗi trong sync_all_groups_from_base cho tenant {tk}: {ex}")
+                    logger.warning("[BITABLE] scope_sync_failed tenant=%s error=%s", tk, ex)
 
             if not tenant_keys:
-                print("ℹ️ [LARK BASE] Chưa có tenant nào trong DB — bỏ qua Base bootstrap.")
+                logger.debug("[BITABLE] bootstrap_skipped reason=no_tenants")
 
         try:
             loop = asyncio.get_running_loop()
@@ -438,34 +361,23 @@ def start_bot_service() -> None:
         except RuntimeError:
             pass
     except Exception as e:
-        logger.warning(f"Lỗi khởi tạo Lark Base Service trong lifecycle: {e}")
+        logger.warning("[BOT] bitable_init_failed error=%s", e)
 
     _bot_started = True
-    logger.info("✔ Lark Bot Service đã sẵn sàng!")
+    logger.info("[BOT] ready endpoints=/api/lark/events,/api/lark/card-action")
 
 
 def stop_bot_service() -> None:
     """Dừng an toàn toàn bộ background threads của Bot khi tắt server."""
     global _bot_started, _scheduler_stop_event
-    logger.info("Đang dừng Lark Bot Service...")
+    logger.info("[BOT] stopping")
     _scheduler_stop_event.set()
 
     # Dừng worker của Chat Queue Service
     try:
         chat_queue_service.stop()
     except Exception as e:
-        logger.debug(f"Lỗi khi dừng Chat Queue worker: {e}")
+        logger.debug("[BOT] queue_stop_failed error=%s", e)
 
     _bot_started = False
-    logger.info("✔ Đã dừng Lark Bot Service thành công.")
-
-
-def run_standalone_bot() -> None:
-    """Dành cho việc chạy độc lập bằng lệnh `python run_lark_bot.py`."""
-    start_bot_service()
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nĐang dừng bot...")
-        stop_bot_service()
+    logger.info("[BOT] stopped")

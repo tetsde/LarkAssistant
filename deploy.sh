@@ -115,7 +115,7 @@ if [ "$HEALTHY" = true ]; then
     echo -e "   • API Server & Healthcheck:  ${GREEN}http://localhost:8000/health${NC}"
     echo -e "   • Onboarding Screen Guide:   ${GREEN}http://localhost:8000/onboarding/wizard${NC}"
     echo -e "   • API Swagger Docs:          ${GREEN}http://localhost:8000/docs${NC}"
-    echo -e "   • Lark WebSocket:            ${GREEN}Hoạt động ngầm (Zero Ingress Port)${NC}"
+    echo -e "   • Lark Webhook Gateway:      ${GREEN}POST /api/lark/events (HTTP Callback)${NC}"
     echo ""
     echo -e "🛠️ ${BLUE}Các lệnh quản trị thông dụng:${NC}"
     echo -e "   • Xem logs máy chủ:          ${YELLOW}$DOCKER_COMPOSE_CMD -f docker-compose.prod.yml logs -f hilark-server${NC}"

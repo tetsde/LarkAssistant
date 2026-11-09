@@ -375,9 +375,9 @@ class WeKnoraService:
             async with self._get_client_session(client) as http_client:
                 resp = await http_client.delete(url, headers=headers, timeout=20.0)
                 if resp.status_code in (200, 204):
-                    logger.info(f"✔ [WeKnora] Đã xoá tài liệu '{clean_kid}' thành công.")
+                    logger.info("[WEKNORA] knowledge_deleted knowledge_id=%s", clean_kid)
                     return True
-                logger.warning(f"⚠️ [WeKnora] Xoá tài liệu '{clean_kid}' trả về HTTP {resp.status_code}: {resp.text}")
+                logger.warning("[WEKNORA] knowledge_delete_failed knowledge_id=%s status=%d body=%s", clean_kid, resp.status_code, resp.text)
                 return False
         except Exception as e:
             logger.warning(f"[WeKnora] Lỗi khi delete_knowledge({clean_kid}): {e}")
@@ -426,7 +426,7 @@ class WeKnoraService:
                 target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
 
                 if not valid_knowledge_ids and not target_kbs:
-                    print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids/knowledge_ids). Bỏ qua retrieval.")
+                    logger.warning("[WEKNORA] retrieve_skipped reason=missing_kb_and_knowledge_ids")
                     return []
 
                 shim_mod = sys.modules.get("services.knowledge_service") or sys.modules.get("services.weknora")
@@ -479,8 +479,10 @@ class WeKnoraService:
                             
                             if expected_tenant_id and str(tenant_id) != str(expected_tenant_id):
                                 logger.error(
-                                    f"🔴 SECURITY: Tenant {cur_tk} attempting to access WeKnora tenant {tenant_id}, "
-                                    f"but expected {expected_tenant_id}. Request BLOCKED."
+                                    "[WEKNORA] security_blocked reason=tenant_id_mismatch cur_tenant=%s requested=%s expected=%s",
+                                    cur_tk,
+                                    tenant_id,
+                                    expected_tenant_id,
                                 )
                                 raise ValueError(f"Tenant ID mismatch: {tenant_id} != {expected_tenant_id}")
                     except Exception as e:
@@ -503,7 +505,7 @@ class WeKnoraService:
                     if "X-Tenant-ID" not in headers:
                         # Không được fallback sang tenant mặc định trong production:
                         # thiếu mapping là lỗi cấu hình, không phải quyền truy cập global.
-                        logger.warning("[WeKnora] Từ chối retrieval: chưa resolve được X-Tenant-ID.")
+                        logger.warning("[WEKNORA] retrieve_rejected reason=missing_x_tenant_id")
                         return []
 
                 response = await http_client.post(
@@ -533,10 +535,10 @@ class WeKnoraService:
                             return fb_data.get("data", []) if isinstance(fb_data, dict) else []
                     return []
                 else:
-                    print(f"WeKnora retrieve error (HTTP {response.status_code}): {response.text}")
+                    logger.warning("[WEKNORA] retrieve_failed status=%s body=%s", response.status_code, response.text)
                     return []
         except Exception as e:
-            print(f"Lỗi khi gọi WeKnora retrieve: {e}")
+            logger.error("[WEKNORA] retrieve_error error=%s", e)
             return []
 
     def retrieve_sync(
@@ -558,7 +560,7 @@ class WeKnoraService:
         valid_knowledge_ids = [str(kid).strip() for kid in (knowledge_ids or []) if str(kid).strip()]
         target_kbs = knowledge_base_ids or self.get_configured_kb_ids()
         if not valid_knowledge_ids and not target_kbs:
-            print("[WeKnora] Cảnh báo: Chưa cấu hình dataset_id trong .env (hoặc không truyền knowledge_base_ids/knowledge_ids). Bỏ qua retrieval.")
+            logger.warning("[WEKNORA] retrieve_sync_skipped reason=missing_kb_and_knowledge_ids")
             return []
 
         payload: Dict[str, Any] = {
@@ -585,7 +587,7 @@ class WeKnoraService:
             except Exception:
                 pass
             if "X-Tenant-ID" not in headers:
-                print("[WeKnora] Từ chối retrieval_sync: chưa resolve được X-Tenant-ID.")
+                logger.warning("[WEKNORA] retrieve_sync_rejected reason=missing_x_tenant_id")
                 return []
 
         try:
@@ -597,10 +599,10 @@ class WeKnoraService:
                         return data["data"]
                     return data if isinstance(data, list) else []
                 else:
-                    print(f"WeKnora retrieve_sync error (HTTP {response.status_code}): {response.text}")
+                    logger.warning("[WEKNORA] retrieve_sync_failed status=%s body=%s", response.status_code, response.text)
                     return []
         except Exception as e:
-            print(f"Lỗi khi gọi WeKnora retrieve_sync: {e}")
+            logger.error("[WEKNORA] retrieve_sync_error error=%s", e)
             return []
 
     # =========================================================================
@@ -626,10 +628,10 @@ class WeKnoraService:
                 response = await http_client.get(url, headers=headers, timeout=30.0)
                 if response.status_code == 200:
                     return response.json()
-                print(f"[WeKnora] get_datasource_info HTTP {response.status_code}: {response.text}")
+                logger.warning("[WEKNORA] datasource_info_failed ds_id=%s status=%s body=%s", clean_id, response.status_code, response.text)
                 return None
         except Exception as e:
-            print(f"[WeKnora] Lỗi khi gọi get_datasource_info({clean_id}): {e}")
+            logger.error("[WEKNORA] datasource_info_error ds_id=%s error=%s", clean_id, e)
             return None
 
     async def update_datasource_resources(
@@ -646,7 +648,7 @@ class WeKnoraService:
         clean_id = datasource_id.strip()
         current_info = await self.get_datasource_info(clean_id, client=client, tenant_id=tenant_id)
         if not current_info or not isinstance(current_info, dict):
-            print(f"[WeKnora] Không thể lấy thông tin hiện tại của datasource {clean_id} để update.")
+            logger.warning("[WEKNORA] datasource_update_skipped ds_id=%s reason=info_unavailable", clean_id)
             return False
 
         # Cập nhật danh sách resource_ids
@@ -662,10 +664,10 @@ class WeKnoraService:
                 response = await http_client.put(url, headers=headers, json=current_info, timeout=30.0)
                 if response.status_code == 200:
                     return True
-                print(f"[WeKnora] update_datasource_resources HTTP {response.status_code}: {response.text}")
+                logger.warning("[WEKNORA] datasource_update_failed ds_id=%s status=%s body=%s", clean_id, response.status_code, response.text)
                 return False
         except Exception as e:
-            print(f"[WeKnora] Lỗi khi update_datasource_resources({clean_id}): {e}")
+            logger.error("[WEKNORA] datasource_update_error ds_id=%s error=%s", clean_id, e)
             return False
 
     async def trigger_datasource_sync(

@@ -277,7 +277,7 @@ class LarkTokenService:
 
         if data.get("code") != 0:
             err_msg = data.get("message") or data.get("msg") or "Unknown error"
-            logger.error(f"Lỗi khi đổi authorization code: code={data.get('code')}, msg={err_msg}")
+            logger.error("[OAUTH] code_exchange_failed code=%s msg=%s", data.get("code"), err_msg)
             raise RuntimeError(f"Lark từ chối đổi authorization code: {err_msg} (Mã lỗi {data.get('code')})")
 
         token_info = data.get("data", {})
@@ -347,8 +347,11 @@ class LarkTokenService:
             self._sync_to_lark_client(access_token, open_id, user_name)
 
         logger.info(
-            f"🎉 [OAUTH SUCCESS] Đã lưu User Token thành công cho: {user_name} (open_id: {open_id}). "
-            f"Access token sống {expires_in}s, Refresh token sống {refresh_expires_in}s."
+            "[OAUTH] token_saved open_id=%s tenant=%s expires_in_s=%d refresh_expires_in_s=%d",
+            open_id,
+            tenant_key,
+            expires_in,
+            refresh_expires_in,
         )
 
         return {
@@ -389,7 +392,7 @@ class LarkTokenService:
 
             # Nếu không phải force và token vẫn còn hạn > 10 phút thì không cần refresh
             if not force and stored_data.get("expires_at", 0) - now > 600:
-                logger.info("Access token vẫn còn hạn tốt (>10 phút), bỏ qua refresh.")
+                logger.debug("[TOKEN_SERVICE] refresh_skipped reason=still_valid")
                 return {"success": True, "action": "skipped", "access_token": stored_data["access_token"]}
 
             effective_app_id = app_id or stored_data.get("app_id")
@@ -399,7 +402,7 @@ class LarkTokenService:
                     app_record = await lark_app_service.get_by_app_id(effective_app_id)
                     app_secret = app_record.get("app_secret") if app_record else None
                 except Exception as exc:
-                    logger.warning("Không thể nạp App Secret theo app_id khi refresh: %s", exc)
+                    logger.warning("[TOKEN_SERVICE] app_secret_lookup_failed app=%s error=%s", effective_app_id, exc)
             app_token = await self.get_app_access_token(
                 app_id=effective_app_id,
                 app_secret=app_secret,
@@ -421,7 +424,7 @@ class LarkTokenService:
             if data.get("code") != 0:
                 err_code = data.get("code")
                 err_msg = data.get("message") or data.get("msg") or "Refresh token error"
-                logger.error(f"Lỗi khi refresh token: code={err_code}, msg={err_msg}")
+                logger.error("[TOKEN_SERVICE] refresh_failed code=%s msg=%s", err_code, err_msg)
                 if err_code in (20024, 20038):
                     try:
                         col = self._get_auth_col()
@@ -474,8 +477,11 @@ class LarkTokenService:
                 )
 
             logger.info(
-                f"🔄 [TOKEN ROTATED] Đã làm mới thành công User Token! "
-                f"Access token mới hạn {expires_in}s, Refresh token mới xoay vòng hạn {refresh_expires_in}s."
+                "[TOKEN_SERVICE] token_rotated app=%s tenant=%s expires_in_s=%d refresh_expires_in_s=%d",
+                effective_app_id,
+                stored_data.get("tenant_key") or tenant_key,
+                expires_in,
+                refresh_expires_in,
             )
 
             return {
@@ -511,7 +517,7 @@ class LarkTokenService:
                     if not effective_app_id or effective_app_id == getattr(settings, "LARK_APP_ID", ""):
                         effective_app_id = app_record["app_id"]
             except Exception as e:
-                logger.debug("Không thể phân giải app_id cho tenant %s: %s", tenant_key, e)
+                logger.debug("[TOKEN_SERVICE] resolve_app_id_failed tenant=%s error=%s", tenant_key, e)
 
         stored_data = await self.get_stored_token_data(tenant_key=tenant_key, app_id=effective_app_id)
         if not stored_data or not stored_data.get("access_token"):
@@ -522,7 +528,7 @@ class LarkTokenService:
 
         if stored_data.get("status") == "invalid_refresh_token":
             logger.error(
-                "Token bị vô hiệu hóa do refresh không hợp lệ (app=%s tenant=%s); cần OAuth lại.",
+                "[TOKEN_SERVICE] token_invalidated reason=invalid_refresh_token app=%s tenant=%s",
                 stored_data.get("app_id"),
                 stored_data.get("tenant_key"),
             )
@@ -540,13 +546,13 @@ class LarkTokenService:
                 res = await self.refresh_user_token(tenant_key=tenant_key, app_id=effective_app_id)
                 return res.get("access_token")
             except Exception as e:
-                logger.warning(f"Tự động refresh token thất bại: {e}.")
+                logger.warning("[TOKEN_SERVICE] auto_refresh_failed error=%s", e)
                 # Nếu access token vẫn chưa hết hạn (còn < 10 phút nhưng expires_at > now), dùng tạm
                 if expires_at > now:
-                    logger.info("Access token sắp hết hạn nhưng vẫn còn hiệu lực tạm thời, tiếp tục sử dụng.")
+                    logger.debug("[TOKEN_SERVICE] using_expiring_token tenant=%s", tenant_key)
                     return stored_data.get("access_token")
                 # Đã hết hạn hoàn toàn và refresh thất bại -> không trả về token chết
-                logger.error("❌ Access token đã hết hạn hoàn toàn và refresh thất bại. Cần đăng nhập lại qua /auth/lark/login.")
+                logger.error("[TOKEN_SERVICE] token_expired_unrecoverable tenant=%s action=reauth_required", tenant_key)
                 return None
 
         # Không có refresh_token: kiểm tra hạn trực tiếp
@@ -577,7 +583,7 @@ class LarkTokenService:
                     if not effective_app_id or effective_app_id == getattr(settings, "LARK_APP_ID", ""):
                         effective_app_id = app_record["app_id"]
             except Exception as e:
-                logger.debug("Không thể phân giải app_id cho tenant %s: %s", tenant_key, e)
+                logger.debug("[TOKEN_SERVICE] resolve_app_id_failed tenant=%s error=%s", tenant_key, e)
 
         query: Dict[str, Any]
         if effective_app_id and tenant_key:
@@ -659,10 +665,7 @@ class LarkTokenService:
         from core import token_loop
 
         token_loop.get_loop()  # khởi động sớm để lần lấy token đầu tiên không chờ tạo thread
-        logger.info(
-            "ℹ️ Startup không nạp legacy primary_user_token; user token được cấp theo tenant "
-            "qua token broker (sweeper sẽ giữ cho các tenant 'ready' còn token hợp lệ)."
-        )
+        logger.info("[TOKEN_SERVICE] mode=tenant_broker legacy_preload=disabled")
 
     def _clear_lark_client_token(self) -> None:
         """Xóa sạch user token trong Lark client khi token đã chết."""
@@ -693,9 +696,9 @@ class LarkTokenService:
                     lark_service._current_user_profile = {}
                 lark_service._current_user_profile["name"] = name
                 lark_service._current_user_profile["open_id"] = open_id
-            logger.info(f"🔄 Đã đồng bộ User Token vào lark_service (User: {name})")
+            logger.debug("[TOKEN_SERVICE] synced_to_legacy_client open_id=%s", open_id)
         except Exception as ex:
-            logger.warning(f"Không thể đồng bộ vào lark_service singleton: {ex}")
+            logger.warning("[TOKEN_SERVICE] sync_legacy_client_failed error=%s", ex)
 
     async def _fetch_user_profile(self, access_token: str) -> Dict[str, Any]:
         """Gọi endpoint user_info của Lark để lấy thông tin người dùng."""
@@ -708,7 +711,7 @@ class LarkTokenService:
                 if data.get("code") == 0 and data.get("data"):
                     return data["data"]
         except Exception as e:
-            logger.warning(f"Lỗi khi gọi user_info endpoint: {e}")
+            logger.warning("[OAUTH] user_info_fetch_failed error=%s", e)
         return {}
 
 

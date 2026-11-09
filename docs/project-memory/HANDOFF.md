@@ -2,7 +2,81 @@
 
 > Cập nhật khi kết thúc phiên có công việc đang dở hoặc bàn giao trạng thái sẵn sàng.
 
-## Latest: Rà Soát Multi-Tenant, Hoàn Thiện Cô Lập BYOK & Kế Hoạch Triển Khai Production (2026-11-03)
+## Latest: Chuẩn Hóa Logging Kỹ Thuật, Gỡ Nhánh Fallback Legacy User Identity Trên Startup (2026-11-09)
+- **Trạng thái hiện tại:** Đã hoàn tất gỡ nhánh startup single-tenant legacy (gây in `DANH TÍNH HOẠT ĐỘNG: User` + hộp cảnh báo `.env access_token_user` khi MongoDB rỗng), chuẩn hóa log hệ thống sang `[TAG] event key=value`, xác minh startup/shutdown thực tế, chạy toàn bộ `pytest` và trả MongoDB local về trạng thái sạch.
+- **Nguyên nhân đã sửa & thay đổi chính:**
+  1. **Gỡ fallback danh tính `"User"` trên startup (`server/services/lark/bot_runner.py`, `server/services/lark/client.py`):**
+     - Thay `_has_registered_custom_apps()` + nhánh fallback single-tenant (`check_and_warn_token()`, `lark_service.get_current_user()`, fallback chuỗi `"User"`) bằng `_get_startup_tenant_counts()` đếm `registered_apps` & `ready_tenants` từ MongoDB và log gọn `[BOT] starting mode=webhook domain=... registered_apps=... ready_tenants=...`.
+     - Sửa `LarkService.get_current_user()` trong `client.py` trả fallback `"name": settings.LARK_USER_NAME or ""` thay vì `"User"`.
+  2. **Chuẩn hóa logging có cấu trúc (`server/`):**
+     - Gỡ bỏ runtime `print()`, ASCII banner, emoji và log văn nói trên startup path, worker nền và toàn bộ `routers/` / `services/`, chuyển sang `[TAG] event key=value`.
+     - Đưa log tick rỗng (`checked=0` / `ready_tenants=0`) và broker init lúc reload (`[TOKEN_BROKER] initialized`) xuống `DEBUG`.
+     - Kiểm tra rõ các worker định kỳ (`PolicySync`, `ScopeSync`, `TenantTokenSweeper`, `DigestScheduler`, `_async_bitable_bootstrap`) đều lấy danh sách tenant từ MongoDB (`tenants` với `status == "ready"`, riêng bootstrap lọc `status != "uninstalled"`); `.env` chỉ cấp tham số mặc định toàn cục khi tenant chưa cấu hình riêng.
+- **Bằng chứng xác thực (Verified):**
+  - `python3 -m compileall -q /Users/hoainam/Desktop/HiLark/server` → **exit code 0**.
+  - AST scan `logger.*` / `logging.*` qua `server/{main.py,core,database,routers,services}` → **0** emoji/banner (`AST_HITS= 0`); grep `print(` chỉ còn docstring và 2 script CLI (`token_verifier.py`, `bitable.py`).
+  - Smoke test `uv run main.py` (MongoDB tạm `LarkAssistant_log_smoke`, `GET /health` → `200 OK`, SIGINT graceful shutdown) → log sạch 100%, không còn `"User"`, không cảnh báo `.env`, không trùng broker lúc reload.
+  - `cd /Users/hoainam/Desktop/HiLark/server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 uv run pytest tests/ -q` → **348 passed, 4 warnings in 7.82s**.
+  - Đã drop `LarkAssistant_log_smoke` và `LarkAssistant_test` trên `mongodb://localhost:27017`; port `8000` đang rảnh.
+
+## Previous: Refactor LLMClient Đa Provider, Chuẩn Hóa Models & Schema MongoDB, Đưa Cost Telemetry Ra .env & Đo thinking_tokens (EDL-0076) (2026-11-09)
+- **Trạng thái hiện tại:** Đã hoàn tất toàn bộ 6 bước (Step 1–6) triển khai, dọn sạch ký hiệu/field cũ và kiểm thử tự động trên nhánh `main` (chưa commit, chưa chạy migration trên Atlas production, chưa deploy).
+- **Vấn đề & thay đổi chính:**
+  1. **Tập trung Models vào `server/models/` & Làm sạch Schema (`server/models/llm.py`, `server/models/telemetry.py`, `user_settings.py`, `onboarding.py`, `model_catalog.py`, `indexes.py`):**
+     - Tạo `LLMModelOption`, frozen `LLMRequest` (với `@property is_multimodal`), `LLMUsage` (`thinking_tokens`, `thinking_included_in_output`) tại `server/models/llm.py`, và `ModelPricing`, `TelemetryRecord` (`service="google"`, `output_tokens`, `thinking_tokens`) tại `server/models/telemetry.py`.
+     - Chuyển `GEMINI_MODEL_SPECS` trong `model_catalog.py` sang `LLMModelOption`, gỡ bỏ hoàn toàn `is_gemini_3_or_newer` và `is_gemini_25_pro`.
+     - Chuẩn hóa toàn bộ schema runtime/Pydantic/UI sang `encrypted_llm_api_key`, `masked_llm_api_key`, `raw_llm_key`, `output_tokens`, `thinking_tokens`, `service="google"`; bổ sung compound index `idx_telemetry_provider_model`.
+     - Tạo `scripts/migrate_llm_schema.py` (`--dry-run` mặc định; `--apply` backfill + chuẩn hóa `service="gemini" -> "google"` và mặc định `$unset` xóa field cũ trừ khi truyền `--keep-legacy`).
+  2. **Đổi tên & Tái cấu trúc `LLMClient` (`server/services/ai/llm_client.py`, xóa cứng `gemini_client.py`):**
+     - Đổi module sang `services/ai/llm_client.py` (`LLMClient`, `llm_client`); xóa cứng `gemini_client.py` và các alias cũ (`GeminiClient`, `test_gemini_key`, `_call_gemini`, `calculate_gemini_cost`).
+     - Tách 3 pure static payload builders nhận `(model, LLMRequest)`: `_build_google_payload`, `_build_openai_payload`, `_build_anthropic_payload`.
+     - Gỡ bỏ `_apply_gemini_thinking_config` và tham số `thinking_budget` đoán mò theo regex tên model; `@track_llm_cost` đo trực tiếp token thực tế từ phản hồi provider.
+  3. **Đưa tham số chi phí ra `.env` & Chống double-counting (`server/core/config.py`, `.env.production.example`, `decorators/cost_telemetry.py`, `card_builder.py`):**
+     - Thêm vào `.env`/Settings: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `USD_TO_VND_RATE`, `JEV_FLAT_COST_PER_REQUEST`, `LLM_DEFAULT_*`, `LLM_PROVIDER_DEFAULT_PRICING_JSON`, `LLM_MODEL_PRICING_JSON` (kèm safe fallback khi JSON/float lỗi).
+     - `calculate_llm_cost()` tra theo thứ tự ưu tiên: `"<provider>/<model>"` exact/longest-prefix -> `"<model>"` exact/longest-prefix -> `LLM_PROVIDER_DEFAULT_PRICING_JSON` -> `LLM_DEFAULT_*`. Khi `thinking_included_in_output=False` (Google `thoughtsTokenCount`) mới cộng thêm `thinking_tokens`, tránh tính trùng `reasoning_tokens` / `thinking_tokens` của OpenAI & Anthropic.
+     - `build_digest_approval_card` tổng hợp tất cả LLM service khác `jev`, dùng nhãn trung lập `LLM (...)` và chỉ hiển thị `, thinking: <n>` khi `> 0`.
+  4. **Đồng bộ Callers, Router & UI:** Cập nhật `services/ai/__init__.py`, `services/__init__.py`, `ai_service.py`, `digest_service.py`, `llm_extractor.py`, `doc_parser.py` (`parser="llm_vision_ocr"`), `chat_workflow.py`, `digest_workflow.py` (`_call_llm`), `ai_config_manager.py`, `user_settings_service.py`, `routers/onboarding.py`, `onboarding_wizard.html`, `setup_one_click.html` (`#llmKeyInput`, `raw_llm_key`, `masked_llm_api_key`).
+- **Files thay đổi thuộc EDL-0076 (trên worktree `main` vốn đang có sẵn thay đổi chưa commit của `EDL-0075`):**
+  - **4 file mới:** `server/models/llm.py`, `server/models/telemetry.py`, `server/services/ai/llm_client.py`, `scripts/migrate_llm_schema.py`.
+  - **1 file xóa cứng (`D`):** `server/services/ai/gemini_client.py`.
+  - **22 file cập nhật runtime/template/config:** `server/core/config.py`, `.env.production.example` (`.gitignore`), `server/database/indexes.py`, `server/decorators/__init__.py`, `server/decorators/cost_telemetry.py`, `server/models/__init__.py`, `server/models/onboarding.py`, `server/models/user_settings.py`, `server/routers/onboarding.py`, `server/services/__init__.py`, `server/services/ai/__init__.py`, `server/services/ai/ai_config_manager.py`, `server/services/ai/llm_extractor.py`, `server/services/ai/model_catalog.py`, `server/services/ai_service.py`, `server/services/digest_service.py`, `server/services/knowledge/doc_parser.py`, `server/services/lark/card_builder.py`, `server/services/user_settings_service.py`, `server/services/workflows/chat_workflow.py`, `server/services/workflows/digest_workflow.py`, `server/templates/onboarding_wizard.html`, `server/templates/setup_one_click.html` *(gồm `.env.production.example` trong `.gitignore` là 23)*.
+  - **4 test files (`.gitignore` bỏ qua `tests/`):** `server/tests/final_test/test_byok_onboarding.py`, `server/tests/final_test/test_ai_config_and_jev_byok.py`, `server/tests/final_test/phase_3_daily_digest_reporting/test_phase_3_daily_digest_reporting.py`, `server/tests/lark/test_card_builder_schema.py`.
+- **Bằng chứng xác thực (Verified):**
+  - `python3 -m compileall -q server/core server/database server/decorators server/models server/routers server/services server/tests scripts` → **exit code 0**.
+  - Quét runtime `server/` (loại `__pycache__`, `tests`, `docs`, `.venv`, `.pytest_cache`) xác nhận **0** ký hiệu cũ còn sót; toàn bộ tham chiếu trong `scripts/migrate_llm_schema.py` và negative assertions trong `server/tests` đều có chủ đích.
+  - `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 /Users/hoainam/Desktop/HiLark/server/.venv/bin/python -m pytest tests/final_test/test_byok_onboarding.py tests/final_test/test_ai_config_and_jev_byok.py tests/final_test/phase_3_daily_digest_reporting/test_phase_3_daily_digest_reporting.py tests/lark/test_card_builder_schema.py -v` → **107 passed, 2 warnings in 2.76s**.
+  - `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 /Users/hoainam/Desktop/HiLark/server/.venv/bin/python -m pytest tests -q` → **348 passed, 4 warnings in 7.21s** (trên **MongoDB local** `LarkAssistant_test`).
+  - `/Users/hoainam/Desktop/HiLark/server/.venv/bin/python scripts/migrate_llm_schema.py --help` → **exit code 0**; `--dry-run`, `--apply`, `--apply --keep-legacy` pass qua unit test với `FakeSyncDB`.
+  - **Phạm vi chưa verify live:** Các lời gọi HTTP tới Google Gemini, OpenAI, Anthropic, JEV đều mock qua `httpx`; chưa test paid live API call, chưa chạy `scripts/migrate_llm_schema.py --apply` vào MongoDB Atlas thật, và 4 file docs tham khảo cũ trong `server/docs/` (`so_do_luong_hoat_dong_4_lop.md`, `layer4/layer4.md`, `layer4/persona_delivery_deep_dive.md`) vẫn ghi tên `gemini_client.py` (ngoài phạm vi code Step 1–6).
+- **Quyết định liên quan:** [EDL-0076 (Notion)](https://app.notion.com/p/EDL-0076-Refactor-LLMClient-a-provider-chu-n-h-a-Models-Schema-MongoDB-a-Cost-Telemetry-ra--413590f7e19e814cb219c7328239f002) & `docs/project-memory/DECISIONS.md` (partly supersedes `EDL-0075`, `EDL-0014`, `EDL-0019`).
+- **Bước tiếp theo khi triển khai Production:**
+  1. Cập nhật `.env` production từ `.env.production.example` (kiểm tra `USD_TO_VND_RATE`, `JEV_FLAT_COST_PER_REQUEST`, `LLM_DEFAULT_*`, `LLM_MODEL_PRICING_JSON` nếu muốn override).
+  2. Chạy preview migration trên DB thật: `/path/to/python scripts/migrate_llm_schema.py` (mặc định `--dry-run`), kiểm tra số lượng document trước khi chạy `--apply` để backfill & `$unset` xóa các field legacy (`encrypted_gemini_api_key`, `masked_gemini_api_key`, `candidates_tokens`).
+  3. Review `git diff` trên nhánh `main` (bao gồm cả phần `EDL-0075` + `EDL-0076`), commit và deploy.
+
+## Previous: Hoàn Thành Unified Fail-Closed BYOK, AI Config Manager, Mặc Định gemini-flash-latest & JEV BYOK (EDL-0075) (2026-11-09)
+- **Trạng thái hiện tại:** Đã hoàn tất cả 6 bước (Step 1–6) triển khai, tích hợp UI/Backend và kiểm thử tự động trên nhánh `main` (working tree có thay đổi chưa commit, chưa deploy production).
+- **Vấn đề & thay đổi chính:**
+  1. **Single Source of Truth Model Catalog (`server/services/ai/model_catalog.py`):** Chuẩn hóa `DEFAULT_GEMINI_MODEL = "gemini-flash-latest"`, `GEMINI_MODEL_OPTIONS` từ Gemini `2.5` đến `3.8`, cùng helper nhận diện thế hệ (`is_gemini_3_or_newer`, `is_gemini_25_pro`).
+  2. **Centralized AI Config Manager (`server/services/ai/ai_config_manager.py`) & Schema (`server/models/user_settings.py`, `server/database/indexes.py`):** Gom toàn bộ mã hóa/giải mã AES-256 Fernet (`decrypt_key_strict`), RAM cache TTL 60s + `invalidate()`, lưu cấu hình thống nhất kèm dọn rác `llm_base_url`/`llm_model` khi đổi provider hoặc xóa rỗng trên UI, và bổ sung trường JEV BYOK (`is_jev_byok_enabled`, `jev_mode`, `encrypted_jev_api_key`, `masked_jev_api_key`). `UserSettingsService` rút gọn thành thin compatibility facade; `OneClickSetupService` bảo vệ không ghi đè mất BYOK khi admin chạy lại setup.
+  3. **Hợp đồng Fail-Closed BYOK & Multi-Provider Engine (`server/core/tenant_errors.py`, `server/services/ai/gemini_client.py`, `server/services/ai/jev_classifier.py`, `server/services/lark/tenant_error_reply.py`, `server/decorators/cost_telemetry.py`):**
+     - Bật BYOK (`is_byok_enabled=True` hoặc `is_jev_byok_enabled=True`) mà thiếu/lỗi giải mã key, bị từ chối `401`/`403`/`400-auth`, hoặc toàn bộ model `400`/`404` sẽ raise `BYOKConfigurationError` (`HTTP 400`, lời nhắn tiếng Việt trên chat), chỉ fallback `.env` khi BYOK tắt.
+     - Loại bỏ đường vòng `chat_scope` key, `request_api_key`, WeKnora Chat fallback (`chat_workflow.py`) và `FAST_APPROVE_SET` khi BYOK JEV bật; `jev_classifier.py` hỗ trợ per-request headers và `ping_key()`; `gemini_client.py` đồng bộ `thinkingConfig` (`thinkingLevel` cho Gemini `3.x+`, `thinkingBudget` cho `2.5 Pro`/`Flash`) và telemetry đa provider + `tenant_key` + `is_byok`.
+  4. **Callers & Onboarding/Setup UI (`server/services/knowledge/doc_parser.py`, `chat_scopes.py`, `server/services/workflows/chat_workflow.py`, `digest_workflow.py`, `document_handler.py`, `member_message_handler.py`, `server/models/onboarding.py`, `server/routers/onboarding.py`, `server/templates/onboarding_wizard.html`, `server/templates/setup_one_click.html`):** Truyền `tenant_key` xuyên suốt tới `AIConfigManager`/JEV, chặn nuốt `BYOKConfigurationError`; bổ sung `/onboarding/api/models`, dropdown Gemini `2.5` → `3.8` + `__custom__` và mục cấu hình + Test Key riêng cho JEV System 1 trên cả Wizard lẫn One-Click Setup.
+- **Files thay đổi:**
+  - **2 file mới:** `server/services/ai/ai_config_manager.py`, `server/services/ai/model_catalog.py`.
+  - **21 file cập nhật:** `core/tenant_errors.py`, `database/indexes.py`, `decorators/__init__.py`, `decorators/cost_telemetry.py`, `models/onboarding.py`, `models/user_settings.py`, `routers/onboarding.py`, `services/ai/__init__.py`, `services/ai/gemini_client.py`, `services/ai/jev_classifier.py`, `services/knowledge/chat_scopes.py`, `services/knowledge/doc_parser.py`, `services/lark/handlers/document_handler.py`, `services/lark/handlers/member_message_handler.py`, `services/lark/tenant_error_reply.py`, `services/setup/one_click_setup_service.py`, `services/user_settings_service.py`, `services/workflows/chat_workflow.py`, `services/workflows/digest_workflow.py`, `templates/onboarding_wizard.html`, `templates/setup_one_click.html`.
+  - **Test files (nằm ngoài `git status` vì `.gitignore` bỏ qua `tests/`):** `server/tests/final_test/test_byok_onboarding.py`, `server/tests/final_test/test_ai_config_and_jev_byok.py`.
+- **Bằng chứng xác thực (Verified):**
+  - `cd server && python3 -m compileall -q core database decorators models routers services tests/final_test/test_ai_config_and_jev_byok.py tests/final_test/test_byok_onboarding.py` → **exit code 0**.
+  - `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 .venv/bin/python -m pytest tests/final_test/test_byok_onboarding.py -v` → **33 passed** (Step 6A).
+  - `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 .venv/bin/python -m pytest tests/final_test/test_ai_config_and_jev_byok.py -v` → **55 passed, 0 failed, 2 warnings in 2.86s** (Step 6B).
+  - `cd server && HILARK_TEST_MONGO_URL=mongodb://localhost:27017 .venv/bin/python -m pytest tests -q` → **342 passed, 4 warnings in 7.02s**.
+  - **Phạm vi chưa verify live:** Toàn bộ request ra Google Gemini (`3.8`/`2.5`), OpenAI, Anthropic, JEV API trong test đều mock qua `httpx`; chưa chạy smoke test có phí với key thật, chưa chạy trên MongoDB Atlas production, và chưa click E2E trực tiếp trong Lark Webview modal.
+- **Quyết định liên quan:** [EDL-0075 (Notion)](https://app.notion.com/p/EDL-0075-Unified-Fail-Closed-BYOK-AI-Config-Manager-t-p-trung-M-c-nh-gemini-flash-latest-JEV--413590f7e19e814f8786ca5ca1b1c737) & `docs/project-memory/DECISIONS.md` (partly supersedes `EDL-0017`, `EDL-0019`).
+- **Bước tiếp theo:** User review Gate 6; nếu muốn kiểm chứng thực tế, cấu hình `.env`/MongoDB Atlas và test nút `Kiểm tra` với key Gemini & JEV thật trên `/onboarding/wizard` hoặc `/setup`, sau đó review `git diff` để commit và deploy.
+
+## Previous: Rà Soát Multi-Tenant, Hoàn Thiện Cô Lập BYOK & Kế Hoạch Triển Khai Production (2026-11-03)
 - **Vấn đề đã xử lý:**
   - Hoàn thành rà soát bảo mật toàn diện cho môi trường Multi-Tenant Production.
   - Phát hiện và vá điểm rò rỉ tiềm ẩn trong cơ chế giải quyết BYOK Key (`user_settings_service.py`):

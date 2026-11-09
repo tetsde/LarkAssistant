@@ -1,13 +1,18 @@
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 from core.config import settings
 from core.http_client import get_http_client
+from core.tenant_errors import BYOKConfigurationError
+from database.scoped_query import get_current_tenant_key
 from decorators.cost_telemetry import track_jev_cost
+from services.ai.ai_config_manager import ai_config_manager
 
 logger = logging.getLogger(__name__)
+_ORIG_HTTPX_ASYNC_CLIENT = httpx.AsyncClient
 
 
 class JEVError(RuntimeError):
@@ -18,11 +23,62 @@ class JEVError(RuntimeError):
 class JevService:
     def __init__(self):
         self.api_key = settings.JEV_API_KEY
+        self._initial_env_key = settings.JEV_API_KEY
         self.url = "https://api.typesafe.ai/v1/systemone"
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
+
+    def _build_headers(self, api_key: str) -> Dict[str, str]:
+        """Tạo header Authorization riêng cho từng request, tránh ghi đè self.headers dùng chung."""
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def _resolve_auth(
+        self,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
+    ) -> Tuple[str, bool, Optional[str]]:
+        """
+        Phân giải JEV API key hiệu lực theo ngữ cảnh tenant/user (Fail-Closed cho BYOK).
+        Giữ tương thích ngược cho unit test cục bộ gán trực tiếp `service.api_key`.
+        """
+        clean_open_id = (open_id or "").strip() or None
+        eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() or "").strip() or None
+        custom_instance_override = self.api_key != self._initial_env_key
+
+        if eff_tenant is None and clean_open_id is None and custom_instance_override:
+            key = (self.api_key or "").strip()
+            is_byok = False
+        else:
+            key, is_byok = await ai_config_manager.resolve_jev_key(
+                tenant_key=eff_tenant,
+                open_id=clean_open_id,
+            )
+            key = (key or "").strip()
+            if not is_byok and custom_instance_override:
+                key = (self.api_key or "").strip()
+
+        try:
+            from decorators.cost_telemetry import last_jev_usage
+
+            last_jev_usage.set({"is_byok": is_byok, "tenant_key": eff_tenant})
+        except ImportError:
+            pass
+
+        if is_byok and not key:
+            raise BYOKConfigurationError(
+                "BYOK cho dịch vụ JEV đã bật nhưng thiếu API key hợp lệ. "
+                "Vui lòng kiểm tra lại cấu hình JEV BYOK.",
+                tenant_key=eff_tenant,
+                provider="jev",
+                service_type="jev",
+            )
+
+        return key, is_byok, eff_tenant
 
     @asynccontextmanager
     async def _get_client_session(self, client: Optional[httpx.AsyncClient] = None):
@@ -38,11 +94,21 @@ class JevService:
         # Nếu httpx.AsyncClient đã bị monkey-patch / mock trong unit test
         import sys
         target_httpx = httpx
-        jev_mod = sys.modules.get("services.ai_service") or sys.modules.get("services.jev")
-        if jev_mod and hasattr(jev_mod, "httpx") and type(getattr(jev_mod.httpx, "AsyncClient", None)).__name__ in ("MagicMock", "AsyncMock"):
+        jev_mod = (
+            sys.modules.get("services.ai.jev_classifier")
+            or sys.modules.get("services.ai_service")
+            or sys.modules.get("services.jev")
+        )
+        if jev_mod and hasattr(jev_mod, "httpx") and (
+            getattr(jev_mod.httpx, "AsyncClient", None) is not _ORIG_HTTPX_ASYNC_CLIENT
+            or type(getattr(jev_mod.httpx, "AsyncClient", None)).__name__ in ("MagicMock", "AsyncMock")
+        ):
             target_httpx = jev_mod.httpx
 
-        if type(target_httpx.AsyncClient).__name__ in ("MagicMock", "AsyncMock"):
+        if (
+            target_httpx.AsyncClient is not _ORIG_HTTPX_ASYNC_CLIENT
+            or type(target_httpx.AsyncClient).__name__ in ("MagicMock", "AsyncMock")
+        ):
             mock_obj = target_httpx.AsyncClient()
             if hasattr(mock_obj, "__aenter__") and hasattr(mock_obj, "__aexit__"):
                 async with mock_obj as c:
@@ -59,8 +125,22 @@ class JevService:
         message: str,
         client: Optional[httpx.AsyncClient] = None,
         speaker_role: str = "member",
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
     ) -> dict:
-        if not self.api_key:
+        api_key, is_byok, eff_tenant = await self._resolve_auth(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
+        if not api_key:
+            if is_byok:
+                raise BYOKConfigurationError(
+                    "BYOK cho dịch vụ JEV đã bật nhưng thiếu API key hợp lệ. "
+                    "Vui lòng kiểm tra lại cấu hình JEV BYOK.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             raise JEVError("Missing JEV API Key (jev_api) in .env")
 
         normalized_role = "owner" if speaker_role == "owner" else "member"
@@ -115,7 +195,19 @@ class JevService:
 
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.post(self.url, headers=self.headers, json=payload, timeout=30.0)
+                response = await http_client.post(
+                    self.url,
+                    headers=self._build_headers(api_key),
+                    json=payload,
+                    timeout=30.0,
+                )
+            if is_byok and response.status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({response.status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             response.raise_for_status()
             data = response.json()
             
@@ -217,6 +309,18 @@ class JevService:
                 "knowledge_domain": domain_choice,
                 "domain_confidence": domain_conf,
             }
+        except BYOKConfigurationError:
+            raise
+        except httpx.HTTPStatusError as e:
+            status_code = getattr(e.response, "status_code", None)
+            if is_byok and status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                ) from e
+            raise JEVError(f"JEV Classification Failed: {str(e)}") from e
         except Exception as e:
             raise JEVError(f"JEV Classification Failed: {str(e)}") from e
 
@@ -229,6 +333,8 @@ class JevService:
         timeout: float = 12.0,
         project_context: Optional[str] = None,
         client: Optional[httpx.AsyncClient] = None,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
     ) -> list:
         """
         [RAG Gate Tier 2] Lọc mức độ liên quan ngữ nghĩa của các Chunks bằng JEV:
@@ -236,11 +342,24 @@ class JevService:
           - Snippet rộng (1500 ký tự) kết hợp Smart Windowing theo từ khóa câu hỏi để chống chém cụt thông tin.
           - Giữ lại các chunks có nhãn RELEVANT (loại bỏ hoàn toàn tài liệu rác, lạc đề).
           - Graceful Fallback: Nếu JEV lỗi, timeout hoặc lọc rỗng, giữ lại chunks ban đầu để không crash RAG.
+          - Fail-Closed khi bật BYOK: thiếu key hoặc 401/403 sẽ ném BYOKConfigurationError.
         """
         if not chunks or len(chunks) <= 1:
             return chunks
 
-        if not self.api_key:
+        api_key, is_byok, eff_tenant = await self._resolve_auth(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
+        if not api_key:
+            if is_byok:
+                raise BYOKConfigurationError(
+                    "BYOK cho dịch vụ JEV đã bật nhưng thiếu API key hợp lệ. "
+                    "Vui lòng kiểm tra lại cấu hình JEV BYOK.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             return chunks
 
         # Chuẩn bị questions cho tối đa 5 chunks hàng đầu
@@ -306,7 +425,19 @@ class JevService:
 
         try:
             async with self._get_client_session(client) as http_client:
-                resp = await http_client.post(self.url, headers=self.headers, json=payload, timeout=timeout)
+                resp = await http_client.post(
+                    self.url,
+                    headers=self._build_headers(api_key),
+                    json=payload,
+                    timeout=timeout,
+                )
+            if is_byok and resp.status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({resp.status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             if resp.status_code != 200:
                 return chunks
 
@@ -332,6 +463,18 @@ class JevService:
 
             # An toàn: nếu JEV lọc quá tay làm mất hết chunks, fallback giữ lại chunks ban đầu
             return chunks
+        except BYOKConfigurationError:
+            raise
+        except httpx.HTTPStatusError as e:
+            status_code = getattr(e.response, "status_code", None)
+            if is_byok and status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                ) from e
+            return chunks
         except Exception:
             return chunks
 
@@ -342,6 +485,8 @@ class JevService:
         forbidden_labels: Union[str, List[str], None],
         timeout: float = 10.0,
         client: Optional[httpx.AsyncClient] = None,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         [Forbidden Intent Gating] Sử dụng JEV System One để kiểm tra xem câu hỏi của người dùng
@@ -400,7 +545,20 @@ class JevService:
                 keyword_matched = lbl
                 break
 
-        if not self.api_key:
+        api_key, is_byok, eff_tenant = await self._resolve_auth(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
+
+        if not api_key:
+            if is_byok:
+                raise BYOKConfigurationError(
+                    "BYOK cho dịch vụ JEV đã bật nhưng thiếu API key hợp lệ. "
+                    "Vui lòng kiểm tra lại cấu hình JEV BYOK.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             if keyword_matched:
                 return {
                     "is_forbidden": True,
@@ -443,7 +601,19 @@ class JevService:
 
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.post(self.url, headers=self.headers, json=payload, timeout=timeout)
+                response = await http_client.post(
+                    self.url,
+                    headers=self._build_headers(api_key),
+                    json=payload,
+                    timeout=timeout,
+                )
+            if is_byok and response.status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({response.status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             if response.status_code != 200:
                 logger.warning(f"JEV API returned non-200 ({response.status_code}): {response.text}")
                 if keyword_matched:
@@ -508,6 +678,35 @@ class JevService:
                 "reason": "jev_classified",
             }
 
+        except BYOKConfigurationError:
+            raise
+        except httpx.HTTPStatusError as e:
+            status_code = getattr(e.response, "status_code", None)
+            if is_byok and status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                ) from e
+            logger.warning(f"JEV check_forbidden_query exception: {e}")
+            if keyword_matched:
+                return {
+                    "is_forbidden": True,
+                    "confidence": 1.0,
+                    "choice": "FORBIDDEN",
+                    "forbidden_labels": cleaned_labels,
+                    "matched_label": keyword_matched,
+                    "reason": "exception_keyword_fallback",
+                }
+            return {
+                "is_forbidden": False,
+                "confidence": 0.0,
+                "choice": "ALLOWED",
+                "forbidden_labels": cleaned_labels,
+                "matched_label": None,
+                "reason": f"exception: {str(e)}",
+            }
         except Exception as e:
             logger.warning(f"JEV check_forbidden_query exception: {e}")
             if keyword_matched:
@@ -535,6 +734,8 @@ class JevService:
         reply_text: str,
         timeout: float = 10.0,
         client: Optional[httpx.AsyncClient] = None,
+        tenant_key: Optional[str] = None,
+        open_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         [Thread Decision Intent] Phân loại phản hồi của Lãnh đạo khi reply tin nhắn đề xuất:
@@ -564,7 +765,20 @@ class JevService:
             "không được", "ko được", "không được em", "ko đc", "hủy nhé", "thôi bỏ đi", "giữ nguyên đi",
         }
         reply_lower = reply_clean.lower()
-        if not self.api_key:
+
+        api_key, is_byok, eff_tenant = await self._resolve_auth(
+            tenant_key=tenant_key,
+            open_id=open_id,
+        )
+        if not api_key:
+            if is_byok:
+                raise BYOKConfigurationError(
+                    "BYOK cho dịch vụ JEV đã bật nhưng thiếu API key hợp lệ. "
+                    "Vui lòng kiểm tra lại cấu hình JEV BYOK.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             if reply_lower in FAST_APPROVE_SET:
                 return {
                     "decision": "APPROVE_AS_IS",
@@ -614,7 +828,19 @@ class JevService:
 
         try:
             async with self._get_client_session(client) as http_client:
-                response = await http_client.post(self.url, headers=self.headers, json=payload, timeout=timeout)
+                response = await http_client.post(
+                    self.url,
+                    headers=self._build_headers(api_key),
+                    json=payload,
+                    timeout=timeout,
+                )
+            if is_byok and response.status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({response.status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                )
             if response.status_code != 200:
                 logger.warning(f"JEV API returned non-200 ({response.status_code}): {response.text}")
                 if reply_lower in FAST_APPROVE_SET:
@@ -667,6 +893,33 @@ class JevService:
                 "probabilities": probabilities,
                 "reason": "jev_classified",
             }
+        except BYOKConfigurationError:
+            raise
+        except httpx.HTTPStatusError as e:
+            status_code = getattr(e.response, "status_code", None)
+            if is_byok and status_code in (401, 403):
+                raise BYOKConfigurationError(
+                    f"JEV API Key cá nhân (BYOK) bị từ chối ({status_code}). Vui lòng kiểm tra lại key.",
+                    tenant_key=eff_tenant,
+                    provider="jev",
+                    service_type="jev",
+                ) from e
+            logger.warning(f"JEV classify_thread_decision exception: {e}")
+            if reply_lower in FAST_APPROVE_SET:
+                return {
+                    "decision": "APPROVE_AS_IS",
+                    "confidence": 0.9,
+                    "raw_choice": "APPROVE_AS_IS",
+                    "probabilities": {"APPROVE_AS_IS": 0.9},
+                    "reason": "exception_fast_approve_fallback",
+                }
+            return {
+                "decision": "CHAT_ONLY",
+                "confidence": 0.0,
+                "raw_choice": "CHAT_ONLY",
+                "probabilities": {},
+                "reason": f"exception: {str(e)}",
+            }
         except Exception as e:
             logger.warning(f"JEV classify_thread_decision exception: {e}")
             if reply_lower in FAST_APPROVE_SET:
@@ -684,6 +937,88 @@ class JevService:
                 "probabilities": {},
                 "reason": f"exception: {str(e)}",
             }
+
+    async def ping_key(
+        self,
+        raw_key: str,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        timeout: float = 15.0,
+    ) -> Tuple[bool, str, float]:
+        """Kiểm tra kết nối trực tiếp tới JEV System 1 bằng BYOK key, trả về (thành_công, thông_báo, độ_trễ_ms)."""
+        if not raw_key or not str(raw_key).strip():
+            return False, "JEV API Key không được để trống.", 0.0
+
+        key = str(raw_key).strip()
+        target_url = ((base_url or "").strip() or self.url).rstrip("/")
+        target_model = (model or "").strip() or "jev-latest"
+        timeout_val = float(timeout) if timeout and float(timeout) > 0 else 15.0
+        headers = self._build_headers(key)
+        payload = {
+            "state": "ping",
+            "model": target_model,
+            "questions": {
+                "health_check": {
+                    "type": "choice",
+                    "instructions": "Respond OK if available.",
+                    "criteria": {"OK": "Service reachable"},
+                }
+            },
+        }
+
+        start_time = time.monotonic()
+        try:
+            async with self._get_client_session() as http_client:
+                res = await http_client.post(
+                    target_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout_val,
+                )
+            latency_ms = round((time.monotonic() - start_time) * 1000, 2)
+            if res.status_code == 200:
+                return (
+                    True,
+                    f"Kết nối JEV System 1 thành công (độ trễ {latency_ms} ms)",
+                    latency_ms,
+                )
+
+            err_msg = ""
+            try:
+                err_json = res.json()
+                if isinstance(err_json, dict):
+                    err_obj = err_json.get("error")
+                    if isinstance(err_obj, dict):
+                        err_msg = str(err_obj.get("message") or err_obj)
+                    else:
+                        err_msg = str(
+                            err_obj
+                            or err_json.get("detail")
+                            or err_json.get("message")
+                            or res.text
+                            or ""
+                        )
+                else:
+                    err_msg = str(res.text or "")
+            except Exception:
+                err_msg = str(getattr(res, "text", "") or "")
+
+            safe_err_msg = err_msg.replace(key, "***").strip()[:120]
+            detail_suffix = f": {safe_err_msg}" if safe_err_msg else ""
+            return (
+                False,
+                f"JEV System 1 từ chối ({res.status_code}){detail_suffix}",
+                latency_ms,
+            )
+        except httpx.TimeoutException:
+            return (
+                False,
+                f"Kết nối JEV System 1 quá thời gian chờ (Timeout {timeout_val}s).",
+                0.0,
+            )
+        except Exception as e:
+            safe_err = str(e).replace(key, "***")
+            return False, f"Lỗi kết nối kiểm tra: {safe_err}", 0.0
 
 
 jev_service = JevService()

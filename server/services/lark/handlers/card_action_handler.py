@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("hilark.bot.card_action_handler")
 
-# Cache chống xử lý trùng lặp và lưu kết quả thẻ đã xử lý (chống race condition WebSocket & HTTP webhook)
+# Cache chống xử lý trùng lặp và lưu kết quả thẻ đã xử lý (chống race condition khi Lark retry / gửi webhook song song)
 # key: dedup_key -> (timestamp, Optional[result_tuple])
 _PROCESSED_CARD_ACTIONS: OrderedDict[str, Tuple[float, Optional[Tuple[bool, str, Optional[Dict[str, Any]]]]]] = OrderedDict()
 _ACTION_LOCK = threading.Lock()
@@ -207,7 +207,7 @@ async def _execute_card_action(
             cached_ts, cached_res = _PROCESSED_CARD_ACTIONS[dedup_key]
             if (now - cached_ts) < 8.0:
                 if cached_res is not None:
-                    logger.info(f"⚡ [CARD DEDUP CACHE HIT] Trả về thẻ đã xử lý cho {dedup_key}")
+                    logger.debug("[CARD_ACTION] dedup_cache_hit key=%s", dedup_key)
                     return cached_res
                 else:
                     wait_for_in_flight = True
@@ -223,13 +223,13 @@ async def _execute_card_action(
                 if dedup_key in _PROCESSED_CARD_ACTIONS:
                     _, cached_res = _PROCESSED_CARD_ACTIONS[dedup_key]
                     if cached_res is not None:
-                        logger.info(f"⚡ [CARD DEDUP WAITED HIT] Nhận kết quả từ request song song cho {dedup_key}")
+                        logger.debug("[CARD_ACTION] dedup_wait_hit key=%s", dedup_key)
                         return cached_res
 
         if action not in READ_ONLY_ACTIONS:
-            logger.info(f"🚫 [CARD DEDUP] Bỏ qua thao tác ghi đang xử lý dở: {dedup_key}")
+            logger.info("[CARD_ACTION] dedup_skipped key=%s", dedup_key)
             return True, "Thao tác đã được ghi nhận", None
-        logger.info(f"🔄 [CARD FALLBACK RUN] Tiếp tục render thẻ cho {action}")
+        logger.debug("[CARD_ACTION] dedup_fallback_render action=%s", action)
 
     result: Tuple[bool, str, Optional[Dict[str, Any]]] = (False, "Lỗi chưa xác định", None)
     try:
@@ -271,7 +271,13 @@ async def _do_execute_card_action(
     claim_svc = _resolve_service("claim_service", default_claim_service)
     digest_svc = _resolve_service("digest_service", default_digest_service)
 
-    logger.info(f"Nhận hành động thẻ: action='{action}' từ open_id='{open_id}' cho message_id='{message_id}' (tenant: {tenant_key})")
+    logger.info(
+        "[CARD_ACTION] execute action=%s user=%s msg=%s tenant=%s",
+        action,
+        open_id,
+        message_id,
+        tenant_key or "-",
+    )
 
     # =========================================================================
     # 1. HÀNH ĐỘNG DUYỆT BẢN NHÁP CÂU TRẢ LỜI

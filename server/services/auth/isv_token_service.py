@@ -93,7 +93,7 @@ class ISVTokenService:
                 self._app_ticket_updated_at = doc.get("updated_at_timestamp", time.time())
                 return self._app_ticket
         except Exception as e:
-            logger.debug(f"Không thể đọc app_ticket từ async MongoDB: {e}")
+            logger.debug("[ISV_TICKET] mongo_read_failed mode=async error=%s", e)
 
         # Fallback env
         ticket = getattr(settings, "LARK_APP_TICKET", "") or os.getenv("LARK_APP_TICKET", "")
@@ -116,7 +116,7 @@ class ISVTokenService:
                 self._app_ticket_updated_at = doc.get("updated_at_timestamp", time.time())
                 return self._app_ticket
         except Exception as e:
-            logger.debug(f"Không thể đọc app_ticket từ sync MongoDB: {e}")
+            logger.debug("[ISV_TICKET] mongo_read_failed mode=sync error=%s", e)
 
         ticket = getattr(settings, "LARK_APP_TICKET", "") or os.getenv("LARK_APP_TICKET", "")
         if ticket:
@@ -131,7 +131,7 @@ class ISVTokenService:
           - Lưu bền vững vào MongoDB collection 'isv_auth'.
         """
         if not app_ticket or not app_ticket.strip():
-            logger.warning("Bỏ qua app_ticket rỗng.")
+            logger.warning("[ISV_TICKET] ignored reason=empty")
             return
 
         clean_ticket = app_ticket.strip()
@@ -152,9 +152,9 @@ class ISVTokenService:
                 },
                 upsert=True,
             )
-            logger.info("✔ [ISV TICKET] Đã lưu app_ticket mới bền vững vào MongoDB.")
+            logger.info("[ISV_TICKET] persisted target=mongodb")
         except Exception as e:
-            logger.error(f"Lỗi khi lưu app_ticket vào MongoDB: {e}")
+            logger.error("[ISV_TICKET] persist_failed error=%s", e)
 
     async def handle_app_ticket_event(self, payload: Dict[str, Any]) -> bool:
         """
@@ -177,7 +177,7 @@ class ISVTokenService:
 
         if ticket_val:
             await self.set_app_ticket(ticket_val)
-            logger.info(f"✔ [ISV TICKET] Bắt được sự kiện app_ticket từ Lark Webhook: {ticket_val[:8]}...")
+            logger.info("[ISV_TICKET] received source=webhook prefix=%s", ticket_val[:8])
             return True
 
         return False
@@ -192,7 +192,7 @@ class ISVTokenService:
         domain = getattr(settings, "LARK_DOMAIN", "https://open.larksuite.com")
 
         if not app_id or not app_secret:
-            logger.warning("Thiếu LARK_APP_ID hoặc LARK_APP_SECRET để gọi resend_app_ticket.")
+            logger.warning("[ISV_TICKET] resend_skipped reason=missing_app_credentials")
             return False
 
         url = f"{domain}/open-apis/auth/v3/app_ticket/resend"
@@ -201,13 +201,13 @@ class ISVTokenService:
                 resp = await client.post(url, json={"app_id": app_id, "app_secret": app_secret})
                 data = resp.json()
                 if data.get("code") == 0:
-                    logger.info("✔ Đã gửi yêu cầu Lark Open Platform bắn lại app_ticket thành công.")
+                    logger.info("[ISV_TICKET] resend_requested status=ok")
                     return True
                 else:
-                    logger.warning(f"Lark từ chối yêu cầu resend app_ticket: {data}")
+                    logger.warning("[ISV_TICKET] resend_rejected response=%s", data)
                     return False
         except Exception as e:
-            logger.error(f"Lỗi khi gửi yêu cầu resend app_ticket: {e}")
+            logger.error("[ISV_TICKET] resend_failed error=%s", e)
             return False
 
     # -------------------------------------------------------------------------
@@ -256,10 +256,10 @@ class ISVTokenService:
                 expires_in = int(data.get("expire", 7200))
                 self._app_access_token = new_token
                 self._app_access_token_expires_at = now + expires_in
-                logger.info(f"✔ [ISV AUTH] Đã cấp mới app_access_token (hiệu lực {expires_in}s).")
+                logger.info("[ISV_AUTH] app_token_refreshed ttl_s=%d", expires_in)
                 return new_token
             except Exception as e:
-                logger.error(f"Lỗi khi lấy app_access_token ISV: {e}")
+                logger.error("[ISV_AUTH] app_token_failed error=%s", e)
                 raise
 
     # -------------------------------------------------------------------------
@@ -353,12 +353,12 @@ class ISVTokenService:
                         upsert=True,
                     )
                 except Exception as db_err:
-                    logger.debug(f"Không thể ghi tenant_token vào DB: {db_err}")
+                    logger.debug("[ISV_AUTH] tenant_token_persist_failed tenant=%s error=%s", tenant_key, db_err)
 
-                logger.info(f"✔ [ISV AUTH] Đã cấp mới tenant_access_token cho tenant '{tenant_key}' (hạn {expires_in}s).")
+                logger.info("[ISV_AUTH] tenant_token_refreshed tenant=%s ttl_s=%d", tenant_key, expires_in)
                 return new_tenant_token
             except Exception as e:
-                logger.error(f"Lỗi khi lấy tenant_access_token cho tenant {tenant_key}: {e}")
+                logger.error("[ISV_AUTH] tenant_token_failed tenant=%s error=%s", tenant_key, e)
                 raise
 
     def get_tenant_access_token_sync(

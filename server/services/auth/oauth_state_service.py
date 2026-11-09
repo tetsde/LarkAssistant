@@ -108,7 +108,7 @@ class OAuthStateService:
         }
         col = get_oauth_states_collection()
         await col.insert_one(doc)
-        logger.debug("🎫 Đã phát hành OAuth state cho tenant '%s' app '%s' (%s)", tenant_key, app_id, purpose)
+        logger.debug("[OAUTH_STATE] issued tenant=%s app_id=%s purpose=%s", tenant_key, app_id, purpose)
         return state
 
     async def consume(self, state: Optional[str]) -> Dict[str, Any]:

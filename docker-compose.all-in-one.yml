@@ -251,9 +251,6 @@ services:
       - WEKNORA_API_KEY=${WEKNORA_API_KEY:-${api_weknora:-}}
       - api_weknora=${api_weknora:-${WEKNORA_API_KEY:-}}
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8000}
-
-      # 3. Chế độ WebSocket & Webhook Gateway
-      - ENABLE_LARK_WEBSOCKET=${ENABLE_LARK_WEBSOCKET:-false}
     volumes:
       - hilark-logs:/app/logs
     networks:
