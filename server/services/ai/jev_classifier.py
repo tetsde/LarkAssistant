@@ -4,7 +4,6 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
-from core.config import settings
 from core.http_client import get_http_client
 from core.tenant_errors import BYOKConfigurationError
 from database.scoped_query import get_current_tenant_key
@@ -21,17 +20,14 @@ class JEVError(RuntimeError):
 
 
 class JevService:
-    def __init__(self):
-        self.api_key = settings.JEV_API_KEY
-        self._initial_env_key = settings.JEV_API_KEY
+    def __init__(self, api_key: Optional[str] = None):
+        # Không nạp settings.JEV_API_KEY ở __init__; key được phân giải theo tenant tại _resolve_auth().
+        # Giữ self.api_key: Optional[str] = None để tương thích ngược khi test gán trực tiếp instance override.
+        self.api_key: Optional[str] = api_key.strip() if isinstance(api_key, str) else None
         self.url = "https://api.typesafe.ai/v1/systemone"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
 
     def _build_headers(self, api_key: str) -> Dict[str, str]:
-        """Tạo header Authorization riêng cho từng request, tránh ghi đè self.headers dùng chung."""
+        """Tạo header Authorization riêng cho từng request (không dùng header dùng chung)."""
         return {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -48,7 +44,7 @@ class JevService:
         """
         clean_open_id = (open_id or "").strip() or None
         eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() or "").strip() or None
-        custom_instance_override = self.api_key != self._initial_env_key
+        custom_instance_override = self.api_key is not None
 
         if eff_tenant is None and clean_open_id is None and custom_instance_override:
             key = (self.api_key or "").strip()
