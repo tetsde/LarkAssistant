@@ -40,33 +40,68 @@ class LarkAppService:
     async def register_app(
         self,
         app_id: str,
-        app_secret: str,
+        app_secret: str = "",
         verification_token: str = "",
         encrypt_key: str = "",
+        *,
+        require_webhook_secrets: bool = True,
+        custom_mongo_url: Optional[str] = None,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         app_id = (app_id or "").strip()
         app_secret = (app_secret or "").strip()
+        verif_clean = (verification_token or "").strip()
+        encrypt_clean = (encrypt_key or "").strip()
         if not app_id.startswith("cli_"):
             raise ValueError("App ID không hợp lệ.")
-        if not app_secret:
-            raise ValueError("App Secret không được để trống.")
-        if not (verification_token or "").strip():
-            raise ValueError("Verification Token bắt buộc để định tuyến và xác thực webhook của App.")
-        if not (encrypt_key or "").strip():
-            raise ValueError("Encrypt Key bắt buộc để giải mã webhook của App.")
 
         col = get_lark_apps_collection()
         existing = await col.find_one({"app_id": app_id})
+
+        encrypted_secret = existing.get("encrypted_app_secret", "") if existing else ""
+        masked_secret = existing.get("masked_app_secret", "") if existing else ""
+        if app_secret:
+            encrypted_secret = user_settings_service.encrypt_key(app_secret)
+            masked_secret = user_settings_service.mask_key(app_secret)
+        elif require_webhook_secrets or not encrypted_secret:
+            raise ValueError("App Secret không được để trống.")
+
+        if require_webhook_secrets:
+            if not verif_clean:
+                raise ValueError("Verification Token bắt buộc để định tuyến và xác thực webhook của App.")
+            if not encrypt_clean:
+                raise ValueError("Encrypt Key bắt buộc để giải mã webhook của App.")
+
+        encrypted_verif = (
+            user_settings_service.encrypt_key(verif_clean)
+            if verif_clean
+            else (existing.get("encrypted_verification_token", "") if existing else "")
+        )
+        encrypted_encrypt = (
+            user_settings_service.encrypt_key(encrypt_clean)
+            if encrypt_clean
+            else (existing.get("encrypted_encrypt_key", "") if existing else "")
+        )
+
+        clean_mongo = (
+            custom_mongo_url.strip() or None
+            if custom_mongo_url is not None
+            else (existing.get("custom_mongo_url") if existing else None)
+        )
+        clean_tenant = (tenant_key or "").strip() or (existing.get("tenant_key") if existing else None)
+
         registration_id = existing.get("registration_id") if existing else uuid.uuid4().hex
         now = _now()
         doc = {
             "registration_id": registration_id,
             "app_id": app_id,
-            "encrypted_app_secret": user_settings_service.encrypt_key(app_secret),
-            "encrypted_verification_token": user_settings_service.encrypt_key(verification_token),
-            "encrypted_encrypt_key": user_settings_service.encrypt_key(encrypt_key),
+            "encrypted_app_secret": encrypted_secret,
+            "masked_app_secret": masked_secret,
+            "encrypted_verification_token": encrypted_verif,
+            "encrypted_encrypt_key": encrypted_encrypt,
+            "custom_mongo_url": clean_mongo,
             "status": existing.get("status", "pending") if existing else "pending",
-            "tenant_key": existing.get("tenant_key") if existing else None,
+            "tenant_key": clean_tenant,
             "updated_at": now,
             "created_at": existing.get("created_at", now) if existing else now,
         }
@@ -74,7 +109,13 @@ class LarkAppService:
         await _invalidate_tenant_caches(doc.get("tenant_key"))
         from services.lark.runtime import invalidate_lark_service
         invalidate_lark_service(app_id)
-        return {"registration_id": registration_id, "app_id": app_id, "status": doc["status"]}
+        return {
+            "registration_id": registration_id,
+            "app_id": app_id,
+            "status": doc["status"],
+            "tenant_key": clean_tenant,
+            "custom_mongo_url": clean_mongo,
+        }
 
     async def get_registration(self, registration_id: str) -> Optional[Dict[str, Any]]:
         if not isinstance(registration_id, str) or not registration_id.strip():

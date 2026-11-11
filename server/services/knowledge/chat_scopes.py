@@ -190,28 +190,66 @@ class ScopeService:
     def __init__(self):
         pass
 
-    def get_admin_open_ids(self) -> List[str]:
-        """Lấy danh sách các Open ID có quyền Admin quản trị hệ thống."""
+    def get_admin_open_ids(self, tenant_key: Optional[str] = None) -> List[str]:
+        """Lấy danh sách các Open ID có quyền Admin quản trị theo đúng tenant."""
         admins = set()
-        if settings.LARK_USER_OPEN_ID:
-            admins.add(settings.LARK_USER_OPEN_ID.strip())
-        if settings.DIGEST_APPROVER_ID:
+        eff_tenant = tenant_key or get_current_tenant_key()
+
+        if eff_tenant:
+            try:
+                from database.db import get_sync_db
+
+                sdb = get_sync_db()
+                tdoc = sdb["tenants"].find_one({"tenant_key": eff_tenant})
+                if tdoc and tdoc.get("admin_open_id"):
+                    admins.add(str(tdoc["admin_open_id"]).strip())
+                us_doc = sdb["user_settings"].find_one(
+                    {"tenant_key": eff_tenant, "open_id": {"$exists": True, "$ne": ""}},
+                    sort=[("updated_at", -1)],
+                )
+                if us_doc and us_doc.get("open_id"):
+                    admins.add(str(us_doc["open_id"]).strip())
+                adm_doc = sdb["system_config"].find_one(
+                    {"config_key": "lark_admin_config", "tenant_key": eff_tenant}
+                )
+                if adm_doc and adm_doc.get("admin_open_id"):
+                    admins.add(str(adm_doc["admin_open_id"]).strip())
+            except Exception as e:
+                logger.debug("[SCOPE] admin_lookup_failed tenant=%s error=%s", eff_tenant, e)
+
+        try:
+            from services.lark import lark_service
+            from services.lark.runtime import get_current_lark_service
+
+            active_lark = get_current_lark_service(lark_service)
+            if eff_tenant and hasattr(active_lark, "get_current_user"):
+                try:
+                    u = active_lark.get_current_user(tenant_key=eff_tenant)
+                except TypeError:
+                    u = active_lark.get_current_user()
+                if isinstance(u, dict) and u.get("open_id"):
+                    admins.add(str(u["open_id"]).strip())
+            elif not eff_tenant and getattr(active_lark, "owner_open_id", None):
+                oid = str(active_lark.owner_open_id).strip()
+                if oid:
+                    admins.add(oid)
+        except Exception:
+            pass
+
+        if not eff_tenant and settings.DIGEST_APPROVER_ID:
             admins.add(settings.DIGEST_APPROVER_ID.strip())
-        from services.lark import lark_service
-        if lark_service.owner_open_id:
-            admins.add(lark_service.owner_open_id.strip())
-        extra_admins = os.getenv("admin_open_ids", "")
+        extra_admins = os.getenv("admin_open_ids", "") if not eff_tenant else ""
         if extra_admins:
             for aid in extra_admins.split(","):
                 if aid.strip():
                     admins.add(aid.strip())
-        return list(admins)
+        return [a for a in admins if a]
 
-    def is_admin_user(self, open_id: str) -> bool:
-        """Kiểm tra xem một user có quyền Admin thay đổi cấu hình KB hay không."""
+    def is_admin_user(self, open_id: str, tenant_key: Optional[str] = None) -> bool:
+        """Kiểm tra xem một user có quyền Admin thay đổi cấu hình KB theo đúng tenant hay không."""
         if not open_id:
             return False
-        return open_id.strip() in self.get_admin_open_ids()
+        return open_id.strip() in self.get_admin_open_ids(tenant_key=tenant_key)
 
     async def get_scope_by_chat_id(
         self,
@@ -226,8 +264,12 @@ class ScopeService:
             query = inject_tenant_filter({"chat_id": chat_id}, tenant_key)
             doc = await coll.find_one(query)
             if not doc and tenant_key:
-                # Fallback tự động sửa lỗi bản ghi cũ chưa gắn tenant_key
-                doc = await coll.find_one({"chat_id": chat_id})
+                # Fallback tự động sửa lỗi bản ghi cũ chưa gắn tenant_key;
+                # tuyệt đối không đọc bản ghi đã gắn tenant_key của doanh nghiệp khác.
+                doc = await coll.find_one({"chat_id": chat_id, "tenant_key": {"$in": [None, ""]}})
+                if doc and doc.get("tenant_key"):
+                    # Guard bổ sung nếu collection giả lập không đánh giá toán tử $in
+                    doc = None
                 if doc and not doc.get("tenant_key"):
                     await coll.update_one({"_id": doc["_id"]}, {"$set": {"tenant_key": tenant_key}})
             if doc:
@@ -332,7 +374,7 @@ class ScopeService:
         eff_tenant = tenant_key or get_current_tenant_key()
 
         # 1. Kiểm tra quyền Admin
-        if not self.is_admin_user(operator_open_id):
+        if not self.is_admin_user(operator_open_id, tenant_key=eff_tenant):
             logger.warning(
                 "[SCOPE] set_kb_denied operator=%s chat_id=%s",
                 operator_open_id,
@@ -406,6 +448,7 @@ class ScopeService:
         self,
         chat_id: str,
         operator_open_id: str,
+        tenant_key: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Gỡ bỏ Knowledge Base riêng của nhóm chat, đưa nhóm về dùng KB mặc định.
@@ -413,7 +456,8 @@ class ScopeService:
         if not chat_id:
             return False, "❌ chat_id không hợp lệ."
 
-        if not self.is_admin_user(operator_open_id):
+        eff_tenant = tenant_key or get_current_tenant_key()
+        if not self.is_admin_user(operator_open_id, tenant_key=eff_tenant):
             return (
                 False,
                 "⛔ [TỪ CHỐI] Bạn không có quyền quản trị! Chỉ Admin mới được phép gỡ bỏ Knowledge Base của nhóm.",
@@ -421,7 +465,6 @@ class ScopeService:
 
         try:
             coll = _get_active_scopes_col()
-            eff_tenant = get_current_tenant_key()
             delete_query = inject_tenant_filter({"chat_id": chat_id}, eff_tenant)
             if eff_tenant and "tenant_key" not in delete_query:
                 return False, "❌ Thiếu tenant context, không thể xóa ChatScope an toàn."
@@ -460,6 +503,7 @@ class ScopeService:
         operator_open_id: Optional[str] = None,
         operator_name: Optional[str] = None,
         extract_claims: bool = True,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Nạp tài liệu từ danh sách URLs (Lark DocX, Wiki, hoặc Drive Folder) vào nhóm chat.
@@ -478,18 +522,19 @@ class ScopeService:
         if not chat_id:
             return {"success": False, "message": "chat_id không được để trống.", "processed_docs": []}
 
-        if operator_open_id and not self.is_admin_user(operator_open_id):
+        pre_tk = tenant_key or get_current_tenant_key()
+        if operator_open_id and not self.is_admin_user(operator_open_id, tenant_key=pre_tk):
             return {
                 "success": False,
                 "message": "⛔ [TỪ CHỐI] Bạn không có quyền quản trị để nạp tài liệu vào nhóm chat này.",
                 "processed_docs": [],
             }
 
-        scope = await self.get_scope_by_chat_id(chat_id)
-        effective_dataset_id, _ = await self.get_kb_info_for_chat(chat_id)
+        scope = await self.get_scope_by_chat_id(chat_id, tenant_key=pre_tk)
+        effective_dataset_id, _ = await self.get_kb_info_for_chat(chat_id, tenant_key=pre_tk)
 
         weknora_tenant_id = None
-        eff_tk = (scope.tenant_key if scope else None) or get_current_tenant_key()
+        eff_tk = (scope.tenant_key if scope else None) or pre_tk
         if eff_tk:
             from database.db import get_tenant_config
             t_cfg = await get_tenant_config(eff_tk)
@@ -813,7 +858,7 @@ class ScopeService:
         docs_val = _get_base_field(raw_fields, "documents")
         attachments, lark_links = _extract_document_items(docs_val)
 
-        existing_scope = await self.get_scope_by_chat_id(chat_id)
+        existing_scope = await self.get_scope_by_chat_id(chat_id, tenant_key=eff_tenant)
         existing_doc_map = {}
         if existing_scope and existing_scope.documents:
             for d in existing_scope.documents:
@@ -848,7 +893,11 @@ class ScopeService:
             if not k_id:
                 try:
                     logger.debug("[SCOPE_SYNC] attachment_downloading file=%s token=%s", file_name, file_token)
-                    file_bytes = await lark_base_service.adownload_attachment(file_token, use_tenant_token=True)
+                    file_bytes = await lark_base_service.adownload_attachment(
+                        file_token,
+                        use_tenant_token=True,
+                        tenant_key=eff_tenant,
+                    )
                     if file_bytes:
                         logger.debug(
                             "[SCOPE_SYNC] attachment_uploading file=%s bytes=%d dataset=%s",

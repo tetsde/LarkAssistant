@@ -5,10 +5,9 @@ Vị trí: server/services/tenancy/tenant_resolver.py
 
 Nơi DUY NHẤT trả lời câu hỏi "tenant này có cấu hình gì".
 
-Trước đây câu hỏi này được trả lời ở sáu nơi khác nhau, mỗi nơi theo một thứ tự riêng:
-`isv_token_service._resolve_app_credentials_async`, `..._sync_safe`,
+Trước đây câu hỏi này được trả lời ở nhiều nơi khác nhau, mỗi nơi theo một thứ tự riêng:
 `bitable._resolve_app_credentials_sync`, `base_provision_service.get_active_base_config`,
-và các dòng `... or settings.X` trong workflow. Hai tầng cuối của mọi chuỗi là
+và các dòng `... or settings.X` trong workflow. Hai tầng cuối của mọi chuỗi từng là
 "App bất kỳ mới nhất trong DB" rồi `.env` — nghĩa là khi dữ liệu của tenant thiếu,
 hệ thống lặng lẽ chạy bằng dữ liệu của tenant khác.
 
@@ -37,7 +36,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.config import settings
 from core.tenant_errors import (
     TenantConfigIncomplete,
     TenantContextMissing,
@@ -126,7 +124,8 @@ class TenantResourceResolver:
     async def _fetch_credential(self, tenant_key: str) -> Optional[Dict[str, Any]]:
         from database.db import get_lark_apps_collection
 
-        return await get_lark_apps_collection().find_one(
+        apps_col = get_lark_apps_collection()
+        return await apps_col.find_one(
             {"tenant_key": tenant_key, "status": {"$ne": "revoked"}},
             sort=[("updated_at", -1)],
         )

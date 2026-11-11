@@ -27,7 +27,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.config import settings
 from core.tenant_errors import BYOKConfigurationError
-from database.db import get_system_config_collection
 from models.onboarding import (
     ProvisionBaseRequest,
     ProvisionWeKnoraRequest,
@@ -161,7 +160,7 @@ async def test_mongo_connection_endpoint(req: TestMongoRequest):
 
 @router.post("/api/save-bot-config")
 async def save_bot_config_endpoint(req: SaveBotConfigRequest):
-    """Lưu cấu hình Bot credentials và tùy chọn MongoDB vào hệ thống."""
+    """Lưu cấu hình Bot credentials theo App/Tenant qua lark_app_service (không mutate global settings)."""
     app_id_clean = req.app_id.strip() if req.app_id else ""
     if not app_id_clean or not app_id_clean.startswith("cli_"):
         raise HTTPException(
@@ -170,89 +169,89 @@ async def save_bot_config_endpoint(req: SaveBotConfigRequest):
         )
 
     try:
-        coll = get_system_config_collection()
-        doc: Dict[str, Any] = {
-            "config_key": "bot_credentials",
-            "app_id": app_id_clean,
-            "custom_mongo_url": req.custom_mongo_url.strip() if req.custom_mongo_url else None,
-            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
-        }
-        if req.app_secret and req.app_secret.strip():
-            doc["encrypted_app_secret"] = user_settings_service.encrypt_key(req.app_secret.strip())
-            doc["masked_app_secret"] = user_settings_service.mask_key(req.app_secret.strip())
+        from services.lark_app_service import lark_app_service
 
-        await coll.update_one(
-            {"config_key": "bot_credentials"},
-            {"$set": doc},
-            upsert=True,
+        record = await lark_app_service.register_app(
+            app_id=app_id_clean,
+            app_secret=req.app_secret or "",
+            verification_token=req.verification_token or "",
+            encrypt_key=req.encrypt_key or "",
+            require_webhook_secrets=False,
+            custom_mongo_url=req.custom_mongo_url,
+            tenant_key=req.tenant_key,
         )
-
-        # Cập nhật runtime settings
-        settings.LARK_APP_ID = app_id_clean
-        if req.app_secret and req.app_secret.strip():
-            settings.LARK_APP_SECRET = req.app_secret.strip()
-        if req.custom_mongo_url and req.custom_mongo_url.strip():
-            settings.MONGO_URL = req.custom_mongo_url.strip()
-
-        # Cập nhật LarkService singleton nếu có
-        try:
-            from services.lark import lark_service
-
-            lark_service.app_id = app_id_clean
-            if req.app_secret and req.app_secret.strip():
-                lark_service.app_secret = req.app_secret.strip()
-            lark_service._init_client(
-                app_id=app_id_clean,
-                app_secret=settings.LARK_APP_SECRET,
-            )
-        except Exception as e:
-            logger.debug(f"Không thể reinit LarkService runtime: {e}")
+        clean_tenant = (req.tenant_key or "").strip()
+        if clean_tenant:
+            await lark_app_service.link_tenant(record["registration_id"], clean_tenant)
 
         return {
             "success": True,
-            "message": "Đã lưu cấu hình Lark Bot & Hạ tầng thành công!",
+            "message": "Đã lưu cấu hình Lark Bot theo App/Tenant thành công!",
             "data": {
+                "registration_id": record["registration_id"],
                 "app_id": app_id_clean,
-                "custom_mongo_url": req.custom_mongo_url,
+                "tenant_key": clean_tenant or record.get("tenant_key"),
+                "custom_mongo_url": record.get("custom_mongo_url"),
             },
         }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Lỗi khi lưu bot config: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/bot-config")
-async def get_bot_config_endpoint():
-    """Lấy cấu hình hiện tại của Lark Bot & MongoDB để hiển thị trên Wizard."""
-    current_app_id = getattr(settings, "LARK_APP_ID", "") or ""
-    current_secret = getattr(settings, "LARK_APP_SECRET", "") or ""
-    current_mongo = getattr(settings, "MONGO_URL", "") or "mongodb://localhost:27017"
-    masked_secret = user_settings_service.mask_key(current_secret) if current_secret else ""
-    has_credentials = bool(current_app_id and current_secret)
-    custom_mongo_url = None
+async def get_bot_config_endpoint(
+    tenant_key: Optional[str] = Query(None, description="Mã doanh nghiệp (tenant_key)"),
+    app_id: Optional[str] = Query(None, description="Mã ứng dụng Lark (cli_xxx)"),
+    registration_id: Optional[str] = Query(None, description="Mã đăng ký Custom App"),
+):
+    """Lấy cấu hình Lark Bot đã đăng ký theo registration/app/tenant (không fallback .env)."""
+    from database.db import get_current_tenant_key
+    from services.lark_app_service import lark_app_service
 
+    doc: Optional[Dict[str, Any]] = None
     try:
-        coll = get_system_config_collection()
-        doc = await coll.find_one({"config_key": "bot_credentials"})
-        if doc:
-            if doc.get("app_id"):
-                current_app_id = doc["app_id"]
-            if doc.get("masked_app_secret"):
-                masked_secret = doc["masked_app_secret"]
-            if doc.get("custom_mongo_url"):
-                custom_mongo_url = doc["custom_mongo_url"]
-            has_credentials = bool(current_app_id and (masked_secret or current_secret))
+        if registration_id and registration_id.strip():
+            doc = await lark_app_service.get_registration(registration_id.strip())
+        elif app_id and app_id.strip():
+            doc = await lark_app_service.get_by_app_id(app_id.strip())
+        else:
+            eff_tenant = (tenant_key or "").strip() or get_current_tenant_key()
+            if eff_tenant:
+                doc = await lark_app_service.get_by_tenant_key(eff_tenant)
     except Exception as e:
-        logger.debug(f"Chưa lấy được bot config từ MongoDB: {e}")
+        logger.debug(f"Chưa lấy được bot config từ lark_app_service: {e}")
 
+    if not doc:
+        return {
+            "success": True,
+            "data": {
+                "registration_id": None,
+                "app_id": "",
+                "tenant_key": (tenant_key or "").strip() or None,
+                "masked_app_secret": "",
+                "has_credentials": False,
+                "custom_mongo_url": None,
+                "default_mongo_url": "",
+            },
+        }
+
+    secret_val = doc.get("app_secret") or ""
+    masked_secret = doc.get("masked_app_secret") or (
+        user_settings_service.mask_key(secret_val) if secret_val else ""
+    )
     return {
         "success": True,
         "data": {
-            "app_id": current_app_id,
+            "registration_id": doc.get("registration_id"),
+            "app_id": doc.get("app_id") or "",
+            "tenant_key": doc.get("tenant_key"),
             "masked_app_secret": masked_secret,
-            "has_credentials": has_credentials,
-            "custom_mongo_url": custom_mongo_url,
-            "default_mongo_url": current_mongo,
+            "has_credentials": bool(doc.get("app_id") and (secret_val or masked_secret)),
+            "custom_mongo_url": doc.get("custom_mongo_url"),
+            "default_mongo_url": "",
         },
     }
 
@@ -262,16 +261,7 @@ async def provision_base_endpoint(req: ProvisionBaseRequest):
     """Tự động khởi tạo 100% Lark Base Quản trị Doanh nghiệp qua Lark OpenAPI."""
     try:
         from services.lark.base_provision_service import base_provision_service
-        if req.admin_open_id and req.admin_open_id.strip():
-            clean_admin = req.admin_open_id.strip()
-            settings.LARK_USER_OPEN_ID = clean_admin
-            try:
-                from services.lark import lark_service
-                lark_service.known_user_open_id = clean_admin
-                if getattr(lark_service, "config", None):
-                    lark_service.config.user_open_id = clean_admin
-            except Exception:
-                pass
+
         record = await base_provision_service.provision_enterprise_base(
             admin_open_id=req.admin_open_id,
             tenant_key=req.tenant_key,
@@ -394,17 +384,8 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
 
         clean_open_id = req.open_id.strip() if req.open_id else ""
         if clean_open_id:
-            # 1. Cập nhật settings runtime & lark_service singleton
-            settings.LARK_USER_OPEN_ID = clean_open_id
-            try:
-                from services.lark import lark_service
-                lark_service.known_user_open_id = clean_open_id
-                if getattr(lark_service, "config", None):
-                    lark_service.config.user_open_id = clean_open_id
-            except Exception as le:
-                logger.debug(f"Không thể cập nhật LarkService known_user_open_id: {le}")
-
-            # 2. Cập nhật admin_open_id vào tenants collection nếu có tenant_key
+            # Cập nhật admin_open_id vào đúng document `tenants` của doanh nghiệp (không mutate
+            # global `settings`/`lark_service` hay ghi singleton `system_config.lark_admin_config`).
             eff_tenant = req.tenant_key or getattr(record, "tenant_key", None)
             if eff_tenant:
                 try:
@@ -415,38 +396,6 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
                     })
                 except Exception as te:
                     logger.debug(f"Không thể cập nhật admin_open_id vào tenant '{eff_tenant}': {te}")
-
-            # 3. Lưu cấu hình admin vào system_config để duy trì sau khởi động lại.
-            # Kèm `tenant_key` để document này chỉ được dùng cho đúng doanh nghiệp:
-            # `resolve_effective_owner_open_id()` bỏ qua bản ghi không khai nhận tenant.
-            try:
-                coll = get_system_config_collection()
-                await coll.update_one(
-                    {"config_key": "lark_admin_config"},
-                    {"$set": {
-                        "config_key": "lark_admin_config",
-                        "tenant_key": eff_tenant,
-                        "admin_open_id": clean_open_id,
-                        "user_name": req.user_name or getattr(record, "user_name", "") or "Lãnh đạo",
-                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
-                    }},
-                    upsert=True,
-                )
-            except Exception as se:
-                logger.debug(f"Không thể lưu lark_admin_config vào system_config: {se}")
-
-        if req.custom_mongo_url and req.custom_mongo_url.strip():
-            try:
-                coll = get_system_config_collection()
-                bot_doc: Dict[str, Any] = {
-                    "config_key": "bot_credentials",
-                    "custom_mongo_url": req.custom_mongo_url.strip(),
-                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
-                }
-                await coll.update_one({"config_key": "bot_credentials"}, {"$set": bot_doc}, upsert=True)
-                settings.MONGO_URL = req.custom_mongo_url.strip()
-            except Exception as bot_err:
-                logger.debug(f"Không thể cập nhật custom_mongo_url trong save_settings: {bot_err}")
         return {
             "success": True,
             "message": "Đã lưu cấu hình trợ lý thành công!",
@@ -466,17 +415,20 @@ async def save_settings_endpoint(req: SaveSettingsRequest):
 @router.get("/api/settings/{open_id}")
 async def get_settings_endpoint(
     open_id: str,
-    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant ISV"),
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant"),
+    app_id: Optional[str] = Query(None, description="Mã Lark App để phân biệt khi admin quản lý nhiều app"),
 ):
     """Lấy thông tin cấu hình hiện hành để hiển thị trên Wizard."""
     effective_tenant_key = tenant_key
     if not effective_tenant_key:
         try:
-            from database.db import get_tenants_collection
-            t_col = get_tenants_collection()
-            found_tenant = await t_col.find_one({"admin_open_id": open_id})
-            if found_tenant:
-                effective_tenant_key = found_tenant.get("tenant_key")
+            from database.db import get_tenants_collection, resolve_tenant_by_admin_open_id
+
+            effective_tenant_key = await resolve_tenant_by_admin_open_id(
+                open_id,
+                app_id=app_id,
+                tenants_collection=get_tenants_collection(),
+            )
         except Exception as e:
             logger.debug(f"Không tìm thấy tenant cho open_id {open_id}: {e}")
 
@@ -544,15 +496,27 @@ async def get_settings_endpoint(
 
 
 @router.get("/api/auth-status")
-async def get_onboarding_auth_status():
-    """Tra cứu nhanh tình trạng xác thực Lark OAuth cho Wizard UI."""
+async def get_onboarding_auth_status(
+    tenant_key: Optional[str] = Query(None, description="Mã doanh nghiệp (tenant_key) cần kiểm tra"),
+):
+    """Tra cứu nhanh tình trạng xác thực Lark OAuth theo tenant cho Wizard UI."""
+    from core.tenant_errors import TenantContextMissing, TenantResolutionError, TokenUnavailable
+    from database.db import get_current_tenant_key
+
+    eff_tenant = (tenant_key or "").strip() or get_current_tenant_key()
+    if not eff_tenant:
+        raise TenantContextMissing(
+            "Thiếu `tenant_key`: GET /onboarding/api/auth-status yêu cầu tenant_key."
+        )
     try:
         from services.auth_service import token_service
-        status = await token_service.get_token_status()
+        status = await token_service.get_token_status(tenant_key=eff_tenant)
         return {
             "success": True,
             "data": status,
         }
+    except (TenantResolutionError, TokenUnavailable):
+        raise
     except Exception as e:
         logger.error(f"Lỗi khi lấy auth status trong onboarding router: {e}")
         return {
@@ -568,6 +532,7 @@ async def onboarding_wizard_page(
     open_id: Optional[str] = Query(None, description="Lark Open ID của người dùng"),
     user_name: Optional[str] = Query(None, description="Tên người dùng"),
     tenant_key: Optional[str] = Query(None, description="Mã tenant nếu có"),
+    app_id: Optional[str] = Query(None, description="Mã Lark App nếu có"),
     view: Optional[str] = Query(None, description="Chế độ hiển thị: guide | settings | progress"),
 ):
     """
@@ -575,21 +540,24 @@ async def onboarding_wizard_page(
     - Nếu đã có tenant_key hợp lệ trong DB (hoặc view=settings): Mở Bảng Cấu Hình Trợ Lý.
     - Nếu chưa có hoặc cài đặt lần đầu: Mở Slide Hướng Dẫn & Nhập Key.
     """
-    from database.db import get_tenants_collection
+    from database.db import get_tenants_collection, resolve_tenant_by_admin_open_id
 
-    effective_open_id = open_id or settings.LARK_USER_OPEN_ID or ""
-    effective_user_name = user_name or settings.LARK_USER_NAME or "Quản trị viên"
-    effective_tenant_key = tenant_key or ""
+    effective_open_id = (open_id or "").strip()
+    effective_user_name = (user_name or "").strip() or "Quản trị viên"
+    effective_tenant_key = (tenant_key or "").strip()
 
     initial_view = view or "guide"
 
-    # Tự động nhận diện tenant nếu đã tồn tại
+    # Tự động nhận diện tenant fail-closed nếu đã tồn tại duy nhất
     if not effective_tenant_key and effective_open_id:
         try:
-            t_col = get_tenants_collection()
-            doc = await t_col.find_one({"admin_open_id": effective_open_id})
-            if doc and doc.get("tenant_key"):
-                effective_tenant_key = doc["tenant_key"]
+            resolved_tk = await resolve_tenant_by_admin_open_id(
+                effective_open_id,
+                app_id=app_id,
+                tenants_collection=get_tenants_collection(),
+            )
+            if resolved_tk:
+                effective_tenant_key = resolved_tk
         except Exception:
             pass
 

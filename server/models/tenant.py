@@ -3,7 +3,7 @@ HiLark - Tenant Configuration Models
 ====================================
 Vị trí: server/models/tenant.py
 
-Định nghĩa cấu trúc dữ liệu cho hồ sơ Doanh nghiệp khách thuê (Tenant ISV)
+Định nghĩa cấu trúc dữ liệu cho hồ sơ Doanh nghiệp khách thuê (Multi-Tenant)
 bao gồm ánh xạ WeKnora Multi-Tenant và Lark Base (Bitable).
 """
 
@@ -33,7 +33,7 @@ class WeKnoraAdminCredentials(BaseModel):
 
 
 class TenantConfigRecord(BaseModel):
-    """Hồ sơ cấu hình toàn diện cho một Doanh nghiệp khách thuê (Tenant ISV)."""
+    """Hồ sơ cấu hình toàn diện cho một Doanh nghiệp khách thuê (Multi-Tenant)."""
     tenant_key: str = Field(..., description="Mã định danh doanh nghiệp Lark (header.tenant_key)")
     enterprise_name: Optional[str] = Field(default=None, description="Tên doanh nghiệp")
 

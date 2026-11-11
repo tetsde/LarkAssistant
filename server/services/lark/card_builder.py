@@ -1793,5 +1793,157 @@ def build_owner_control_hub_card(
     }
 
 
+def build_user_reauth_card(
+    tenant_key: Optional[str] = None,
+    auth_url: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Thẻ DM gửi riêng cho Lãnh đạo khi User Access Token bị thiếu hoặc hết hạn,
+    yêu cầu cấp lại quyền để tiếp tục gửi phản hồi nhân danh Lãnh đạo.
+    """
+    import urllib.parse
+
+    clean_tenant = (tenant_key or "").strip()
+    if not auth_url:
+        base_url = getattr(settings, "APP_BASE_URL", "").rstrip("/")
+        tenant_query = f"?tenant_key={urllib.parse.quote(clean_tenant)}" if clean_tenant else ""
+        auth_url = f"{base_url}/auth/lark/login{tenant_query}" if base_url else f"/auth/lark/login{tenant_query}"
+
+    reason_line = f"\n\nLý do chi tiết: {reason.strip()}" if reason and reason.strip() else ""
+
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    "Phiên ủy quyền tài khoản Lark của bạn hiện chưa sẵn sàng hoặc đã hết hạn, "
+                    "nên trợ lý tạm thời chưa thể gửi câu trả lời nhân danh bạn vào nhóm."
+                    f"{reason_line}\n\n"
+                    "Vui lòng nhấn nút bên dưới để đăng nhập và cấp lại quyền User Access Token. "
+                    "Bản nháp câu trả lời hiện tại vẫn được giữ an toàn để bạn gửi lại ngay sau khi ủy quyền."
+                ),
+            },
+        },
+        {"tag": "hr"},
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Ủy Quyền Lại Tài Khoản Lark",
+                    },
+                    "type": "primary",
+                    "url": auth_url,
+                },
+            ],
+        },
+    ]
+
+    if clean_tenant:
+        elements.append({
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": f"Mã doanh nghiệp: {clean_tenant}",
+                }
+            ],
+        })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "orange",
+            "title": {
+                "tag": "plain_text",
+                "content": "Cần Ủy Quyền Lại Tài Khoản Lark",
+            },
+        },
+        "elements": elements,
+    }
+
+
+def build_admin_oauth_invite_card(
+    tenant_key: str,
+    app_id: str = "",
+    auth_url: Optional[str] = None,
+    enterprise_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Thẻ mời Admin hoàn tất bước OAuth User khi doanh nghiệp mở hoặc kích hoạt trợ lý HiLark.
+    Quy tắc trình bày: thuần tiếng Việt, rõ ràng, không dùng emoji.
+    """
+    import urllib.parse
+
+    clean_tenant = (tenant_key or "").strip()
+    clean_app = (app_id or "").strip()
+    ent_label = (enterprise_name or "").strip() or (f"Doanh nghiệp {clean_tenant}" if clean_tenant else "Doanh nghiệp")
+
+    if not auth_url:
+        base_url = getattr(settings, "APP_BASE_URL", "").rstrip("/")
+        tenant_query = f"?tenant_key={urllib.parse.quote(clean_tenant)}" if clean_tenant else ""
+        auth_url = f"{base_url}/auth/lark/login{tenant_query}" if base_url else f"/auth/lark/login{tenant_query}"
+
+    app_line = f"\n• **Ứng dụng (App ID):** `{clean_app}`" if clean_app else ""
+
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"Chào mừng **{ent_label}** đã cài đặt trợ lý HiLark.\n\n"
+                    "Hệ thống đang tạm dừng ở cổng kích hoạt **Ủy quyền Quản trị viên** để liên kết "
+                    "danh tính Lãnh đạo trước khi tự động khởi tạo hạ tầng Lark Base và kho tri thức WeKnora."
+                    f"\n• **Mã doanh nghiệp:** `{clean_tenant}`"
+                    f"{app_line}\n\n"
+                    "Vui lòng nhấn nút bên dưới để đăng nhập Lark và cấp quyền. Ngay sau khi hoàn tất, "
+                    "hệ thống sẽ tự động cấp phát tài nguyên và gửi thẻ bàn giao cho bạn."
+                ),
+            },
+        },
+        {"tag": "hr"},
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": "Ủy Quyền Tài Khoản Admin",
+                    },
+                    "type": "primary",
+                    "url": auth_url,
+                },
+            ],
+        },
+        {
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": "Quy trình kích hoạt: Cài đặt ứng dụng -> OAuth Admin -> Khởi tạo Base & WeKnora -> Sẵn sàng.",
+                }
+            ],
+        },
+    ]
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": "Kích Hoạt HiLark — Cần Ủy Quyền Tài Khoản Admin",
+            },
+        },
+        "elements": elements,
+    }
+
+
 
 

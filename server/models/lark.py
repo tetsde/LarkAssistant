@@ -85,7 +85,7 @@ class LarkMessage:
     root_id: Optional[str] = None
     parent_id: Optional[str] = None
     mentions: List[Dict[str, Any]] = field(default_factory=list)
-    tenant_key: str = ""  # Mã định danh tổ chức / công ty (Multi-Tenant ISV)
+    tenant_key: str = ""  # Mã định danh tổ chức / công ty (Custom App Multi-Tenant)
     raw_event: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:

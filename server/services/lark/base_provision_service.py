@@ -44,42 +44,9 @@ class BaseProvisionService:
     def _get_tenant_access_token(
         self,
         tenant_key: Optional[str] = None,
-        app_id: Optional[str] = None,
-        app_secret: Optional[str] = None,
     ) -> str:
-        """
-        Bot Tenant Access Token — luôn qua broker tập trung của ĐÚNG tenant.
-
-        Trước đây hàm này có bốn tầng: caller truyền token → lark_base_service singleton →
-        ISV cache → "App bất kỳ trong DB rồi `.env`". Hai tầng cuối cho phép cấp token của
-        doanh nghiệp A cho request đang thao tác Base của doanh nghiệp B, nên bị bỏ hoàn toàn.
-
-        Ngoại lệ duy nhất còn lại là cặp (app_id, app_secret) do caller truyền **tường minh**
-        (luồng one-click setup, khi credential chưa chắc đã kịp link tenant).
-        """
+        """Bot Tenant Access Token — luôn qua token_broker của đúng tenant."""
         eff_tenant = tenant_key or get_current_tenant_key()
-        if app_id and app_secret:
-            if not eff_tenant:
-                raise TenantContextMissing(
-                    "Gọi _get_tenant_access_token(app_id, app_secret) phải kèm tenant_key "
-                    "để token được gắn đúng doanh nghiệp."
-                )
-            resp = httpx.post(
-                f"{getattr(settings, 'LARK_DOMAIN', 'https://open.larksuite.com')}/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": app_id, "app_secret": app_secret},
-                timeout=10.0,
-            )
-            data = resp.json()
-            if data.get("code") != 0 or not data.get("tenant_access_token"):
-                raise TokenUnavailable(
-                    f"Lark từ chối cấp tenant_access_token khi provision Base: "
-                    f"code={data.get('code')}, msg={data.get('msg')}",
-                    tenant_key=eff_tenant,
-                    kind="tenant",
-                    lark_code=data.get("code") if isinstance(data.get("code"), int) else None,
-                )
-            return data["tenant_access_token"]
-
         from services.auth.tenant_token_manager import token_broker
 
         return token_broker.get_token_sync(eff_tenant, "bot")
@@ -87,14 +54,9 @@ class BaseProvisionService:
     async def _get_tenant_access_token_async(
         self,
         tenant_key: Optional[str] = None,
-        app_id: Optional[str] = None,
-        app_secret: Optional[str] = None,
     ) -> str:
-        """Phiên bản async: chờ trên token loop duy nhất, không tạo loop mới."""
+        """Phiên bản async: luôn đi qua token_broker trên token loop duy nhất."""
         eff_tenant = tenant_key or get_current_tenant_key()
-        if app_id and app_secret:
-            return await asyncio.to_thread(self._get_tenant_access_token, eff_tenant, app_id, app_secret)
-
         from services.auth.tenant_token_manager import token_broker
 
         return await token_broker.get(eff_tenant, "bot")
@@ -132,7 +94,7 @@ class BaseProvisionService:
                         chat_scope_table_id=t_doc.get("chat_scope_table_id") or "",
                         policy_table_id=t_doc.get("company_policy_table_id") or "",
                         is_auto_provisioned=True,
-                        provisioned_by="isv_auto_provision",
+                        provisioned_by="auto_provision",
                     )
             except Exception as e:
                 logger.warning(f"Lỗi khi đọc base config từ tenant '{eff_tenant}': {e}")
@@ -192,8 +154,6 @@ class BaseProvisionService:
         admin_open_id: Optional[str] = None,
         base_name: str = "HiLark - Trung Tâm Quản Trị Dự Án & Chính Sách Doanh Nghiệp",
         tenant_key: Optional[str] = None,
-        app_id: Optional[str] = None,
-        app_secret: Optional[str] = None,
     ) -> SystemBaseConfigRecord:
         """
         Tự động 100% khởi tạo Lark Base Doanh nghiệp qua OpenAPI:
@@ -213,7 +173,7 @@ class BaseProvisionService:
             logger.info("[BASE_PROVISION] reused tenant=%s url=%s", eff_tenant, existing.app_url)
             return existing
 
-        token = await self._get_tenant_access_token_async(eff_tenant, app_id=app_id, app_secret=app_secret)
+        token = await self._get_tenant_access_token_async(eff_tenant)
         if not token:
             raise ValueError(f"Không thể lấy Tenant Access Token để khởi tạo Lark Base cho tenant '{eff_tenant}'.")
 

@@ -9,7 +9,7 @@ Tài liệu này ghi lại kiến trúc kỹ thuật, luồng xử lý và cấu
 HiLark là trợ lý điều hành doanh nghiệp tích hợp trực tiếp với hệ sinh thái Lark / Feishu và kho tri thức WeKnora:
 
 - **Mô hình kiến trúc:** Modular monolith phát triển bằng Python (FastAPI), vận hành song song với WeKnora RAG engine (Go) trên mạng nội bộ.
-- **Kiến trúc đa doanh nghiệp (Multi-Tenant):** Mọi tài nguyên, phiên làm việc, token xác thực, dữ liệu lưu trữ và kho tri thức đều được cô lập tuyệt đối theo `tenant_key`. Hỗ trợ cả hai mô hình Custom App và ISV Store App.
+- **Kiến trúc đa doanh nghiệp (Multi-Tenant):** Mọi tài nguyên, phiên làm việc, token xác thực, dữ liệu lưu trữ và kho tri thức đều được cô lập tuyệt đối theo `tenant_key` theo mô hình Custom App Multi-Tenant.
 - **Tiếp nhận sự kiện qua Webhook Gateway:** Tiếp nhận sự kiện từ Lark qua cổng Webhook `/api/lark/events`, khử trùng lặp và điều phối qua hàng đợi xử lý bất đồng bộ.
 - **Kiểm duyệt an toàn và phân loại ý định (JEV System 1):** Phân loại phản xạ nhanh tin nhắn người dùng, ngắt sớm các tin nhắn ngoài phạm vi để tối ưu độ trễ và chi phí token.
 - **Ký ức động và tri thức kép (Hybrid Knowledge & Claims):** Kết hợp tài liệu tĩnh trên WeKnora và sự thật mới bóc tách từ hội thoại trong MongoDB. Áp dụng nguyên tắc ưu tiên dữ kiện mới nhất (`CURRENT Claims > Static WeKnora Baseline`).
@@ -30,7 +30,7 @@ HiLark là trợ lý điều hành doanh nghiệp tích hợp trực tiếp vớ
 | [`permission/`](permission/) | **Bảo mật & Cô lập dữ liệu** | Kiến trúc cô lập 5 tầng, `TokenBroker` 3 chiều, `TenantResolver` fail-closed, quản lý vòng đời tenant. |
 | [`jev/`](jev/) | **Mô hình phân loại ý định JEV** | Kiến trúc System 1 Gatekeeper, phân loại 5 nhánh ý định, chấm điểm liên quan (Reranker). |
 | [`LarkBase/`](LarkBase/) | **Tích hợp Lark Base (Bitable)** | Khởi tạo Base tự động qua OpenAPI (Zero-Touch Provisioning), đồng bộ 2 chiều Chat Scopes và Policies, MD5 hash guard. |
-| [`onboarding/`](onboarding/) | **Trình hướng dẫn thiết lập & BYOK** | Onboarding Screen Guide Wizard 4 bước dạng Webview Modal, cấu hình 1-chạm cho Custom App và ISV App. |
+| [`onboarding/`](onboarding/) | **Trình hướng dẫn thiết lập & BYOK** | Onboarding Screen Guide Wizard 4 bước dạng Webview Modal, cấu hình 1-chạm cho Custom App Multi-Tenant. |
 
 ---
 

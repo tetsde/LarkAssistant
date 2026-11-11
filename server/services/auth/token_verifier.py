@@ -157,49 +157,39 @@ def ping_user_access_token(
     token: Optional[str] = None,
     domain: Optional[str] = None,
     timeout: float = 6.0,
+    tenant_key: Optional[str] = None,
 ) -> TokenCheckResult:
     """
     Tiến hành ping và kiểm tra tính hợp lệ của Lark User Access Token:
-      1. Kiểm tra rỗng và bóc tách thời hạn JWT nhanh (offline check).
-      2. Ping trực tiếp endpoint /open-apis/authen/v1/user_info của Lark Open Platform.
-      3. Bắt toàn bộ lỗi (network timeout, invalid code, token expired), đảm bảo KHÔNG làm crash app.
+      1. Lấy token trực tiếp từ tham số `token` hoặc qua `token_broker` theo `tenant_key`
+         (không đọc `.env`, singleton toàn cục, hay bản ghi legacy).
+      2. Kiểm tra rỗng và bóc tách thời hạn JWT nhanh (offline check).
+      3. Ping trực tiếp endpoint /open-apis/authen/v1/user_info của Lark Open Platform.
 
     Trả về: TokenCheckResult
     """
+    eff_tenant = (tenant_key or "").strip()
     if token is not None:
         target_token = token.strip()
-    else:
-        # 1. Ưu tiên lấy token đã nạp vào lark_service
+    elif eff_tenant:
         try:
-            from services.lark import lark_service
-            target_token = (getattr(lark_service, "user_access_token", "") or "").strip()
+            from services.auth.tenant_token_manager import token_broker
+            target_token = (token_broker.get_token_sync(eff_tenant, "user") or "").strip()
         except Exception:
             target_token = ""
-
-        # 2. Nếu rỗng, thử đọc từ MongoDB lark_auth
-        if not target_token:
-            try:
-                from database.db import get_sync_db
-                db = get_sync_db()
-                doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
-                if doc and doc.get("access_token"):
-                    target_token = doc["access_token"].strip()
-            except Exception:
-                pass
-
-        # 3. Fallback cuối cùng về file .env
-        if not target_token:
-            target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
+    else:
+        target_token = ""
 
     target_domain = (domain or settings.LARK_DOMAIN or "https://open.larksuite.com").rstrip("/")
 
     # TH1: Token chưa được cấu hình
     if not target_token:
+        login_hint = f"/auth/lark/login?tenant_key={eff_tenant}" if eff_tenant else "/auth/lark/login?tenant_key=<tenant_key>"
         return TokenCheckResult(
             is_valid=False,
             is_expired=True,
             status="missing",
-            message="Chưa cấu hình hoặc chưa có User Access Token. Vui lòng truy cập http://localhost:8000/auth/lark/login để cấp quyền.",
+            message=f"Chưa có User Access Token hợp lệ. Vui lòng truy cập {login_hint} để cấp quyền.",
             code=None,
         )
 
@@ -216,8 +206,8 @@ def ping_user_access_token(
             is_expired=True,
             status="expired",
             message=(
-                f"access_token_user ĐÃ HẾT HẠN theo JWT timestamp vào lúc {exp_str} "
-                f"(quá hạn {time_desc}). Vui lòng lấy token mới từ Lark Developer Console."
+                f"User Access Token ĐÃ HẾT HẠN theo JWT timestamp vào lúc {exp_str} "
+                f"(quá hạn {time_desc}). Vui lòng ủy quyền lại qua /auth/lark/login."
             ),
             expires_at=exp_dt,
             expires_in_seconds=remaining_sec,
@@ -246,21 +236,6 @@ def ping_user_access_token(
             user_data = data.get("data", {})
             user_name = user_data.get("name", "Người dùng")
             open_id = user_data.get("open_id") or user_data.get("user_id")
-
-            # Nếu token dạng Opaque (u-...), tra cứu thời hạn lưu trong MongoDB
-            if remaining_sec is None:
-                try:
-                    from database.db import get_sync_db
-                    db = get_sync_db()
-                    doc = db[settings.MONGO_AUTH_COLLECTION].find_one({"_id": "primary_user_token"})
-                    if doc and doc.get("access_token") == target_token:
-                        exp_at = doc.get("expires_at", 0)
-                        now_ts = time.time()
-                        if exp_at > now_ts:
-                            remaining_sec = int(exp_at - now_ts)
-                            exp_dt = datetime.fromtimestamp(exp_at, tz=VIETNAM_TZ)
-                except Exception:
-                    pass
 
             time_info = ""
             if remaining_sec is not None:
@@ -336,12 +311,20 @@ async def aping_user_access_token(
     token: Optional[str] = None,
     domain: Optional[str] = None,
     timeout: float = 6.0,
+    tenant_key: Optional[str] = None,
 ) -> TokenCheckResult:
     """Phiên bản bất đồng bộ (async) của ping_user_access_token."""
+    eff_tenant = (tenant_key or "").strip()
     if token is not None:
         target_token = token.strip()
+    elif eff_tenant:
+        try:
+            from services.auth.tenant_token_manager import token_broker
+            target_token = (await token_broker.get(eff_tenant, "user") or "").strip()
+        except Exception:
+            target_token = ""
     else:
-        target_token = (settings.LARK_USER_ACCESS_TOKEN or "").strip()
+        target_token = ""
 
     target_domain = (domain or settings.LARK_DOMAIN or "https://open.larksuite.com").rstrip("/")
 
@@ -350,7 +333,7 @@ async def aping_user_access_token(
             is_valid=False,
             is_expired=True,
             status="missing",
-            message="Chưa cấu hình `access_token_user` trong .env!",
+            message="Chưa có User Access Token hợp lệ cho tenant được chỉ định.",
             code=None,
         )
 
@@ -438,12 +421,14 @@ async def aping_user_access_token(
 # 3. HÀM CHECK VÀ IN CẢNH BÁO AN TOÀN TRÊN TERMINAL
 # =============================================================================
 
-def check_and_warn_token(token: Optional[str] = None) -> TokenCheckResult:
+def check_and_warn_token(
+    token: Optional[str] = None,
+    tenant_key: Optional[str] = None,
+) -> TokenCheckResult:
     """
     Thực hiện ping kiểm tra token và in cảnh báo trực quan ra Terminal.
-    Được gọi khi ứng dụng khởi động.
     """
-    result = ping_user_access_token(token=token)
+    result = ping_user_access_token(token=token, tenant_key=tenant_key)
 
     if result.is_valid:
         print("✔ [LARK TOKEN CHECK] User Access Token HỢP LỆ!")
@@ -461,10 +446,10 @@ def check_and_warn_token(token: Optional[str] = None) -> TokenCheckResult:
         print("-" * 70)
         print("🛡️  CƠ CHẾ BẢO VỆ CHỐNG CRASH HỆ THỐNG:")
         print("   1. Hệ thống KHÔNG CRASH và vẫn duy trì hoạt động bình thường.")
-        print("   2. Các tác vụ trả lời nhân danh User sẽ tự động tạm dừng an toàn")
-        print("      hoặc báo lỗi rõ ràng thay vì làm sập ứng dụng.")
-        print("   3. ĐỂ KHẮC PHỤC: Vui lòng vào Lark Developer Console -> Test Users ->")
-        print("      Lấy User Access Token mới và cập nhật vào file `.env` (key: `access_token_user`).")
+        print("   2. Các tác vụ trả lời nhân danh User sẽ tự động Fail-Closed an toàn")
+        print("      và gửi link cấp quyền lại cho Admin.")
+        print("   3. ĐỂ KHẮC PHỤC: Mở `/auth/lark/login?tenant_key=<tenant_key>` để Admin")
+        print("      ủy quyền OAuth mới.")
         print("!" * 70 + "\n")
 
     return result

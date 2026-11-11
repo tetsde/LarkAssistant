@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from core.config import settings
 from models.chat_scope import ChatScopeRecord
 from services.auth_service import scope_service
 
@@ -22,7 +21,7 @@ class SetScopeRequest(BaseModel):
     dataset_id: str = Field(..., description="WeKnora Knowledge Base ID")
     chat_name: Optional[str] = Field(default="", description="Tên nhóm chat hiển thị")
     project_tag: Optional[str] = Field(default=None, description="Mã dự án (nếu có)")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (ISV Multi-Tenant)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (Custom App Multi-Tenant)")
     operator_open_id: Optional[str] = Field(default=None, description="Lark open_id của người thực hiện")
     operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
 
@@ -31,19 +30,19 @@ class IngestScopeDocumentsRequest(BaseModel):
     urls: List[str] = Field(..., description="Danh sách URL tài liệu Lark DocX, Wiki hoặc Thư mục Lark Drive")
     operator_open_id: Optional[str] = Field(default=None, description="Open ID người thực hiện")
     operator_name: Optional[str] = Field(default=None, description="Tên người thực hiện")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (ISV Multi-Tenant)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant (Custom App Multi-Tenant)")
     extract_claims: bool = Field(default=True, description="Tự động bóc tách Claims/Facts vào MongoDB")
 
 
 @router.get("", response_model=List[Dict[str, Any]], summary="Danh sách toàn bộ ánh xạ Chat <-> KB")
-async def list_scopes(tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (ISV)")):
+async def list_scopes(tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (Multi-Tenant)")):
     """Lấy danh sách tất cả các nhóm chat đã được gán Knowledge Base riêng trong MongoDB (hỗ trợ tenant_key)."""
     scopes = await scope_service.list_all_scopes(tenant_key=tenant_key)
     return [s.to_dict() for s in scopes]
 
 
 @router.get("/{chat_id}", summary="Lấy thông tin Knowledge Base của một nhóm chat")
-async def get_scope(chat_id: str, tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (ISV)")):
+async def get_scope(chat_id: str, tenant_key: Optional[str] = Query(None, description="Lọc theo tenant_key (Multi-Tenant)")):
     """Tra cứu Knowledge Base của một nhóm chat (nếu chưa gán riêng sẽ trả về KB mặc định)."""
     scope = await scope_service.get_scope_by_chat_id(chat_id, tenant_key=tenant_key)
     if scope:
@@ -67,7 +66,7 @@ async def set_scope(req: SetScopeRequest):
     Liên kết nhóm chat với một Knowledge Base WeKnora.
     Kiểm tra quyền Admin và xác thực dataset_id trên WeKnora trước khi lưu vào MongoDB.
     """
-    op_id = req.operator_open_id or settings.LARK_USER_OPEN_ID
+    op_id = req.operator_open_id or ""
     op_name = req.operator_name or "API Admin"
 
     ok, msg, rec = await scope_service.set_chat_kb(
@@ -94,10 +93,15 @@ async def set_scope(req: SetScopeRequest):
 async def delete_scope(
     chat_id: str,
     operator_open_id: Optional[str] = Query(None, description="Open ID người thực hiện"),
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (Custom App Multi-Tenant)"),
 ):
     """Gỡ bỏ Knowledge Base riêng của nhóm chat, đưa nhóm về dùng Knowledge Base mặc định."""
-    op_id = operator_open_id or settings.LARK_USER_OPEN_ID
-    ok, msg = await scope_service.reset_chat_kb(chat_id=chat_id, operator_open_id=op_id)
+    op_id = operator_open_id or ""
+    ok, msg = await scope_service.reset_chat_kb(
+        chat_id=chat_id,
+        operator_open_id=op_id,
+        tenant_key=tenant_key,
+    )
     if not ok:
         raise HTTPException(status_code=403, detail=msg)
 
@@ -116,7 +120,7 @@ async def ingest_documents_to_group(chat_id: str, req: IngestScopeDocumentsReque
       - Link Lark Wiki (https://.../wiki/...)
       - Link Thư mục Lark Drive (https://.../folder/... hoặc https://.../drive/folder/...)
     """
-    op_id = req.operator_open_id or settings.LARK_USER_OPEN_ID
+    op_id = req.operator_open_id or ""
     op_name = req.operator_name or "API Admin"
 
     result = await scope_service.ingest_documents_to_scope(
@@ -125,6 +129,7 @@ async def ingest_documents_to_group(chat_id: str, req: IngestScopeDocumentsReque
         operator_open_id=op_id,
         operator_name=op_name,
         extract_claims=req.extract_claims,
+        tenant_key=req.tenant_key,
     )
 
     if not result.get("success"):

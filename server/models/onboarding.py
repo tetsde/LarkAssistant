@@ -39,7 +39,7 @@ class SaveSettingsRequest(BaseModel):
     digest_schedule_time: str = Field(default="18:00", description="Giờ nhận Daily Digest")
     hitl_mode_enabled: bool = Field(default=True, description="Bật chế độ duyệt an toàn HITL")
     policy_sync_interval_seconds: Optional[int] = Field(default=3600, description="Chu kỳ quét định kỳ chính sách doanh nghiệp (giây)")
-    tenant_key: Optional[str] = Field(default=None, description="Mã tenant ISV nếu có")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant nếu có")
     app_id: Optional[str] = Field(default=None, description="Lark App ID (cli_xxx)")
     app_secret: Optional[str] = Field(default=None, description="Lark App Secret")
     custom_mongo_url: Optional[str] = Field(default=None, description="MongoDB Connection URI tùy chọn")
@@ -48,7 +48,7 @@ class SaveSettingsRequest(BaseModel):
 class ProvisionBaseRequest(BaseModel):
     """Payload yêu cầu tự động khởi tạo Lark Base Quản trị Doanh nghiệp."""
     admin_open_id: Optional[str] = Field(default=None, description="Lark Open ID của Admin")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant ISV nếu có")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant nếu có")
 
 
 class ProvisionWeKnoraRequest(BaseModel):
@@ -72,9 +72,12 @@ class RegisterLarkAppRequest(TestBotCredentialsRequest):
 
 
 class SaveBotConfigRequest(BaseModel):
-    """Payload lưu cấu hình Bot và kết nối MongoDB tùy chọn."""
+    """Payload lưu cấu hình Bot theo App/Tenant (không ghi đè cấu hình global)."""
     app_id: str = Field(..., description="Mã ứng dụng Lark (cli_xxx)")
     app_secret: Optional[str] = Field(default=None, description="Khóa bí mật của ứng dụng Lark")
+    verification_token: Optional[str] = Field(default=None, description="Verification Token của App event webhook")
+    encrypt_key: Optional[str] = Field(default=None, description="Encrypt Key của App event webhook")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh tenant nếu đã xác định")
     custom_mongo_url: Optional[str] = Field(default=None, description="URI MongoDB tùy chọn")
 
 

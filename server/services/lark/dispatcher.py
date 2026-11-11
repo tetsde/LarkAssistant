@@ -110,7 +110,7 @@ class LarkDispatcherMixin:
         self._processed_msg_ids: OrderedDict[str, float] = OrderedDict()
         self._dedup_lock = asyncio.Lock() if hasattr(asyncio, "Lock") else None
 
-        # Cache ánh xạ admin_open_id theo tenant_key (ISV Multi-Tenant)
+        # Cache ánh xạ admin_open_id theo tenant_key (Custom App Multi-Tenant)
         self._tenant_admin_cache: Dict[str, str] = {}
 
         # Khởi tạo EventDispatcherHandler của Lark
@@ -185,12 +185,22 @@ class LarkDispatcherMixin:
 
         is_bot = sender_type == "app" or sender_type == "bot"
 
-        # Kiểm tra xem có phải chính User của token gửi không (hỗ trợ phân biệt theo tenant_key)
-        my_open_id = self.known_user_open_id
-        if tenant_key and tenant_key in self._tenant_admin_cache:
-            my_open_id = self._tenant_admin_cache[tenant_key]
-        elif self._current_user_profile and self._current_user_profile.get("open_id"):
-            my_open_id = self._current_user_profile.get("open_id")
+        # Kiểm tra xem có phải chính User (Admin) của ĐÚNG tenant gửi không
+        my_open_id = ""
+        if tenant_key:
+            cache = getattr(self, "_tenant_admin_cache", None)
+            if isinstance(cache, dict) and cache.get(tenant_key):
+                my_open_id = str(cache[tenant_key]).strip()
+            elif hasattr(self, "_lookup_tenant_admin_record"):
+                ident = self._lookup_tenant_admin_record(tenant_key=tenant_key, include_name=False)
+                if isinstance(ident, dict):
+                    my_open_id = (ident.get("open_id") or "").strip()
+        else:
+            my_open_id = (getattr(self, "known_user_open_id", "") or "").strip()
+            if not my_open_id:
+                prof = getattr(self, "_current_user_profile", None)
+                if isinstance(prof, dict) and prof.get("open_id"):
+                    my_open_id = str(prof["open_id"]).strip()
         is_self = bool(my_open_id and sender_id == my_open_id)
 
         # 2. Bóc tách nội dung Text
@@ -340,6 +350,13 @@ class LarkDispatcherMixin:
             if not event:
                 return
 
+            header = getattr(data, "header", None)
+            tenant_key = (
+                (getattr(header, "tenant_key", "") if header else "")
+                or getattr(event, "tenant_key", "")
+                or ""
+            ).strip()
+
             message_id = getattr(event, "message_id", "")
             reaction_type = getattr(event, "reaction_type", None)
             emoji_type = getattr(reaction_type, "emoji_type", "") if reaction_type else ""
@@ -349,20 +366,32 @@ class LarkDispatcherMixin:
             if not message_id or not emoji_type:
                 return
 
-            logger.info("[REACTION] received emoji=%s msg=%s user=%s", emoji_type, message_id, user_open_id)
+            logger.info("[REACTION] received tenant=%s emoji=%s msg=%s user=%s", tenant_key or "-", emoji_type, message_id, user_open_id)
 
-            # Kiểm tra xem có phải Lãnh đạo (Owner) thả reaction hay không
-            is_owner = False
-            from core.config import settings
-            if user_open_id and settings.LARK_USER_OPEN_ID and user_open_id == settings.LARK_USER_OPEN_ID:
-                is_owner = True
-            elif hasattr(self, "_current_user_profile") and self._current_user_profile:
-                owner_open_id = self._current_user_profile.get("open_id")
-                if owner_open_id and user_open_id == owner_open_id:
-                    is_owner = True
+            # Kiểm tra xem có phải Lãnh đạo (Owner) thuộc ĐÚNG tenant thả reaction hay không
+            owner_open_id = ""
+            owner_name = ""
+            if tenant_key:
+                cache = getattr(self, "_tenant_admin_cache", None)
+                if isinstance(cache, dict) and cache.get(tenant_key):
+                    owner_open_id = str(cache[tenant_key]).strip()
+                if hasattr(self, "_lookup_tenant_admin_record"):
+                    ident = self._lookup_tenant_admin_record(tenant_key=tenant_key, include_name=True)
+                    if isinstance(ident, dict):
+                        if not owner_open_id:
+                            owner_open_id = (ident.get("open_id") or "").strip()
+                        owner_name = (ident.get("name") or "").strip()
+            else:
+                owner_open_id = (getattr(self, "known_user_open_id", "") or "").strip()
+                prof = getattr(self, "_current_user_profile", None)
+                if isinstance(prof, dict):
+                    if not owner_open_id and prof.get("open_id"):
+                        owner_open_id = str(prof["open_id"]).strip()
+                    owner_name = str(prof.get("name") or "").strip()
 
+            is_owner = bool(user_open_id and owner_open_id and user_open_id == owner_open_id)
             if not is_owner:
-                logger.debug("[REACTION] ignored user=%s reason=not_owner", user_open_id)
+                logger.debug("[REACTION] ignored user=%s tenant=%s reason=not_owner", user_open_id, tenant_key or "-")
                 return
 
             # Danh sách Emoji phê duyệt chính thức
@@ -374,16 +403,29 @@ class LarkDispatcherMixin:
                 logger.debug("[REACTION] ignored emoji=%s reason=not_approval", emoji_type)
                 return
 
-            # Kích hoạt thăng hạng claims thành CURRENT
+            # Kích hoạt thăng hạng claims thành CURRENT (cô lập theo tenant_key)
             async def _promote():
                 try:
                     from database.db import promote_claims_by_message_id
+                    from database.scoped_query import async_tenant_context
+
                     approver_info = {
                         "user_id": user_open_id,
-                        "user_name": settings.LARK_USER_NAME or "Lãnh đạo",
+                        "user_name": owner_name or "Lãnh đạo",
                         "role": "owner",
                     }
-                    promoted = await promote_claims_by_message_id(message_id, approver_info=approver_info)
+                    if tenant_key:
+                        async with async_tenant_context(tenant_key):
+                            promoted = await promote_claims_by_message_id(
+                                message_id,
+                                approver_info=approver_info,
+                                tenant_key=tenant_key,
+                            )
+                    else:
+                        promoted = await promote_claims_by_message_id(
+                            message_id,
+                            approver_info=approver_info,
+                        )
                     if promoted > 0:
                         logger.info("[REACTION] claims_promoted emoji=%s msg=%s count=%d", emoji_type, message_id, promoted)
                     else:

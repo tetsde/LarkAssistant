@@ -278,11 +278,7 @@ class Settings:
     LARK_USER_NAME: str = os.getenv("user_name") or os.getenv("LARK_USER_NAME", "")
     LARK_USER_ROLE: str = os.getenv("user_role") or os.getenv("LARK_USER_ROLE", "")
 
-    # Lark ISV / Store App Multi-Tenant Settings (EDL-0020)
-    LARK_APP_TYPE: str = os.getenv("LARK_APP_TYPE", "custom")
-    IS_ISV_MODE: bool = (os.getenv("LARK_APP_TYPE", "").lower() == "isv") or (os.getenv("IS_ISV_MODE", "false").lower() in ("true", "1", "yes"))
-    LARK_APP_TICKET: str = os.getenv("LARK_APP_TICKET", "")
-    MONGO_ISV_AUTH_COLLECTION: str = os.getenv("mongo_isv_auth_collection", "isv_auth")
+    # Lark Custom App Multi-Tenant Settings
     MONGO_TENANTS_COLLECTION: str = os.getenv("mongo_tenants_collection", "tenants")
 
     # Lark Base (Bitable) Settings

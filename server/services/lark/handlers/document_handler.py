@@ -61,7 +61,9 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
             if msg.chat_type == "p2p":
                 await lark.areply_text(
                     msg.message_id,
-                    f"Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh)."
+                    f"Tệp \"{file_name}\" không thuộc định dạng tài liệu được hỗ trợ (chỉ hỗ trợ: Word, PDF, Excel, PPTX, TXT, MD, hình ảnh).",
+                    as_user=False,
+                    tenant_key=msg.tenant_key,
                 )
             return True
 
@@ -81,7 +83,9 @@ async def handle_document_or_links(msg: LarkMessage, is_owner: bool = False) -> 
                 if msg.chat_type == "p2p":
                     await lark.areply_text(
                         msg.message_id,
-                        f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}"
+                        f"Không thể đọc nội dung tài liệu \"{file_name}\": {doc_res.error}",
+                        as_user=False,
+                        tenant_key=msg.tenant_key,
                     )
                 return True
 

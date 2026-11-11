@@ -4,7 +4,7 @@ HiLark - One-Click Setup Orchestration Service
 Vị trí: server/services/setup/one_click_setup_service.py
 
 Mục đích:
-  Điều phối tự động 100% luồng thiết lập 7 bước của HiLark theo chuẩn ISV SaaS:
+  Điều phối tự động 100% luồng thiết lập 7 bước của HiLark theo chuẩn Custom App Multi-Tenant:
     1. Admin mở HiLark Setup (Landing Page).
     2. Lark Authorization (Admin ủy quyền qua OAuth).
     3. HiLark Backend nhận authorization (Đổi code lấy token, bóc tách tenant_key & admin_open_id).
@@ -84,9 +84,13 @@ class OneClickSetupService:
         self._lock = asyncio.Lock()
         self._tasks: Dict[str, Dict[str, Any]] = {}
 
-    def create_task(self, app_registration_id: Optional[str] = None) -> str:
+    def create_task(
+        self,
+        app_registration_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> str:
         """Tạo phiên cài đặt mới với 7 bước khởi đầu."""
-        task_id = str(uuid.uuid4())
+        task_id = (task_id or "").strip() or str(uuid.uuid4())
         steps = []
         for step_def in STEP_DEFINITIONS:
             steps.append({
@@ -175,40 +179,35 @@ class OneClickSetupService:
         self._tasks[task_id] = doc
         return doc
 
-    async def claim_oauth_state(self, state: Optional[str]) -> Optional[str]:
-        """Validate và consume state một lần; trả về task_id hợp lệ."""
-        if not state or not state.startswith("setup_"):
+    async def resume_task_from_state(self, state_doc: Dict[str, Any]) -> Optional[str]:
+        """Nạp hoặc dựng lại setup task từ document đã được `oauth_state_service.consume()` xác thực."""
+        if not isinstance(state_doc, dict) or state_doc.get("purpose") != "setup":
             return None
-        task_id = state[len("setup_"):]
-        expected_hash = hashlib.sha256(state.encode()).hexdigest()
-        task = self._tasks.get(task_id)
-        if task:
-            saved_hash = task.get("oauth_state_hash")
-            if saved_hash and saved_hash != expected_hash:
-                return None
-            if task.get("state_consumed"):
-                return None
-            if not saved_hash:
-                # Compatibility với task tạo trong test/dev cũ; task production được
-                # persist từ /setup/install nên luôn có hash.
-                task["state_consumed"] = True
-                return task_id
-            task["oauth_state_hash"] = expected_hash
-            task["state_consumed"] = True
-            await self.persist_task(task_id)
-            return task_id
+        task_id = str(state_doc.get("task_id") or "").strip()
+        if not task_id:
+            return None
+        app_reg_id = str(state_doc.get("app_registration_id") or "").strip() or None
 
-        col = get_setup_sessions_collection()
-        doc = await col.find_one_and_update(
-            {"task_id": task_id, "oauth_state_hash": expected_hash, "state_consumed": {"$ne": True}},
-            {"$set": {"state_consumed": True, "updated_at": get_vietnam_now_iso()}},
-            return_document=ReturnDocument.AFTER,
-        )
-        if not doc:
-            return None
-        doc.pop("_id", None)
-        self._tasks[task_id] = doc
+        task = await self.load_task_status(task_id)
+        if not task:
+            self.create_task(app_registration_id=app_reg_id, task_id=task_id)
+            task = self._tasks[task_id]
+        elif app_reg_id and not task.get("app_registration_id"):
+            task["app_registration_id"] = app_reg_id
+
+        task["state_consumed"] = True
+        await self.persist_task(task_id)
         return task_id
+
+    async def claim_oauth_state(self, state: Optional[str]) -> Optional[str]:
+        """Validate và consume state một lần qua `oauth_state_service`; trả về task_id hợp lệ."""
+        from services.auth.oauth_state_service import OAuthStateError, oauth_state_service
+
+        try:
+            state_doc = await oauth_state_service.consume(state)
+        except OAuthStateError:
+            return None
+        return await self.resume_task_from_state(state_doc)
 
     def _update_step(
         self,
@@ -244,9 +243,9 @@ class OneClickSetupService:
         Thực thi toàn bộ pipeline 7 bước tự động.
         Được gọi ngay khi OAuth callback trả về authorization code.
         """
-        task = self._tasks.get(task_id)
+        task = await self.load_task_status(task_id)
         if not task:
-            # Tự động tạo task nếu task_id chưa có trong RAM
+            # Tự động tạo task nếu task_id chưa có trong RAM/DB
             task_id = self.create_task()
             task = self._tasks[task_id]
 
@@ -391,9 +390,6 @@ class OneClickSetupService:
             except Exception as us_err:
                 logger.warning(f"Lỗi khi lưu user_settings trong One-Click Setup: {us_err}")
 
-            from services.lark import lark_service
-            lark_service.known_user_open_id = admin_open_id
-
             self._update_step(
                 task_id,
                 step_number=3,
@@ -421,22 +417,13 @@ class OneClickSetupService:
                     "Không fallback .env trong multi-tenant mode."
                 )
 
-            tenant_token_ready = False
-            if getattr(settings, "IS_ISV_MODE", False):
-                from services.auth.tenant_token_manager import tenant_token_manager
-                tenant_token = await tenant_token_manager.get_token(
-                    tenant_key=tenant_key,
-                    token_type="bot"
-                )
-                tenant_token_ready = bool(tenant_token)
-                if not tenant_token_ready:
-                    raise RuntimeError("Không lấy được tenant access token cho doanh nghiệp.")
-                token_detail = "Tenant access token đã được cấp cho doanh nghiệp."
-            else:
-                # Custom App lấy tenant token internal ngay trong BaseProvisionService
-                # ở bước kế tiếp; không gọi nhầm endpoint ISV với tenant_key.
-                tenant_token_ready = True
-                token_detail = "App credential hợp lệ; tenant access token internal sẽ được dùng khi tạo Base."
+            from services.auth.tenant_token_manager import token_broker
+
+            tenant_token = await token_broker.get(tenant_key, "bot")
+            if not tenant_token:
+                raise RuntimeError("Không lấy được tenant access token (Bot Token) cho doanh nghiệp.")
+            tenant_token_ready = True
+            token_detail = "Bot token (tenant_access_token) đã được cấp qua token_broker."
 
             bot_applink = f"https://applink.larksuite.com/client/bot/open?appId={app_id}"
 
@@ -470,8 +457,6 @@ class OneClickSetupService:
                         base_provision_service.provision_enterprise_base(
                             admin_open_id=admin_open_id or None,
                             tenant_key=tenant_key,
-                            app_id=app_id or None,
-                            app_secret=app_secret or None,
                         ),
                         timeout=20.0,
                     )
@@ -567,6 +552,7 @@ class OneClickSetupService:
                     if bitable_url:
                         tenant_dict["bitable_app_url"] = bitable_url
 
+                    from services.lark import lark_service
                     card = build_marketplace_welcome_card(tenant_dict)
                     sender_service = lark_service
                     if app_record:

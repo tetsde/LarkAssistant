@@ -11,7 +11,6 @@ Chứa toàn bộ các dịch vụ và tiện ích liên quan đến xác thực
 """
 
 from services.auth.token_service import (
-    PRIMARY_TOKEN_DOC_ID,
     VIETNAM_TZ,
     format_remaining_seconds,
     LarkTokenService,
@@ -32,7 +31,6 @@ from services.auth.token_verifier import (
 )
 
 __all__ = [
-    "PRIMARY_TOKEN_DOC_ID",
     "VIETNAM_TZ",
     "format_remaining_seconds",
     "LarkTokenService",

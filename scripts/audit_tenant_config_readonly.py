@@ -61,6 +61,7 @@ TENANT_SCOPED_ENV = [
 # Trạng thái vòng đời hợp lệ (đúng bảng trong services/tenancy/tenant_state.py).
 # Khai báo tại chỗ để script không import `services.*` (tránh kéo theo vòng khởi động).
 KNOWN_STATUSES = {
+    "awaiting_user_oauth",
     "provisioning",
     "provisioning_failed",
     "ready",
@@ -128,7 +129,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"MONGO_URL : {_mask_url(settings.MONGO_URL)}")
     print(f"MONGO_DB  : {settings.MONGO_DB}")
     print(f"ENVIRONMENT: {settings.ENVIRONMENT}")
-    print(f"IS_ISV_MODE: {settings.IS_ISV_MODE}")
     print(f"WEKNORA_PROVISION_DRY_RUN: {settings.WEKNORA_PROVISION_DRY_RUN}")
 
     try:

@@ -15,7 +15,6 @@ import httpx
 
 from database.db import get_auth_collection, get_chat_scopes_collection
 from services.auth.token_service import (
-    PRIMARY_TOKEN_DOC_ID,
     VIETNAM_TZ,
     format_remaining_seconds,
     LarkTokenService,
@@ -35,7 +34,6 @@ from services.knowledge.weknora_client import weknora_service
 
 __all__ = [
     # Token / OAuth
-    "PRIMARY_TOKEN_DOC_ID",
     "VIETNAM_TZ",
     "format_remaining_seconds",
     "LarkTokenService",

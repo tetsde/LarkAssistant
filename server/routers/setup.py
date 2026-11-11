@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from core.config import settings
 from models.onboarding import RegisterLarkAppRequest
+from services.auth.oauth_state_service import oauth_state_service
 from services.auth_service import token_service
 from services.lark_app_service import lark_app_service
 from services.setup.one_click_setup_service import one_click_setup_service
@@ -47,8 +48,8 @@ async def setup_landing_page(
 
     html_content = TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    # Thay thế biến động vào template
-    app_id = getattr(settings, "LARK_APP_ID", "")
+    # Thay thế biến động vào template — không lộ LARK_APP_ID từ .env lên UI multi-tenant
+    app_id = ""
     base_url = str(request.base_url).rstrip("/")
     initial_task_id = task_id or ""
     initial_view = "progress" if task_id else "guide"
@@ -109,7 +110,14 @@ async def start_install_redirect(
         base_url = f"{proto}://{host}".rstrip("/") if host else str(request.base_url).rstrip("/")
         final_redirect_uri = f"{base_url}/setup/callback"
 
-    auth_state = f"setup_{task_id}"
+    auth_state = await oauth_state_service.create(
+        tenant_key=f"pending:{registration_id}",
+        app_id=app_id,
+        purpose="setup",
+        app_registration_id=registration_id,
+        task_id=task_id,
+        redirect_uri=final_redirect_uri,
+    )
     await one_click_setup_service.persist_task(task_id, oauth_state=auth_state)
     auth_url = token_service.get_authorize_url(
         redirect_uri=final_redirect_uri,
@@ -209,12 +217,12 @@ async def oauth_callback_endpoint(
     if not code:
         raise HTTPException(status_code=400, detail="Thiếu tham số 'code' trong callback!")
 
-    if state and state.startswith("setup_"):
-        task_id = await one_click_setup_service.claim_oauth_state(state)
-        if not task_id:
-            raise HTTPException(status_code=400, detail="OAuth state không hợp lệ hoặc đã được sử dụng.")
-    else:
-        task_id = state or one_click_setup_service.create_task()
+    task_id = await one_click_setup_service.claim_oauth_state(state)
+    if not task_id:
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth state không hợp lệ, sai luồng hoặc đã được sử dụng.",
+        )
 
     # Kích hoạt pipeline 7 bước chạy nền (asyncio task)
     asyncio.create_task(one_click_setup_service.run_setup_pipeline(task_id=task_id, code=code, state=state))

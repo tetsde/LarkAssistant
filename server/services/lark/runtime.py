@@ -6,8 +6,6 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
-from services.auth.token_service import token_service
-
 logger = logging.getLogger("hilark.lark")
 
 
@@ -105,25 +103,13 @@ async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
         # Local import avoids the package-level Lark singleton circular import.
         from services.lark import LarkService
         from services.lark.bot_runner import handle_lark_incoming_message
-        from services.auth.tenant_token_manager import tenant_token_manager
 
-        tenant_key = app_record.get("tenant_key")
-        access_token: Optional[str] = None
-        if tenant_key:
-            try:
-                access_token = await tenant_token_manager.get_token(
-                    tenant_key=tenant_key,
-                    token_type="user"
-                )
-            except Exception as e:
-                logger.warning("[LARK_RUNTIME] user_token_unavailable tenant=%s error=%s", tenant_key, e)
-        
+        # Service chỉ giữ cấu hình App; User Token luôn cấp phát động qua token_broker theo tenant_key.
         service = LarkService(
             app_id=app_id,
             app_secret=app_record.get("app_secret", ""),
             verification_token=app_record.get("verification_token", ""),
             encrypt_key=app_record.get("encrypt_key", ""),
-            user_access_token=access_token or "",
             user_open_id=app_record.get("admin_open_id", ""),
         )
         service.register_handler(handle_lark_incoming_message)
@@ -134,21 +120,5 @@ async def get_or_create_lark_service(app_record: Dict[str, Any]) -> Any:
         from services.knowledge.chat_scopes import scope_service
         if scope_service.handle_bitable_record_changed_event not in service._bitable_record_handlers:
             service.register_bitable_record_handler(scope_service.handle_bitable_record_changed_event)
-        from services.auth.tenant_token_manager import tenant_token_manager
-        
-        tenant_key = app_record.get("tenant_key")
-        access_token = None
-        if tenant_key:
-            try:
-                access_token = await tenant_token_manager.get_token(
-                    tenant_key=tenant_key,
-                    token_type="user"
-                )
-            except Exception as e:
-                logger.warning("[LARK_RUNTIME] user_token_unavailable tenant=%s error=%s", tenant_key, e)
-        
-        if access_token:
-            service.user_access_token = access_token
-            service._last_token_check = None
 
     return service

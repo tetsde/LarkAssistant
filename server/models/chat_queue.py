@@ -28,6 +28,6 @@ class ChatQueueItem(BaseModel):
     responder_name: Optional[str] = Field(default=None, description="Tên người phát ngôn đại diện bot")
     is_owner: bool = Field(default=False, description="Có phải tin nhắn từ chính Chủ nhân hay không")
     role: Optional[str] = Field(default=None, description="Vai trò của người phản hồi")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh công ty / doanh nghiệp (ISV Multi-Tenant)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh công ty / doanh nghiệp (Custom App Multi-Tenant)")
     created_at: float = Field(default_factory=time.time, description="Thời điểm gom xong tin nhắn (timestamp)")
     message_ids: List[str] = Field(default_factory=list, description="Danh sách toàn bộ message_id đã gom")

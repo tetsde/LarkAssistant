@@ -300,7 +300,7 @@ Các bước chính:
 - Thiết lập cấu hình cho từng Tenant.
 - Hướng dẫn thiết lập thông qua giao diện tương tác.
 
-Hệ thống hỗ trợ cấu hình Custom App và ISV App tùy theo yêu cầu của Lark Open Platform.
+Hệ thống vận hành theo mô hình **Custom App Multi-Tenant** trên Lark Open Platform (mỗi doanh nghiệp đăng ký cặp App ID / App Secret riêng).
 
 ---
 
@@ -527,7 +527,6 @@ DOCREADER_GRPC_PORT=50051
 
 # Lark
 APP_BASE_URL=http://localhost:8000
-LARK_APP_TYPE=custom
 
 # Processing
 DEBOUNCE_DELAY_SECONDS=1.75
@@ -564,7 +563,7 @@ Các địa chỉ truy cập:
 
 **Bước 1. Đăng ký ứng dụng**
 
-Tạo Custom App hoặc ISV App thông qua [Lark Open Platform](https://open.larksuite.com).
+Tạo Custom App thông qua [Lark Open Platform](https://open.larksuite.com).
 
 **Bước 2. Cấu hình quyền truy cập**
 

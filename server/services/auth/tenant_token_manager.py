@@ -16,14 +16,15 @@ Bốn bảo đảm của tầng này:
   4. **Single-flight**: mỗi khoá có lock riêng, double-check sau khi lấy lock.
 
 `kind`:
-  - "app"    : app_access_token (tuỳ mode)
+  - "app"    : app_access_token của Custom App (`/internal`)
   - "tenant" : tenant_access_token của bot ("bot" là alias để tương thích)
   - "user"   : user_access_token theo OAuth của admin tenant
 
 Lịch sử:
   - 2026-11-02: Initial implementation (WS1)
   - 2026-11-02: Giai đoạn 1 - chuyển thành broker một loop, khoá cache 3 chiều,
-                bỏ raise "chỉ hỗ trợ ISV" ở nhánh bot token, thêm provider Custom App.
+                thống nhất Custom App Provider (`/internal`).
+  - 2026-11-10: Gỡ bỏ hoàn toàn luồng ISV Store App; chỉ vận hành Custom App Multi-Tenant.
 """
 
 from __future__ import annotations
@@ -115,33 +116,6 @@ class CustomAppProvider:
         )
 
 
-class ISVProvider:
-    """ISV/Marketplace: ủy quyền cho isv_token_service (app_ticket + tenant_key)."""
-
-    async def app_token(self, app_id: str, app_secret: str, tenant_key: str) -> Tuple[str, float]:
-        from services.auth.isv_token_service import isv_token_service
-
-        token = await isv_token_service.get_app_access_token()
-        if not token:
-            raise TokenUnavailable(
-                "isv_token_service không trả về app_access_token.", tenant_key=tenant_key, kind="app"
-            )
-        return token, time.time() + 7200
-
-    async def tenant_token(self, app_id: str, app_secret: str, tenant_key: str) -> Tuple[str, float]:
-        from services.auth.isv_token_service import isv_token_service
-
-        token = await isv_token_service.get_tenant_access_token(tenant_key=tenant_key, force_refresh=False)
-        if not token:
-            raise TokenUnavailable(
-                f"isv_token_service không trả về tenant_access_token cho tenant '{tenant_key}'.",
-                tenant_key=tenant_key,
-                kind="tenant",
-            )
-        cache = isv_token_service._tenant_tokens.get(tenant_key, {})
-        return token, float(cache.get("expires_at") or time.time() + 7200)
-
-
 class UserTokenProvider:
     """User access token của admin tenant, lưu trong `lark_auth` theo (app_id, tenant_key)."""
 
@@ -165,7 +139,6 @@ class TenantTokenManager:
         self._locks: Dict[CacheKey, asyncio.Lock] = {}
         self._cache_buffer_seconds: float = 300.0
         self.custom_app_provider = CustomAppProvider()
-        self.isv_provider = ISVProvider()
         self.user_provider = UserTokenProvider()
         logger.debug("[TOKEN_BROKER] initialized cache_dims=3")
 
@@ -216,18 +189,9 @@ class TenantTokenManager:
     # FETCH
     # -------------------------------------------------------------------------
 
-    def _isv_mode(self) -> bool:
-        return bool(getattr(settings, "IS_ISV_MODE", False))
-
     async def _fetch_fresh(self, tenant_key: str, app_id: str, app_secret: str, kind: str) -> TokenCacheEntry:
         if kind == "user":
             token, expires_at = await self.user_provider.fetch(app_id, app_secret, tenant_key)
-        elif self._isv_mode():
-            token, expires_at = await (
-                self.isv_provider.app_token(app_id, app_secret, tenant_key)
-                if kind == "app"
-                else self.isv_provider.tenant_token(app_id, app_secret, tenant_key)
-            )
         else:
             token, expires_at = await (
                 self.custom_app_provider.app_token(app_id, app_secret, tenant_key)

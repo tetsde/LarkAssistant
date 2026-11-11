@@ -71,6 +71,25 @@ class LarkMessengerMixin:
     # GỬI TIN NHẮN DM TỚI CHỦ NHÂN BẰNG BOT (TRƯỜNG HỢP NGOẠI LỆ DUY NHẤT)
     # -------------------------------------------------------------------------
 
+    def _resolve_dm_owner_open_id(
+        self,
+        target_open_id: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> str:
+        """
+        Xác định open_id người nhận DM theo đúng tenant_key (không vay danh tính tenant khác).
+        """
+        if target_open_id and str(target_open_id).strip():
+            return str(target_open_id).strip()
+
+        eff_tenant = self._resolve_msg_tenant(tenant_key)
+        if eff_tenant and hasattr(self, "_lookup_tenant_admin_record"):
+            ident = self._lookup_tenant_admin_record(tenant_key=eff_tenant, include_name=False)
+            if ident and ident.get("open_id"):
+                return str(ident["open_id"]).strip()
+
+        return (getattr(self, "owner_open_id", "") or "").strip()
+
     async def send_bot_dm_to_owner(
         self,
         text: str | Dict[str, Any],
@@ -80,7 +99,7 @@ class LarkMessengerMixin:
         """
         Gửi tin nhắn riêng (DM 1-1) từ Bot tới tài khoản của chủ nhân.
         Tự động chuyển tiếp sang send_bot_card_to_owner nếu nội dung truyền vào là cấu trúc Thẻ tương tác.
-        Hỗ trợ tenant_key cho ISV Multi-Tenant.
+        Hỗ trợ tenant_key cho Custom App Multi-Tenant.
         """
         if not text:
             return {"success": False, "error": "text không được rỗng"}
@@ -91,7 +110,7 @@ class LarkMessengerMixin:
         if isinstance(text, str) and text.strip().startswith("{") and any(k in text for k in ('"elements"', '"body"', '"schema"')):
             return await self.send_bot_card_to_owner(text, target_open_id=target_open_id, tenant_key=tenant_key)
 
-        owner_open_id = target_open_id or self.owner_open_id
+        owner_open_id = self._resolve_dm_owner_open_id(target_open_id=target_open_id, tenant_key=tenant_key)
         if not owner_open_id:
             logger.error("[LARK_DM] owner_missing")
             return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
@@ -140,12 +159,12 @@ class LarkMessengerMixin:
     ) -> Dict[str, Any]:
         """
         Gửi Thẻ tin nhắn tương tác (Lark Interactive Card) trực tiếp tới Chủ nhân qua tài khoản Bot.
-        Hỗ trợ tenant_key cho ISV Multi-Tenant.
+        Hỗ trợ tenant_key cho Custom App Multi-Tenant.
         """
         if not card_payload:
             return {"success": False, "error": "card_payload không được rỗng"}
 
-        owner_open_id = target_open_id or self.owner_open_id
+        owner_open_id = self._resolve_dm_owner_open_id(target_open_id=target_open_id, tenant_key=tenant_key)
         if not owner_open_id:
             logger.error("[LARK_DM_CARD] owner_missing")
             return {"success": False, "error": "Chưa xác định được open_id của chủ nhân."}
@@ -208,7 +227,7 @@ class LarkMessengerMixin:
         """
         Cập nhật nội dung một thẻ tin nhắn đã gửi (In-place update).
         Dùng để cập nhật trạng thái sau khi Lãnh đạo bấm nút (ví dụ: đã duyệt, đã hủy),
-        vô hiệu hóa các nút bấm nhằm chống bấm lặp lại. Hỗ trợ tenant_key cho ISV Multi-Tenant.
+        vô hiệu hóa các nút bấm nhằm chống bấm lặp lại. Hỗ trợ tenant_key cho Custom App Multi-Tenant.
         """
         if not message_id or not card_payload:
             return {"success": False, "error": "message_id và card_payload không được rỗng"}
@@ -252,28 +271,45 @@ class LarkMessengerMixin:
         target_id: str,
         text: str,
         id_name: str = "id",
+        tenant_key: Optional[str] = None,
     ) -> tuple[Optional[lark.RequestOption], Optional[str], Optional[Dict[str, Any]]]:
-        """Validate input và chuẩn bị request option cùng JSON text content."""
+        """Validate input và chuẩn bị RequestOption danh tính User qua token_broker (fail-closed)."""
+        from core.tenant_errors import TenantContextMissing, TenantResolutionError, TokenUnavailable, UserTokenMissing
+
         if not target_id or not text:
             return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
 
-        # Kiểm tra nhanh trạng thái User Access Token trước khi gọi API Lark
-        token_check = self.check_user_access_token()
-        if not token_check.is_valid:
-            warn_msg = f"User Access Token không hợp lệ hoặc đã hết hạn: {token_check.message}"
-            logger.warning("[LARK_IM] user_token_invalid reason=%s", token_check.message)
+        eff_tenant = self._resolve_msg_tenant(tenant_key)
+        if not eff_tenant:
+            logger.warning("[LARK_IM] missing_tenant_key action=prepare_user_msg_sync")
             return None, None, {
                 "success": False,
-                "error": "token_expired",
-                "code": token_check.code or 20005,
-                "msg": warn_msg,
+                "error": "missing_tenant_key",
+                "error_code": "tenant_context_missing",
+                "msg": "Thiếu tenant_key để xác thực token",
             }
 
         try:
-            opt = self._get_user_request_option()
-        except ValueError as e:
-            logger.error("[LARK_IM] user_token_option_failed error=%s", e)
-            return None, None, {"success": False, "error": str(e), "msg": "Không có User Access Token hợp lệ"}
+            opt = self._get_request_option(as_user=True, tenant_key=eff_tenant)
+        except UserTokenMissing as e:
+            logger.warning("[LARK_IM] user_token_missing tenant=%s", eff_tenant)
+            return None, None, {
+                "success": False,
+                "error": "user_token_missing",
+                "error_code": "user_token_missing",
+                "tenant_key": eff_tenant,
+                "msg": str(e),
+            }
+        except (TenantContextMissing, TenantResolutionError, TokenUnavailable, ValueError) as e:
+            err_code = getattr(e, "error_code", None) or "token_expired"
+            logger.error("[LARK_IM] user_token_option_failed tenant=%s error=%s", eff_tenant, e)
+            return None, None, {
+                "success": False,
+                "error": err_code,
+                "error_code": err_code,
+                "tenant_key": eff_tenant,
+                "msg": str(e),
+            }
 
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         return opt, content_json, None
@@ -298,48 +334,72 @@ class LarkMessengerMixin:
         id_name: str = "id",
         tenant_key: Optional[str] = None,
     ) -> tuple[Optional[lark.RequestOption], Optional[str], Optional[Dict[str, Any]]]:
-        """Validate input và chuẩn bị request option với AUTO-REFRESH token."""
+        """Validate input và chuẩn bị User RequestOption với AUTO-REFRESH token (fail-closed)."""
+        from core.tenant_errors import TenantContextMissing, TenantResolutionError, TokenUnavailable, UserTokenMissing
+        from services.auth.tenant_token_manager import tenant_token_manager
+
         if not target_id or not text:
             return None, None, {"success": False, "error": f"{id_name} và text không được rỗng"}
 
-        # ✅ TỰ ĐỘNG REFRESH TOKEN NẾU HẾT HẠN (WS7: qua TenantTokenManager)
+        eff_tenant = self._resolve_msg_tenant(tenant_key)
+        if not eff_tenant:
+            logger.warning("[LARK_IM] missing_tenant_key action=prepare_user_msg")
+            return None, None, {
+                "success": False,
+                "error": "missing_tenant_key",
+                "error_code": "tenant_context_missing",
+                "msg": "Thiếu tenant_key để xác thực token",
+            }
+
         try:
-            from services.auth.tenant_token_manager import tenant_token_manager
-            eff_tenant = self._resolve_msg_tenant(tenant_key)
-            
-            if not eff_tenant:
-                logger.warning("[LARK_IM] missing_tenant_key action=prepare_user_msg")
-                return None, None, {
-                    "success": False,
-                    "error": "missing_tenant_key",
-                    "msg": "Thiếu tenant_key để xác thực token",
-                }
-            
             valid_token = await tenant_token_manager.get_token(
                 tenant_key=eff_tenant,
-                token_type="user"
+                token_type="user",
             )
-            
             if not valid_token:
-                logger.warning("[LARK_IM] user_token_invalid tenant=%s", eff_tenant)
+                logger.warning("[LARK_IM] user_token_missing tenant=%s", eff_tenant)
                 return None, None, {
                     "success": False,
-                    "error": "token_expired",
-                    "msg": "User Access Token không hợp lệ hoặc đã hết hạn",
+                    "error": "user_token_missing",
+                    "error_code": "user_token_missing",
+                    "tenant_key": eff_tenant,
+                    "msg": "Thiếu hoặc không lấy được User Access Token cho doanh nghiệp.",
                 }
             logger.debug("[LARK_IM] user_token_ready tenant=%s", eff_tenant)
+        except UserTokenMissing as e:
+            logger.warning("[LARK_IM] user_token_missing tenant=%s", eff_tenant)
+            return None, None, {
+                "success": False,
+                "error": "user_token_missing",
+                "error_code": "user_token_missing",
+                "tenant_key": eff_tenant,
+                "msg": str(e),
+            }
+        except (TenantContextMissing, TenantResolutionError, TokenUnavailable) as e:
+            err_code = getattr(e, "error_code", None) or "token_unavailable"
+            logger.error("[LARK_IM] user_token_error tenant=%s code=%s error=%s", eff_tenant, err_code, e)
+            return None, None, {
+                "success": False,
+                "error": err_code,
+                "error_code": err_code,
+                "tenant_key": eff_tenant,
+                "msg": str(e),
+            }
         except Exception as e:
-            logger.error("[LARK_IM] user_token_error tenant=%s error=%s", eff_tenant or "-", e)
-            return None, None, {"success": False, "error": str(e)}
+            logger.error("[LARK_IM] user_token_error tenant=%s error=%s", eff_tenant, e)
+            return None, None, {
+                "success": False,
+                "error": str(e),
+                "error_code": "token_unavailable",
+                "tenant_key": eff_tenant,
+            }
 
-        # Cập nhật RAM instance và trực tiếp tạo RequestOption từ valid_token
-        self.user_access_token = valid_token
-        opt_builder = lark.RequestOption.builder().user_access_token(valid_token)
-        eff_tenant = self._resolve_msg_tenant(tenant_key)
-        if eff_tenant:
-            opt_builder.tenant_key(eff_tenant)
-        opt = opt_builder.build()
-
+        opt = (
+            lark.RequestOption.builder()
+            .user_access_token(valid_token)
+            .tenant_key(eff_tenant)
+            .build()
+        )
         content_json = json.dumps({"text": text}, ensure_ascii=False)
         return opt, content_json, None
 
@@ -371,11 +431,15 @@ class LarkMessengerMixin:
         """Xử lý response từ Lark IM, ghi nhận cache message_id chống loop và log lỗi."""
         if not response.success():
             logger.error("[LARK_IM] request_failed action=%s code=%s msg=%s", action_desc, response.code, response.msg)
-            return {
+            err_res: Dict[str, Any] = {
                 "success": False,
                 "code": response.code,
-                "msg": f"Lỗi {action_desc} nhân danh User: {response.msg}",
+                "msg": f"Lỗi {action_desc}: {response.msg}",
             }
+            if response.code in (99991663, 99991668, 99991677, 20005, 99991665):
+                err_res["error"] = "token_expired"
+                err_res["error_code"] = "token_expired"
+            return err_res
 
         # Ghi nhận message_id vừa gửi để tránh loop tự trả lời chính mình (có TTL & Bounded Cache)
         resp_data = getattr(response, "data", None)
@@ -387,7 +451,7 @@ class LarkMessengerMixin:
         return {"success": True, "data": resp_data}
 
     # -------------------------------------------------------------------------
-    # REPLY TIN NHẮN (ASYNC & SYNC)
+    # REPLY TIN NHẮN (ASYNC & SYNC — FAIL-CLOSED KHI AS_USER=TRUE)
     # -------------------------------------------------------------------------
 
     async def areply_text(
@@ -397,16 +461,18 @@ class LarkMessengerMixin:
         as_user: bool = True,
         tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Reply tin nhắn async (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
+        """Reply tin nhắn async. Khi as_user=True sẽ fail-closed nếu thiếu/hết hạn User Token."""
         if as_user:
-            # ✅ GỌI ASYNC VERSION VỚI AUTO-REFRESH
             opt, content_json, err = await self._prepare_user_msg_payload_async(
                 message_id, text, "message_id", tenant_key=tenant_key
             )
             if err:
-                logger.info("[LARK_IM] reply_fallback_bot msg=%s reason=%s", message_id, err.get("error") or err.get("msg"))
-                opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
-                content_json = json.dumps({"text": text}, ensure_ascii=False)
+                logger.warning(
+                    "[LARK_IM] reply_aborted_fail_closed msg=%s reason=%s",
+                    message_id,
+                    err.get("error") or err.get("msg"),
+                )
+                return err
         else:
             opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -419,7 +485,6 @@ class LarkMessengerMixin:
         )
         try:
             response = await self.client.im.v1.message.areply(request, option=opt)
-            # ✅ HANDLE BOT NOT IN CHAT ERROR
             if not response.success():
                 if response.code == 230002:  # Bot/User can NOT be out of the chat
                     logger.warning("[LARK_IM] reply_skipped msg=%s code=230002 reason=bot_not_in_chat", message_id)
@@ -436,13 +501,18 @@ class LarkMessengerMixin:
         as_user: bool = True,
         tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Reply một tin nhắn văn bản đồng bộ (hỗ trợ as_user=False bằng Bot kèm tenant_key)."""
+        """Reply một tin nhắn văn bản đồng bộ (fail-closed khi as_user=True nếu thiếu/hết hạn User Token)."""
         if as_user:
-            opt, content_json, err = self._prepare_user_msg_payload(message_id, text, "message_id")
+            opt, content_json, err = self._prepare_user_msg_payload(
+                message_id, text, "message_id", tenant_key=tenant_key
+            )
             if err:
-                logger.info("[LARK_IM] reply_sync_fallback_bot msg=%s reason=%s", message_id, err.get("error") or err.get("msg"))
-                opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
-                content_json = json.dumps({"text": text}, ensure_ascii=False)
+                logger.warning(
+                    "[LARK_IM] reply_sync_aborted_fail_closed msg=%s reason=%s",
+                    message_id,
+                    err.get("error") or err.get("msg"),
+                )
+                return err
         else:
             opt = self._get_request_option(as_user=False, tenant_key=tenant_key)
             content_json = json.dumps({"text": text}, ensure_ascii=False)
@@ -507,7 +577,9 @@ class LarkMessengerMixin:
     ) -> Dict[str, Any]:
         """Gửi tin nhắn mới đồng bộ (mặc định as_user=True bằng User Access Token, hoặc as_user=False bằng Bot kèm tenant_key)."""
         if as_user:
-            opt, content_json, err = self._prepare_user_msg_payload(receive_id, text, "receive_id")
+            opt, content_json, err = self._prepare_user_msg_payload(
+                receive_id, text, "receive_id", tenant_key=tenant_key
+            )
             if err:
                 return err
         else:
@@ -572,14 +644,20 @@ class LarkMessengerMixin:
                     return builder.build()
             except Exception as e:
                 logger.debug("[LARK_IM] recall_user_token_failed tenant=%s error=%s", eff_tenant or "-", e)
-            if self.user_access_token:
-                return self._get_request_option(as_user=True, tenant_key=eff_tenant)
             return None
 
         bot_opt = self._get_request_option(as_user=False, tenant_key=eff_tenant)
 
         if as_user is True:
             opt = await _get_fresh_user_opt()
+            if opt is None:
+                return {
+                    "success": False,
+                    "error": "user_token_missing",
+                    "error_code": "user_token_missing",
+                    "tenant_key": eff_tenant,
+                    "msg": "Thiếu User Access Token để thu hồi tin nhắn nhân danh User.",
+                }
             try:
                 response = await _do_delete(opt)
                 return self._handle_im_response(response, f"thu hồi tin nhắn {message_id}")
@@ -619,26 +697,32 @@ class LarkMessengerMixin:
         self,
         message_id: str,
         as_user: Optional[bool] = None,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Thu hồi (Delete/Recall) tin nhắn trên Lark (sync)."""
         import asyncio
         try:
             loop = asyncio.get_running_loop()
-            return loop.create_task(self.arecall_message(message_id, as_user=as_user))
+            return loop.create_task(self.arecall_message(message_id, as_user=as_user, tenant_key=tenant_key))
         except RuntimeError:
-            return asyncio.run(self.arecall_message(message_id, as_user=as_user))
+            return asyncio.run(self.arecall_message(message_id, as_user=as_user, tenant_key=tenant_key))
 
     # -------------------------------------------------------------------------
-    # ĐỌC TIN NHẮN TRÊN DANH NGHĨA USER (READ MESSAGES AS USER)
+    # ĐỌC TIN NHẮN (MẶC ĐỊNH BOT TENANT TOKEN)
     # -------------------------------------------------------------------------
 
-    def get_message(self, message_id: str, as_user: bool = True) -> Dict[str, Any]:
-        """Đọc chi tiết 1 tin nhắn theo message_id."""
+    def get_message(
+        self,
+        message_id: str,
+        as_user: bool = False,
+        tenant_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Đọc chi tiết 1 tin nhắn theo message_id (mặc định dùng Bot Token)."""
         if not message_id:
             return {"error": "message_id không được rỗng"}
 
         req = GetMessageRequest.builder().message_id(message_id).build()
-        opt = self._get_request_option(as_user=as_user)
+        opt = self._get_request_option(as_user=as_user, tenant_key=tenant_key)
         try:
             resp = self.client.im.v1.message.get(req, option=opt)
             if not resp.success():
@@ -652,10 +736,11 @@ class LarkMessengerMixin:
         chat_id: str,
         page_size: int = 20,
         page_token: Optional[str] = None,
-        as_user: bool = True,
+        as_user: bool = False,
+        tenant_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Đọc danh sách tin nhắn trong một cuộc trò chuyện (Chat) trên danh nghĩa User.
+        Đọc danh sách tin nhắn trong một cuộc trò chuyện (mặc định dùng Bot Token).
         """
         if not chat_id:
             return {"error": "chat_id không được rỗng"}
@@ -669,7 +754,7 @@ class LarkMessengerMixin:
         if page_token:
             builder.page_token(page_token)
 
-        opt = self._get_request_option(as_user=as_user)
+        opt = self._get_request_option(as_user=as_user, tenant_key=tenant_key)
         try:
             resp = self.client.im.v1.message.list(builder.build(), option=opt)
             if not resp.success():
@@ -852,23 +937,7 @@ class LarkMessengerMixin:
                 status_code=403,
             )
 
-        # 1.5. Xử lý sự kiện app_ticket (Lark Marketplace ISV Token Lifecycle - EDL-0020)
-        if isinstance(payload, dict):
-            event_type = payload.get("header", {}).get("event_type") or payload.get("type")
-            if event_type == "app_ticket" or "app_ticket" in payload.get("event", {}):
-                try:
-                    from services.auth.isv_token_service import isv_token_service
-                    handled = await isv_token_service.handle_app_ticket_event(payload)
-                    if handled:
-                        return Response(
-                            content=json.dumps({"code": 0, "msg": "success"}),
-                            media_type="application/json",
-                            status_code=200,
-                        )
-                except Exception as ex:
-                    logger.error("[WEBHOOK] app_ticket_failed error=%s", ex)
-
-        # 1.6. Xử lý sự kiện Tenant Lifecycle (app_status_change / app_uninstalled / open_app - EDL-0020)
+        # 1.5. Xử lý sự kiện Tenant Lifecycle (app_status_change / app_uninstalled / open_app)
         if isinstance(payload, dict):
             event_type = payload.get("header", {}).get("event_type") or payload.get("type")
             if event_type in ("app_status_change", "app_uninstalled", "open_app"):
@@ -897,15 +966,24 @@ class LarkMessengerMixin:
             open_id, message_id, action_val = parse_card_action_payload(payload)
 
             # Card callback chuẩn đôi khi không có header.app_id hoặc tenant_key bị rỗng.
-            # Tự động truy vấn tenant_key từ admin_open_id nếu cần.
+            # Tự động truy vấn fail-closed tenant_key từ admin_open_id nếu cần.
             card_tenant = action_val.get("tenant_key")
             if not card_tenant and open_id:
                 try:
-                    from database.db import get_tenants_collection
-                    t_col = get_tenants_collection()
-                    found_t = await t_col.find_one({"admin_open_id": open_id})
-                    if found_t and found_t.get("tenant_key"):
-                        card_tenant = found_t["tenant_key"]
+                    from database.db import get_tenants_collection, resolve_tenant_by_admin_open_id
+
+                    eff_app_id = (
+                        inbound_app_id
+                        or (app_record or {}).get("app_id")
+                        or action_val.get("app_id")
+                    )
+                    resolved_card_tenant = await resolve_tenant_by_admin_open_id(
+                        open_id,
+                        app_id=eff_app_id,
+                        tenants_collection=get_tenants_collection(),
+                    )
+                    if resolved_card_tenant:
+                        card_tenant = resolved_card_tenant
                         action_val["tenant_key"] = card_tenant
                 except Exception:
                     pass

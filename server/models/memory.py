@@ -72,7 +72,7 @@ class Entity(BaseModel):
     chat_id: Optional[str] = Field(default=None, description="Lark chat_id nơi thực thể được khởi tạo/đề cập")
     project_tag: Optional[str] = Field(default=None, description="Tên/Mã dự án liên kết")
     scope_type: str = Field(default="chat", description="'chat' (nội bộ nhóm), 'project' (dự án), 'global' (toàn công ty)")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Custom App Multi-Tenant)")
     source_message_ids: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)
@@ -117,7 +117,7 @@ class Fact(BaseModel):
         description="Người khẳng định fact và thẩm quyền phát ngôn ('owner' vs 'member')"
     )
     source: Union[str, Dict[str, Any]] = Field(default="")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Custom App Multi-Tenant)")
     replaces: Optional[str] = Field(default=None, description="ID of old fact this one replaces")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)

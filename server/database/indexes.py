@@ -105,6 +105,14 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
         settings.MONGO_AUTH_COLLECTION: [
             IndexModel([("open_id", ASCENDING)], name="idx_auth_open_id"),
             IndexModel([("status", ASCENDING)], name="idx_auth_status"),
+            IndexModel(
+                [("app_id", ASCENDING), ("tenant_key", ASCENDING), ("open_id", ASCENDING)],
+                name="idx_auth_app_tenant_open_id",
+            ),
+            IndexModel(
+                [("tenant_key", ASCENDING), ("updated_at", DESCENDING)],
+                name="idx_auth_tenant_updated_at",
+            ),
         ],
 
         # 9. COST TELEMETRY (Đo lường chi phí LLM & JEV)
@@ -132,16 +140,10 @@ def get_index_specifications() -> Dict[str, List[IndexModel]]:
             IndexModel([("tenant_key", ASCENDING)], name="idx_system_config_tenant"),
         ],
 
-        # 12. TENANTS (Danh sách Doanh nghiệp Multi-Tenant ISV - EDL-0020)
+        # 12. TENANTS (Danh sách Doanh nghiệp Custom App Multi-Tenant)
         getattr(settings, "MONGO_TENANTS_COLLECTION", "tenants"): [
             IndexModel([("tenant_key", ASCENDING)], unique=True, name="idx_tenants_key_unique"),
             IndexModel([("created_at", DESCENDING)], name="idx_tenants_created_at"),
-        ],
-
-        # 13. ISV AUTH (Vé app_ticket & Tenant Token Cache - EDL-0020)
-        getattr(settings, "MONGO_ISV_AUTH_COLLECTION", "isv_auth"): [
-            IndexModel([("tenant_key", ASCENDING)], sparse=True, name="idx_isv_auth_tenant_key"),
-            IndexModel([("updated_at", DESCENDING)], name="idx_isv_auth_updated_at"),
         ],
 
         # One-click setup sessions phải tra cứu được sau restart/scale-out.

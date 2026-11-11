@@ -42,8 +42,56 @@ from services.tenancy.tenant_resolver import tenant_resolver
 logger = logging.getLogger("hilark.token_service")
 logger.setLevel(logging.INFO)
 
-PRIMARY_TOKEN_DOC_ID = "primary_user_token"
 VIETNAM_TZ = timezone(timedelta(hours=7))
+
+
+def mask_token_preview(raw_token: Any) -> str:
+    """Che giấu giá trị token nguyên văn khi hiển thị ra UI / status."""
+    tok = str(raw_token or "").strip()
+    if not tok:
+        return ""
+    if len(tok) > 12:
+        return f"{tok[:6]}...{tok[-4:]}"
+    return "***"
+
+
+def _encrypt_auth_secret(raw_value: Any) -> str:
+    """Mã hóa AES-256 Fernet cho token lưu vào `lark_auth`; rỗng giữ nguyên rỗng."""
+    val = str(raw_value or "").strip()
+    if not val:
+        return ""
+    from services.ai.ai_config_manager import ai_config_manager
+
+    if val.startswith("gAAAAA") and ai_config_manager.decrypt_key(val):
+        return val
+    return ai_config_manager.encrypt_key(val)
+
+
+def _decrypt_auth_secret(stored_value: Any, *, encrypted_flag: bool = False) -> str:
+    """Giải mã dual-read: hỗ trợ cả bản ghi đã mã hóa Fernet lẫn bản ghi plaintext legacy."""
+    val = str(stored_value or "").strip()
+    if not val:
+        return ""
+    if encrypted_flag or val.startswith("gAAAAA"):
+        from services.ai.ai_config_manager import ai_config_manager
+
+        return ai_config_manager.decrypt_key(val)
+    return val
+
+
+async def _find_one_sorted(
+    col: Any,
+    query: Dict[str, Any],
+    *,
+    sort: Optional[list] = None,
+) -> Optional[Dict[str, Any]]:
+    """Thực thi `find_one` kèm `sort`, fallback an toàn với collection mock không nhận `sort`."""
+    if not sort:
+        return await col.find_one(query)
+    try:
+        return await col.find_one(query, sort=sort)
+    except TypeError:
+        return await col.find_one(query)
 
 
 def format_remaining_seconds(seconds: Optional[float]) -> str:
@@ -78,11 +126,17 @@ class LarkTokenService:
     """Service điều phối toàn bộ vòng đời Token OAuth của Lark."""
 
     def __init__(self):
-        self._lock = asyncio.Lock()
-        self._cached_token_data: Optional[Dict[str, Any]] = None
-        # Cache app_access_token theo app_id: không còn biến `_app_access_token` duy nhất
-        # cho cả process, vì một slot toàn cục sẽ phát token của App A cho yêu cầu của App B.
-        self._app_access_tokens: Dict[str, Tuple[str, float]] = {}
+        # Lock xoay vòng Single-Use Refresh Token tạo lười TRÊN core.token_loop theo cặp (app_id, tenant_key)
+        self._refresh_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
+
+    def _get_refresh_lock(self, app_id: Optional[str], tenant_key: Optional[str]) -> asyncio.Lock:
+        """Lấy lock riêng cho cặp `(app_id, tenant_key)` trên `core.token_loop`."""
+        key = (str(app_id or "").strip(), str(tenant_key or "").strip())
+        lock = self._refresh_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._refresh_locks[key] = lock
+        return lock
 
     def _get_auth_col(self):
         """Lấy auth collection từ MongoDB, hỗ trợ mock từ services.auth_service hoặc services.token_service nếu test patch vào đó."""
@@ -127,53 +181,56 @@ class LarkTokenService:
         tenant_key: Optional[str] = None,
     ) -> str:
         """
-        Lấy app_access_token của một App (cache in-memory theo app_id).
-
-        Trước đây khi thiếu `app_secret`, hàm này đi mượn secret của App khác (`resolved_secret`)
-        và vẫn giữ nguyên `app_id` — tạo ra cặp lai ID của App A + mật khẩu của App B, Lark
-        trả 10014. Nay `app_id` và `app_secret` luôn lấy từ CÙNG MỘT document credential.
+        Điều phối `app_access_token` thống nhất (Custom App Multi-Tenant):
+          - Khi tenant đã liên kết DB (`tenant_key` thực, không phải `pending:...`): đi qua `token_broker.get(tenant_key, "app")`.
+          - Chỉ khi setup/exchange trước lúc `link_tenant` truyền tường minh `(app_id, app_secret)`:
+            gọi stateless endpoint Custom App `/internal` không cache riêng.
         """
-        now = time.time()
+        eff_tenant = str(tenant_key or "").strip()
+        is_pending = eff_tenant.startswith("pending:")
+        has_explicit_pair = bool(app_id and app_secret)
 
-        if not app_id or not app_secret:
-            if not tenant_key:
+        if eff_tenant and not is_pending and not has_explicit_pair:
+            from services.auth.tenant_token_manager import token_broker
+
+            return await token_broker.get(
+                eff_tenant,
+                "app",
+                force_refresh=force_refresh,
+                app_id=app_id,
+            )
+
+        if eff_tenant and not is_pending and has_explicit_pair:
+            from services.auth.tenant_token_manager import token_broker
+
+            try:
+                return await token_broker.get(
+                    eff_tenant,
+                    "app",
+                    force_refresh=force_refresh,
+                    app_id=app_id,
+                )
+            except (TenantConfigIncomplete, TenantNotFound):
+                # Chưa link tenant vào DB (hoặc unit test truyền trực tiếp cặp app_id/app_secret)
+                pass
+
+        if not has_explicit_pair:
+            if not eff_tenant or is_pending:
                 raise TenantContextMissing(
-                    "get_app_access_token() cần (app_id + app_secret) hoặc tenant_key "
-                    "để tra credential của đúng tenant."
+                    "get_app_access_token() cần tenant_key hoặc cặp (app_id + app_secret) tường minh."
                 )
-            creds = await tenant_resolver.resolve_credentials(tenant_key)
-            if app_id and app_id != creds.app_id:
-                raise TokenUnavailable(
-                    f"App '{app_id}' không phải App đã đăng ký của tenant '{tenant_key}'.",
-                    tenant_key=tenant_key,
-                    kind="app",
-                )
-            app_id, app_secret = creds.app_id, creds.app_secret
-        elif not tenant_key:
-            tenant_key = get_current_tenant_key()
-
-        if not app_id or not app_secret:
-            raise TenantConfigIncomplete(tenant_key or "?", ["app_credentials"])
-
-        cache_key = app_id
-        if not force_refresh:
-            cached = self._app_access_tokens.get(cache_key)
-            if cached and now < cached[1] - 120:
-                return cached[0]
+            raise TenantConfigIncomplete(eff_tenant, ["app_credentials"])
 
         url = f"{settings.LARK_DOMAIN}/open-apis/auth/v3/app_access_token/internal"
         async with self._get_client_session() as client:
             resp = await client.post(url, json={"app_id": app_id, "app_secret": app_secret}, timeout=10.0)
             data = resp.json()
             if data.get("code") == 0 and data.get("app_access_token"):
-                new_token = data.get("app_access_token")
-                expire_sec = data.get("expire", 7200)
-                self._app_access_tokens[cache_key] = (new_token, now + expire_sec)
-                return new_token
+                return str(data.get("app_access_token"))
             raise TokenUnavailable(
                 f"Lỗi khi lấy app_access_token từ Lark: code={data.get('code')}, "
                 f"msg={data.get('msg') or data.get('message')}",
-                tenant_key=tenant_key,
+                tenant_key=eff_tenant or None,
                 kind="app",
                 lark_code=data.get("code") if isinstance(data.get("code"), int) else None,
             )
@@ -311,14 +368,15 @@ class LarkTokenService:
                 tenant_key or "?", ["oauth_user_open_id", "oauth_tenant_key"]
             )
 
-        # Đóng gói document lưu vào MongoDB. Không còn ghi vào `_id="primary_user_token"`
-        # vì document đó là danh tính dùng chung, khiến mọi tenant đọc nhầm token của nhau.
+        # Đóng gói document lưu vào MongoDB (mã hóa AES-256 Fernet tại nghỉ).
+        # Không còn ghi vào `_id="primary_user_token"` vì document đó là danh tính dùng chung.
         token_doc_id = f"lark_app:{app_id}:user:{tenant_key}:{open_id}"
         doc = {
             "_id": token_doc_id,
             "app_id": app_id or "",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "access_token": _encrypt_auth_secret(access_token),
+            "refresh_token": _encrypt_auth_secret(refresh_token),
+            "token_encrypted": True,
             "expires_in": expires_in,
             "refresh_expires_in": refresh_expires_in,
             "expires_at": expires_at,
@@ -332,7 +390,7 @@ class LarkTokenService:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Lưu nguyên tử vào MongoDB
+        # Lưu nguyên tử vào MongoDB theo (app_id, tenant_key, open_id)
         col = self._get_auth_col()
         await col.update_one(
             {"_id": token_doc_id},
@@ -340,11 +398,12 @@ class LarkTokenService:
             upsert=True,
         )
 
-        # Cập nhật cache in-memory chỉ dành cho đường legacy không tenant.
-        # Token đã gắn tenant/app không được nạp vào cache global dùng chung.
-        if token_doc_id == PRIMARY_TOKEN_DOC_ID:
-            self._cached_token_data = doc
-            self._sync_to_lark_client(access_token, open_id, user_name)
+        # Vô hiệu hoá cache "user" trên token_broker cho tenant vừa OAuth lại
+        try:
+            from services.auth.tenant_token_manager import token_broker
+            token_broker._drop_entries(tenant_key, "user")
+        except Exception:
+            pass
 
         logger.info(
             "[OAUTH] token_saved open_id=%s tenant=%s expires_in_s=%d refresh_expires_in_s=%d",
@@ -380,13 +439,49 @@ class LarkTokenService:
     ) -> Dict[str, Any]:
         """
         Gọi API Lark để đổi refresh_token lấy cặp (access_token, refresh_token) MỚI.
-        Áp dụng Single-Use Token Rotation: Ghi đè ngay refresh_token mới vào MongoDB.
+        Chạy 100% trên `core.token_loop` với lock riêng theo cặp `(app_id, tenant_key)`.
         """
-        async with self._lock:
+        from core import token_loop
+
+        eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() if tenant_key is None else None)
+        eff_app = (app_id or "").strip() or None
+        if not eff_tenant and not eff_app:
+            raise TenantContextMissing("refresh_user_token() yêu cầu tenant_key hoặc app_id.")
+
+        return await token_loop.asubmit(
+            self._refresh_user_token_on_loop(
+                force=force,
+                tenant_key=eff_tenant,
+                app_id=eff_app,
+                app_secret=app_secret,
+            )
+        )
+
+    async def _refresh_user_token_on_loop(
+        self,
+        *,
+        force: bool = False,
+        tenant_key: Optional[str] = None,
+        app_id: Optional[str] = None,
+        app_secret: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not tenant_key and not app_id:
+            raise TenantContextMissing("refresh_user_token() yêu cầu tenant_key hoặc app_id.")
+        lock_app_id = app_id
+        lock_tenant = tenant_key
+        if lock_tenant and not lock_app_id:
+            try:
+                creds = await tenant_resolver.resolve_credentials(lock_tenant)
+                lock_app_id = creds.app_id
+            except TenantResolutionError:
+                pass
+
+        async with self._get_refresh_lock(lock_app_id, lock_tenant):
             stored_data = await self.get_stored_token_data(tenant_key=tenant_key, app_id=app_id)
-            if not stored_data or not stored_data.get("refresh_token"):
+            if not stored_data or not stored_data.get("refresh_token") or not stored_data.get("_id"):
                 raise ValueError("Không tìm thấy refresh_token hợp lệ trong MongoDB để làm mới! Vui lòng cấp quyền qua /auth/lark/login trước.")
 
+            doc_id = stored_data["_id"]
             current_refresh_token = stored_data["refresh_token"]
             now = time.time()
 
@@ -395,17 +490,28 @@ class LarkTokenService:
                 logger.debug("[TOKEN_SERVICE] refresh_skipped reason=still_valid")
                 return {"success": True, "action": "skipped", "access_token": stored_data["access_token"]}
 
+            effective_tenant = tenant_key or stored_data.get("tenant_key")
             effective_app_id = app_id or stored_data.get("app_id")
-            if not app_secret and effective_app_id:
+            if not app_secret and effective_tenant:
+                try:
+                    creds = await tenant_resolver.resolve_credentials(effective_tenant)
+                    if not effective_app_id or effective_app_id == creds.app_id:
+                        effective_app_id = creds.app_id
+                        app_secret = creds.app_secret
+                except TenantResolutionError:
+                    pass
+            if not app_secret and effective_app_id and not effective_tenant:
                 try:
                     from services.lark_app_service import lark_app_service
                     app_record = await lark_app_service.get_by_app_id(effective_app_id)
                     app_secret = app_record.get("app_secret") if app_record else None
                 except Exception as exc:
                     logger.warning("[TOKEN_SERVICE] app_secret_lookup_failed app=%s error=%s", effective_app_id, exc)
+
             app_token = await self.get_app_access_token(
                 app_id=effective_app_id,
                 app_secret=app_secret,
+                tenant_key=effective_tenant,
             )
             url = f"{settings.LARK_DOMAIN}/open-apis/authen/v1/oidc/refresh_access_token"
             headers = {
@@ -429,7 +535,7 @@ class LarkTokenService:
                     try:
                         col = self._get_auth_col()
                         await col.update_one(
-                            {"_id": stored_data.get("_id", PRIMARY_TOKEN_DOC_ID)},
+                            {"_id": doc_id},
                             {"$set": {
                                 "status": "invalid_refresh_token",
                                 "invalid_reason": err_msg,
@@ -451,8 +557,9 @@ class LarkTokenService:
             refresh_expires_at = now + refresh_expires_in
 
             update_fields = {
-                "access_token": new_access_token,
-                "refresh_token": new_refresh_token,
+                "access_token": _encrypt_auth_secret(new_access_token),
+                "refresh_token": _encrypt_auth_secret(new_refresh_token),
+                "token_encrypted": True,
                 "expires_in": expires_in,
                 "refresh_expires_in": refresh_expires_in,
                 "expires_at": expires_at,
@@ -462,24 +569,18 @@ class LarkTokenService:
 
             col = self._get_auth_col()
             await col.update_one(
-                {"_id": stored_data.get("_id", PRIMARY_TOKEN_DOC_ID)},
+                {"_id": doc_id},
                 {"$set": update_fields},
             )
 
-            # Cập nhật cache in-memory
-            stored_data.update(update_fields)
-            if stored_data.get("_id", PRIMARY_TOKEN_DOC_ID) == PRIMARY_TOKEN_DOC_ID:
-                self._cached_token_data = stored_data
-                self._sync_to_lark_client(
-                    new_access_token,
-                    stored_data.get("open_id", ""),
-                    stored_data.get("user_name", "User"),
-                )
+            if effective_tenant:
+                from services.auth.tenant_token_manager import token_broker
+                token_broker._drop_entries(effective_tenant, "user")
 
             logger.info(
                 "[TOKEN_SERVICE] token_rotated app=%s tenant=%s expires_in_s=%d refresh_expires_in_s=%d",
                 effective_app_id,
-                stored_data.get("tenant_key") or tenant_key,
+                effective_tenant,
                 expires_in,
                 refresh_expires_in,
             )
@@ -569,58 +670,102 @@ class LarkTokenService:
         tenant_key: Optional[str] = None,
         app_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Lấy token theo App + tenant; không dùng cache global cho tenant-scoped token."""
-        if not tenant_key and not app_id and self._cached_token_data:
-            return self._cached_token_data
+        """Lấy token theo (app_id, tenant_key); từ chối gọi thiếu ngữ cảnh tenant/app."""
+        eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() if tenant_key is None else None)
+        eff_app_arg = (app_id or "").strip() or None
+        if not eff_tenant and not eff_app_arg:
+            raise TenantContextMissing("get_stored_token_data() yêu cầu tenant_key hoặc app_id.")
+
         col = self._get_auth_col()
 
-        effective_app_id = app_id
-        if tenant_key:
+        effective_app_id = eff_app_arg
+        if eff_tenant:
             try:
                 from services.lark_app_service import lark_app_service
-                app_record = await lark_app_service.get_by_tenant_key(tenant_key)
+                app_record = await lark_app_service.get_by_tenant_key(eff_tenant)
                 if app_record and app_record.get("app_id"):
                     if not effective_app_id or effective_app_id == getattr(settings, "LARK_APP_ID", ""):
                         effective_app_id = app_record["app_id"]
             except Exception as e:
-                logger.debug("[TOKEN_SERVICE] resolve_app_id_failed tenant=%s error=%s", tenant_key, e)
+                logger.debug("[TOKEN_SERVICE] resolve_app_id_failed tenant=%s error=%s", eff_tenant, e)
 
         query: Dict[str, Any]
-        if effective_app_id and tenant_key:
-            query = {"app_id": effective_app_id, "tenant_key": tenant_key}
+        if effective_app_id and eff_tenant:
+            query = {"app_id": effective_app_id, "tenant_key": eff_tenant}
         elif effective_app_id:
             query = {"app_id": effective_app_id}
-        elif tenant_key:
-            query = {"tenant_key": tenant_key}
         else:
-            query = {"_id": PRIMARY_TOKEN_DOC_ID}
+            query = {"tenant_key": eff_tenant}
 
-        doc = None
-        if tenant_key or effective_app_id:
-            # Ưu tiên 1: Lấy bản ghi hợp lệ (không bị invalid_refresh_token), mới nhất
+        admin_open_id: Optional[str] = None
+        if eff_tenant:
+            try:
+                from database.db import get_tenants_collection
+
+                tdoc = await get_tenants_collection().find_one({"tenant_key": eff_tenant})
+                raw_admin = str((tdoc or {}).get("admin_open_id") or "").strip() if isinstance(tdoc, dict) else ""
+                if raw_admin and raw_admin not in ("ou_default_admin", "ou_admin_fallback"):
+                    admin_open_id = raw_admin
+            except Exception as exc:
+                logger.debug("[TOKEN_SERVICE] resolve_admin_open_id_failed tenant=%s error=%s", eff_tenant, exc)
+
+        doc: Optional[Dict[str, Any]] = None
+        if admin_open_id:
+            admin_query = dict(query)
+            admin_query["open_id"] = admin_open_id
+            admin_valid_query = dict(admin_query)
+            admin_valid_query["status"] = {"$ne": "invalid_refresh_token"}
+            doc = await _find_one_sorted(col, admin_valid_query, sort=[("updated_at", -1)])
+            if not doc:
+                doc = await _find_one_sorted(col, admin_query, sort=[("updated_at", -1)])
+
+        # Fallback: lấy bản ghi hợp lệ (không bị invalid_refresh_token), mới nhất theo (app_id, tenant_key)
+        if not doc:
             query_valid = dict(query)
             query_valid["status"] = {"$ne": "invalid_refresh_token"}
-            doc = await col.find_one(query_valid, sort=[("updated_at", -1)])
+            doc = await _find_one_sorted(col, query_valid, sort=[("updated_at", -1)])
 
-            # Ưu tiên 2: Nếu không có bản ghi hợp lệ, lấy bản ghi mới nhất theo query ban đầu
-            if not doc:
-                doc = await col.find_one(query, sort=[("updated_at", -1)])
-        else:
-            doc = await col.find_one(query)
+        # Cuối cùng: nếu không có bản ghi hợp lệ, lấy bản ghi mới nhất theo query ban đầu
+        if not doc:
+            doc = await _find_one_sorted(col, query, sort=[("updated_at", -1)])
 
-        if doc and not tenant_key and not effective_app_id:
-            self._cached_token_data = doc
-        return doc
+        if not doc:
+            return None
 
-    async def get_token_status(self) -> Dict[str, Any]:
-        """Trả về toàn bộ trạng thái sống còn của Token dưới định dạng chi tiết."""
-        data = await self.get_stored_token_data()
+        decrypted_doc = dict(doc)
+        encrypted_flag = bool(decrypted_doc.get("token_encrypted"))
+        if "access_token" in decrypted_doc and decrypted_doc["access_token"] is not None:
+            decrypted_doc["access_token"] = _decrypt_auth_secret(
+                decrypted_doc["access_token"],
+                encrypted_flag=encrypted_flag,
+            )
+        if "refresh_token" in decrypted_doc and decrypted_doc["refresh_token"] is not None:
+            decrypted_doc["refresh_token"] = _decrypt_auth_secret(
+                decrypted_doc["refresh_token"],
+                encrypted_flag=encrypted_flag,
+            )
+        return decrypted_doc
+
+    async def get_token_status(
+        self,
+        tenant_key: Optional[str] = None,
+        app_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Trả về trạng thái sống còn của User Token theo đúng tenant/app."""
+        eff_tenant = (tenant_key or "").strip() or (get_current_tenant_key() if tenant_key is None else None)
+        eff_app = (app_id or "").strip() or None
+        if not eff_tenant and not eff_app:
+            raise TenantContextMissing("get_token_status() yêu cầu tenant_key hoặc app_id.")
+
+        data = await self.get_stored_token_data(tenant_key=eff_tenant, app_id=eff_app)
         now = time.time()
         if not data:
             return {
+                "tenant_key": eff_tenant,
+                "app_id": eff_app,
                 "has_token": False,
                 "is_valid": False,
-                "message": "Chưa có token nào được lưu trong MongoDB. Vui lòng truy cập /auth/lark/login để kết nối.",
+                "message": "Chưa có User Access Token cho doanh nghiệp này. Vui lòng kết nối qua /auth/lark/login.",
                 "user_name": None,
                 "open_id": None,
             }
@@ -632,14 +777,19 @@ class LarkTokenService:
 
         is_access_valid = access_remaining > 0
         is_refresh_valid = refresh_remaining > 0
+        raw_access = data.get("access_token") or ""
+        preview = mask_token_preview(raw_access)
 
         return {
+            "tenant_key": data.get("tenant_key") or eff_tenant,
+            "app_id": data.get("app_id") or eff_app,
             "has_token": True,
             "is_valid": is_access_valid,
             "status": "valid" if is_access_valid else ("refreshable" if is_refresh_valid else "expired"),
             "user_name": data.get("user_name"),
             "open_id": data.get("open_id"),
-            "access_token_preview": f"{data.get('access_token', '')[:10]}...{data.get('access_token', '')[-6:]}" if data.get("access_token") else "",
+            "access_token_preview": preview,
+            "token_encrypted": bool(data.get("token_encrypted")),
             "access_token_remaining_sec": int(access_remaining),
             "access_token_remaining": format_remaining_seconds(access_remaining),
             "refresh_token_remaining_sec": int(refresh_remaining),
@@ -654,51 +804,13 @@ class LarkTokenService:
 
     async def init_token_on_startup(self) -> None:
         """
-        Startup: không nạp `primary_user_token` toàn cục vào RAM nữa.
-
-        Bản cũ lấy document legacy `_id="primary_user_token"` rồi nhét vào singleton
-        `lark_service`/`lark_base_service`. Document đó thuộc về MỘT App/tenant, nên khi
-        chạy nhiều doanh nghiệp, tenant B có thể gửi tin bằng danh tính của tenant A.
-        User token bây giờ chỉ được cấp qua broker theo `(tenant_key, app_id, "user")`;
-        việc giữ token còn hạn là trách nhiệm của sweeper.
+        Startup: khởi động `core.token_loop`; không nạp token toàn cục vào RAM.
+        User token được cấp phát qua `token_broker` theo `(tenant_key, app_id, "user")`.
         """
         from core import token_loop
 
         token_loop.get_loop()  # khởi động sớm để lần lấy token đầu tiên không chờ tạo thread
         logger.info("[TOKEN_SERVICE] mode=tenant_broker legacy_preload=disabled")
-
-    def _clear_lark_client_token(self) -> None:
-        """Xóa sạch user token trong Lark client khi token đã chết."""
-        try:
-            from services.lark import lark_service
-            if lark_service:
-                lark_service.user_access_token = ""
-                lark_service._last_token_check = None
-        except Exception:
-            pass
-
-    def _sync_to_lark_client(self, access_token: str, open_id: str, name: str) -> None:
-        """
-        Đồng bộ danh tính người dùng vào `lark_service` (chỉ phục vụ hiển thị/profile).
-
-        `lark_base_service` không còn nhận token ghi thẳng vào field: nó là singleton
-        dùng chung, còn token user luôn gắn với một tenant cụ thể. Bitable lấy token
-        từ broker theo từng request.
-        """
-        try:
-            from services.lark import lark_service
-            if lark_service:
-                lark_service.user_access_token = access_token
-                lark_service._last_token_check = None
-                if open_id:
-                    lark_service.known_user_open_id = open_id
-                if not lark_service._current_user_profile:
-                    lark_service._current_user_profile = {}
-                lark_service._current_user_profile["name"] = name
-                lark_service._current_user_profile["open_id"] = open_id
-            logger.debug("[TOKEN_SERVICE] synced_to_legacy_client open_id=%s", open_id)
-        except Exception as ex:
-            logger.warning("[TOKEN_SERVICE] sync_legacy_client_failed error=%s", ex)
 
     async def _fetch_user_profile(self, access_token: str) -> Dict[str, Any]:
         """Gọi endpoint user_info của Lark để lấy thông tin người dùng."""

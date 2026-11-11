@@ -516,6 +516,7 @@ class DocParserService:
             message_id=message_id,
             file_key=file_key,
             resource_type=resource_type,
+            tenant_key=tenant_key,
         )
 
         if not file_bytes:

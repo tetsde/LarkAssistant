@@ -33,6 +33,7 @@ logger = logging.getLogger("hilark.tenant_state")
 
 PROVISIONING = "provisioning"
 PROVISIONING_FAILED = "provisioning_failed"
+AWAITING_USER_OAUTH = "awaiting_user_oauth"
 READY = "ready"
 ACTIVE = "active"
 INACTIVE = "inactive"
@@ -41,6 +42,7 @@ UNINSTALLED = "uninstalled"
 ALL_STATUSES: Set[str] = {
     PROVISIONING,
     PROVISIONING_FAILED,
+    AWAITING_USER_OAUTH,
     READY,
     ACTIVE,
     INACTIVE,
@@ -48,17 +50,19 @@ ALL_STATUSES: Set[str] = {
 }
 
 ALLOWED_TRANSITIONS: Dict[str, Set[str]] = {
+    AWAITING_USER_OAUTH: {PROVISIONING, INACTIVE, UNINSTALLED},
     PROVISIONING: {READY, PROVISIONING_FAILED, UNINSTALLED},
-    PROVISIONING_FAILED: {PROVISIONING, READY, UNINSTALLED},
+    PROVISIONING_FAILED: {PROVISIONING, READY, UNINSTALLED, AWAITING_USER_OAUTH},
     # ready -> provisioning là luồng "Thử lại/cài lại" của một tenant đã bàn giao.
     READY: {INACTIVE, UNINSTALLED, ACTIVE, PROVISIONING},
-    ACTIVE: {READY, INACTIVE, UNINSTALLED, PROVISIONING},
-    INACTIVE: {READY, ACTIVE, UNINSTALLED, PROVISIONING},
+    ACTIVE: {READY, INACTIVE, UNINSTALLED, PROVISIONING, AWAITING_USER_OAUTH},
+    INACTIVE: {READY, ACTIVE, UNINSTALLED, PROVISIONING, AWAITING_USER_OAUTH},
     # Uninstalled vẫn cho phép install lại để một tenant cũ có thể quay lại hệ thống.
-    UNINSTALLED: {PROVISIONING, ACTIVE},
+    UNINSTALLED: {AWAITING_USER_OAUTH, PROVISIONING, ACTIVE},
 }
 
 # Trạng thái được phục vụ dữ liệu thật (resolver chỉ cho qua status này).
+# AWAITING_USER_OAUTH cố ý KHÔNG nằm trong SERVING_STATUSES.
 SERVING_STATUSES: Set[str] = {READY}
 
 
@@ -188,6 +192,14 @@ class TenantStateService:
     async def mark_provisioning(self, tenant_key: str, **extra_fields: Any) -> Dict[str, Any]:
         return await self.transition(tenant_key, PROVISIONING, **extra_fields)
 
+    async def mark_awaiting_user_oauth(self, tenant_key: str, **extra_fields: Any) -> Dict[str, Any]:
+        """Cổng Onboarding Gate: tạm dừng chờ Admin ủy quyền User OAuth trước khi provision."""
+        return await self.transition(tenant_key, AWAITING_USER_OAUTH, **extra_fields)
+
+    async def mark_awaiting_oauth(self, tenant_key: str, **extra_fields: Any) -> Dict[str, Any]:
+        """Alias cho `mark_awaiting_user_oauth`."""
+        return await self.mark_awaiting_user_oauth(tenant_key, **extra_fields)
+
     async def mark_provisioning_failed(self, tenant_key: str, error: str, **extra_fields: Any) -> Dict[str, Any]:
         """
         Setup thất bại: ghi `provisioning_failed` + lý do để UI hiện nút "Thử lại".
@@ -262,6 +274,7 @@ __all__ = [
     "InvalidTenantTransition",
     "TenantStateService",
     "tenant_state",
+    "AWAITING_USER_OAUTH",
     "PROVISIONING",
     "PROVISIONING_FAILED",
     "READY",

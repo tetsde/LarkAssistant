@@ -17,6 +17,7 @@ Chịu trách nhiệm toàn bộ logic nghiệp vụ hội thoại:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import sys
 import uuid
@@ -70,7 +71,11 @@ def _get_lark_service():
 GLOBAL_LLM_SEMAPHORE = asyncio.Semaphore(getattr(settings, "MAX_CONCURRENT_CHAT_PIPELINES", 3))
 
 
-def _sync_runtime_admin_open_id(open_id: str, lark_svc: Any = None) -> None:
+def _sync_runtime_admin_open_id(
+    open_id: str,
+    lark_svc: Any = None,
+    tenant_key: Optional[str] = None,
+) -> None:
     """
     Đồng bộ open_id vừa tìm được vào runtime service của ĐÚNG tenant.
 
@@ -81,11 +86,54 @@ def _sync_runtime_admin_open_id(open_id: str, lark_svc: Any = None) -> None:
         return
     if lark_svc:
         try:
-            lark_svc.known_user_open_id = open_id
-            if hasattr(lark_svc, "config") and lark_svc.config:
-                lark_svc.config.user_open_id = open_id
+            eff_tk = tenant_key.strip() if isinstance(tenant_key, str) and tenant_key.strip() else None
+            if eff_tk and hasattr(lark_svc, "register_tenant_admin"):
+                lark_svc.register_tenant_admin(eff_tk, open_id)
+
+            svc_tk = getattr(lark_svc, "tenant_key", None)
+            if not eff_tk or (isinstance(svc_tk, str) and svc_tk.strip() == eff_tk):
+                lark_svc.known_user_open_id = open_id
+                if hasattr(lark_svc, "config") and lark_svc.config:
+                    lark_svc.config.user_open_id = open_id
         except Exception:
             pass
+
+
+def _lark_service_admin_open_id(lark_svc: Any, eff_tenant: Optional[str]) -> Optional[str]:
+    """Lấy admin open_id từ runtime service nếu nó khớp với tenant đang xét."""
+    if not lark_svc:
+        return None
+
+    if eff_tenant:
+        cache = getattr(lark_svc, "_tenant_admin_cache", None)
+        if isinstance(cache, dict):
+            cached = cache.get(eff_tenant)
+            if isinstance(cached, str) and cached.strip():
+                return cached.strip()
+
+        svc_tk = getattr(lark_svc, "tenant_key", None)
+        if isinstance(svc_tk, str) and svc_tk.strip() and svc_tk.strip() != eff_tenant:
+            return None
+
+    owner = getattr(lark_svc, "owner_open_id", None)
+    if isinstance(owner, str) and owner.strip():
+        return owner.strip()
+    known = getattr(lark_svc, "known_user_open_id", None)
+    if isinstance(known, str) and known.strip():
+        return known.strip()
+    if hasattr(lark_svc, "get_current_user"):
+        try:
+            try:
+                curr_user = lark_svc.get_current_user(tenant_key=eff_tenant) if eff_tenant else lark_svc.get_current_user()
+            except TypeError:
+                curr_user = lark_svc.get_current_user()
+            if isinstance(curr_user, dict):
+                u_id = curr_user.get("open_id") or curr_user.get("user_id")
+                if isinstance(u_id, str) and u_id.strip():
+                    return u_id.strip()
+        except Exception:
+            pass
+    return None
 
 
 async def resolve_effective_owner_open_id(
@@ -96,65 +144,32 @@ async def resolve_effective_owner_open_id(
 ) -> str:
     """
     Xác định open_id của lãnh đạo/doanh nghiệp đang xử lý, CHỈ dùng nguồn thuộc về tenant
-    của request (Giai đoạn 2 của kế hoạch Tenant Resolution & Token Fix):
-      1. Runtime App của tenant: user token -> owner_open_id -> known_user_open_id
-      2. `tenants.admin_open_id` của đúng tenant_key
-      3. `user_settings` có gắn đúng tenant_key
-      4. `system_config.lark_admin_config` / `lark_base_config` khi document khai tenant_key
-      5. Danh sách admins trong chat_scope_record (theo nhóm)
-      6. sender_open_id nếu bắt đầu bằng ou_
-      7. Fallback an toàn 'ou_admin_fallback' thay vì gây crash pipeline
+    của request (Giai đoạn 2 + Phase 3 Token Broker):
+      1. `tenants.admin_open_id`, `user_settings`, `lark_auth` (trừ doc legacy), `system_config` của ĐÚNG tenant_key
+      2. Runtime App của đúng tenant (`owner_open_id` / `_tenant_admin_cache` / `get_current_user`)
+      3. Danh sách admins trong chat_scope_record (theo nhóm)
+      4. sender_open_id nếu bắt đầu bằng ou_
+      5. Fallback an toàn 'ou_admin_fallback' thay vì gây crash pipeline
 
     Không còn các nguồn toàn cục: `settings.LARK_USER_OPEN_ID` (`.env`), "tenant bất kỳ"
-    và `auth_tokens.primary_user_token`. Ba nguồn đó khiến lãnh đạo doanh nghiệp A nhận
-    bản nháp chứa dữ liệu của doanh nghiệp B.
+    và `auth_tokens.primary_user_token`.
     """
-    # 1. Với tenant-scoped runtime, phải lấy open_id từ user token của đúng
-    # Custom App trước. open_id của Lark có thể khác giữa các App; dùng
-    # settings/tenants/global token trước sẽ gây lỗi "open_id cross app".
-    if lark_svc:
-        if tenant_key and getattr(lark_svc, "user_access_token", None) and hasattr(lark_svc, "get_current_user"):
-            try:
-                curr_user = lark_svc.get_current_user()
-                if isinstance(curr_user, dict):
-                    scoped_user_id = curr_user.get("open_id") or curr_user.get("user_id")
-                    if scoped_user_id and isinstance(scoped_user_id, str) and scoped_user_id.strip():
-                        return scoped_user_id.strip()
-            except Exception as exc:
-                logger.debug("Không lấy được open_id theo runtime App của tenant %s: %s", tenant_key, exc)
+    raw_tenant = tenant_key or get_current_tenant_key()
+    eff_tenant = raw_tenant.strip() if isinstance(raw_tenant, str) and raw_tenant.strip() else None
 
-        owner = getattr(lark_svc, "owner_open_id", None)
-        if owner and isinstance(owner, str) and owner.strip():
-            return owner.strip()
-        known = getattr(lark_svc, "known_user_open_id", None)
-        if known and isinstance(known, str) and known.strip():
-            return known.strip()
-        if hasattr(lark_svc, "get_current_user"):
-            try:
-                curr_user = lark_svc.get_current_user()
-                if isinstance(curr_user, dict):
-                    u_id = curr_user.get("open_id") or curr_user.get("user_id")
-                    if u_id and isinstance(u_id, str) and u_id.strip():
-                        return u_id.strip()
-            except Exception:
-                pass
-
-    # 2. Tra cứu tenants collection — chỉ theo ĐÚNG tenant của request
-    eff_tenant = tenant_key or get_current_tenant_key()
     if eff_tenant:
+        # 1. Tra cứu MongoDB tenant-scoped trước (tránh đọc state stale trên singleton lark_service)
         try:
             from database.db import get_tenants_collection
             t_coll = get_tenants_collection()
             tdoc = await t_coll.find_one({"tenant_key": eff_tenant})
             if tdoc and tdoc.get("admin_open_id") and str(tdoc["admin_open_id"]).strip():
                 resolved = str(tdoc["admin_open_id"]).strip()
-                _sync_runtime_admin_open_id(resolved, lark_svc)
+                _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
                 return resolved
         except Exception as e:
             logger.debug(f"Không thể tra cứu admin_open_id từ tenants: {e}")
 
-        # 3. user_settings: chỉ nhận bản ghi gắn đúng tenant (bản ghi không có tenant_key
-        #    hoặc của tenant khác không được dùng — open_id là danh tính theo App).
         try:
             from database.db import get_user_settings_collection
             us_coll = get_user_settings_collection()
@@ -164,12 +179,29 @@ async def resolve_effective_owner_open_id(
             )
             if us_doc and us_doc.get("open_id") and str(us_doc["open_id"]).strip():
                 resolved = str(us_doc["open_id"]).strip()
-                _sync_runtime_admin_open_id(resolved, lark_svc)
+                _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
                 return resolved
         except Exception as e:
             logger.debug(f"Không thể tra cứu open_id từ user_settings: {e}")
 
-        # 4. system_config: chỉ tin document tự khai nhận tenant_key của nó.
+        try:
+            from database.db import get_auth_collection
+            auth_coll = get_auth_collection()
+            auth_doc = await auth_coll.find_one(
+                {
+                    "tenant_key": eff_tenant,
+                    "_id": {"$ne": "primary_user_token"},
+                    "open_id": {"$exists": True, "$ne": ""},
+                },
+                sort=[("updated_at", -1)],
+            )
+            if auth_doc and auth_doc.get("open_id") and str(auth_doc["open_id"]).strip():
+                resolved = str(auth_doc["open_id"]).strip()
+                _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
+                return resolved
+        except Exception as e:
+            logger.debug(f"Không thể tra cứu open_id từ lark_auth: {e}")
+
         try:
             from database.db import get_system_config_collection
             sc_coll = get_system_config_collection()
@@ -178,22 +210,22 @@ async def resolve_effective_owner_open_id(
             )
             if admin_cfg and admin_cfg.get("admin_open_id") and str(admin_cfg["admin_open_id"]).strip():
                 resolved = str(admin_cfg["admin_open_id"]).strip()
-                _sync_runtime_admin_open_id(resolved, lark_svc)
+                _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
                 return resolved
             base_cfg = await sc_coll.find_one(
                 {"config_key": "lark_base_config", "tenant_key": eff_tenant}
             )
             if base_cfg and base_cfg.get("provisioned_by") and str(base_cfg["provisioned_by"]).strip():
                 resolved = str(base_cfg["provisioned_by"]).strip()
-                _sync_runtime_admin_open_id(resolved, lark_svc)
+                _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
                 return resolved
         except Exception as e:
             logger.debug(f"Không thể tra cứu từ system_config: {e}")
 
-    # Ba nguồn cũ đã bị bỏ vì chúng không thuộc về tenant nào cả: `settings.LARK_USER_OPEN_ID`
-    # (`.env`), "tenant bất kỳ" (`find_one({admin_open_id: {$exists: true}})`) và
-    # `auth_tokens.primary_user_token`. Ai ghi sau cùng thắng, nên bản nháp của doanh nghiệp
-    # A có thể được gửi cho lãnh đạo của doanh nghiệp B.
+    # 2. Runtime App của đúng tenant (hoặc test mock không truyền tenant_key)
+    runtime_owner = _lark_service_admin_open_id(lark_svc, eff_tenant)
+    if runtime_owner:
+        return runtime_owner
 
     # 5. Chat Scope admins
     if chat_scope_record and getattr(chat_scope_record, "admins", None):
@@ -202,7 +234,7 @@ async def resolve_effective_owner_open_id(
             for adm in admins:
                 if isinstance(adm, str) and adm.strip().startswith("ou_"):
                     resolved = adm.strip()
-                    _sync_runtime_admin_open_id(resolved, lark_svc)
+                    _sync_runtime_admin_open_id(resolved, lark_svc, tenant_key=eff_tenant)
                     return resolved
 
     # 6. Sender nếu bắt đầu bằng ou_
@@ -626,8 +658,8 @@ async def generate_grounded_answer(
     """Sinh câu trả lời Grounded QA dựa trên context hợp nhất (hỗ trợ đích danh user, multi-provider BYOK)."""
     client = llm_client_override or (LLMClient(api_key=api_key) if api_key else llm_client)
 
-    effective_role = role or getattr(settings, "LARK_USER_ROLE", "") or "CEO / Founder / CTO"
-    effective_responder = responder_name or getattr(settings, "LARK_USER_NAME", "") or ""
+    effective_role = role or "CEO / Founder / CTO"
+    effective_responder = responder_name or ""
 
     if user_name:
         prompt = GROUNDED_QA_USER_PERSONA_PROMPT.format(
@@ -1452,6 +1484,7 @@ async def process_chat_pipeline(
                 draft_answer=answer,
                 user_name=user_name or "bạn",
                 responder_name=responder_name,
+                tenant_key=eff_tenant,
             )
         )
 
@@ -1513,7 +1546,7 @@ async def process_chat_pipeline(
             "message": "Draft đã được lưu với trạng thái pending; chưa gửi câu trả lời vào nhóm.",
         }
 
-    # Chỉ REPLY_ONLY mới được gửi thẳng vào nhóm
+    # Chỉ REPLY_ONLY mới được gửi thẳng vào nhóm (bắt buộc nhân danh User, fail-closed)
     lark_reply_result = None
     if reply_to_lark and message_id:
         try:
@@ -1521,21 +1554,77 @@ async def process_chat_pipeline(
                 message_id=message_id,
                 text=answer,
                 as_user=True,
+                tenant_key=eff_tenant,
             )
-            if isinstance(lark_reply_result, dict) and lark_reply_result.get("success"):
-                reply_data = lark_reply_result.get("data")
-                bot_msg_id = getattr(reply_data, "message_id", None) if reply_data else None
-                if not bot_msg_id and isinstance(reply_data, dict):
-                    bot_msg_id = reply_data.get("message_id")
-                if bot_msg_id:
-                    try:
-                        from database.db import save_bot_reply_to_staging
-                        await save_bot_reply_to_staging(message_id, bot_msg_id)
-                    except Exception as stg_err:
-                        logger.debug(f"Không thể lưu bot_reply_message_id vào staging: {stg_err}")
         except Exception as e:
             logger.error(f"Lỗi khi gửi reply tới Lark: {e}")
             lark_reply_result = {"error": str(e), "success": False}
+
+        is_reply_failure = isinstance(lark_reply_result, dict) and (
+            lark_reply_result.get("success") is False
+            or bool(lark_reply_result.get("error") or lark_reply_result.get("error_code"))
+        )
+        if is_reply_failure:
+            err_code = str(
+                lark_reply_result.get("error_code")
+                or lark_reply_result.get("error")
+                or ""
+            ).strip()
+            lark_code = lark_reply_result.get("code")
+            if err_code in ("user_token_missing", "token_expired", "token_unavailable") or lark_code in (
+                99991663, 99991668, 99991677, 20005, 99991665
+            ):
+                owner_open_id = await resolve_effective_owner_open_id(
+                    lark_svc=_lark,
+                    tenant_key=eff_tenant,
+                    chat_scope_record=scope_record,
+                    sender_open_id=sender,
+                )
+                try:
+                    from services.lark.card_builder import build_user_reauth_card
+                    reauth_card = build_user_reauth_card(
+                        tenant_key=eff_tenant,
+                        reason=lark_reply_result.get("msg") or lark_reply_result.get("error"),
+                    )
+                    dm_fn = getattr(_lark, "send_bot_dm_to_owner", None)
+                    if callable(dm_fn) and owner_open_id and owner_open_id != "ou_admin_fallback":
+                        dm_res = dm_fn(
+                            reauth_card,
+                            target_open_id=owner_open_id,
+                            tenant_key=eff_tenant,
+                        )
+                        if inspect.isawaitable(dm_res):
+                            await dm_res
+                except Exception as dm_err:
+                    logger.warning("[CHAT] send_user_reauth_dm_failed tenant=%s error=%s", eff_tenant or "-", dm_err)
+
+                return {
+                    "status": "user_token_missing",
+                    "error_code": err_code or "user_token_missing",
+                    "jev_action": jev_action,
+                    "jev_confidence": jev_confidence,
+                    "knowledge_domain": jev_domain,
+                    "domain_confidence": jev_domain_conf,
+                    "query": clean_query,
+                    "answer": answer,
+                    "user_name": user_name,
+                    "responder_name": responder_name,
+                    "extraction": extraction_data,
+                    "composed_context": composed,
+                    "lark_response": lark_reply_result,
+                    "message": "Chưa thể gửi câu trả lời nhân danh Lãnh đạo do thiếu hoặc hết hạn User Access Token.",
+                }
+        elif isinstance(lark_reply_result, dict) and lark_reply_result.get("success"):
+            reply_data = lark_reply_result.get("data")
+            bot_msg_id = getattr(reply_data, "message_id", None) if reply_data else None
+            if not bot_msg_id and isinstance(reply_data, dict):
+                bot_msg_id = reply_data.get("message_id")
+            if bot_msg_id:
+                try:
+                    from database.db import save_bot_reply_to_staging
+                    await save_bot_reply_to_staging(message_id, bot_msg_id)
+                except Exception as stg_err:
+                    logger.debug(f"Không thể lưu bot_reply_message_id vào staging: {stg_err}")
 
     return {
         "status": "auto_replied",

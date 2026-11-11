@@ -16,7 +16,13 @@ import sys
 from typing import Optional
 
 from models.lark import LarkMessage
-from database.db import get_tenant_config, get_tenants_collection, get_chat_scopes_collection
+from database.db import (
+    get_chat_scopes_collection,
+    get_current_tenant_key,
+    get_tenant_config,
+    get_tenants_collection,
+    resolve_tenant_by_admin_open_id,
+)
 from services.digest_service import digest_service
 from services.draft_service import draft_service
 from services.lark import lark_service as default_lark_service
@@ -43,14 +49,21 @@ async def handle_owner_dm_command(msg: LarkMessage) -> bool:
     """
     lark_service = _resolve_lark_service()
 
-    # 1. Xác định tenant_key của người gửi
-    tenant_key = getattr(msg, "tenant_key", None)
+    # 1. Xác định tenant_key của người gửi (fail-closed nếu admin trùng đa tenant)
+    from services.lark.runtime import get_current_lark_service
+
+    rt_svc = get_current_lark_service(None)
+    rt_app_id = str(getattr(rt_svc, "app_id", "") or "").strip() or None
+
+    tenant_key = getattr(msg, "tenant_key", None) or get_current_tenant_key()
     if not tenant_key:
         try:
             t_col = get_tenants_collection()
-            found_t = await t_col.find_one({"admin_open_id": msg.sender_id})
-            if found_t:
-                tenant_key = found_t.get("tenant_key")
+            tenant_key = await resolve_tenant_by_admin_open_id(
+                msg.sender_id,
+                app_id=rt_app_id,
+                tenants_collection=t_col,
+            )
         except Exception as e:
             logger.debug(f"Không thể tìm tenant cho admin {msg.sender_id}: {e}")
 
@@ -68,18 +81,25 @@ async def handle_owner_dm_command(msg: LarkMessage) -> bool:
         except Exception as e:
             logger.debug(f"Không thể đếm nhóm chat: {e}")
 
-    # 4. Kiểm tra báo cáo ngày hoặc bản nháp đang chờ duyệt (nếu có)
+    # 4. Kiểm tra báo cáo ngày hoặc bản nháp đang chờ duyệt theo đúng tenant_key
     latest_master = None
-    try:
-        latest_master = await digest_service.get_latest_pending_master_digest()
-    except Exception as e:
-        logger.debug(f"Lỗi kiểm tra master digest: {e}")
+    if tenant_key:
+        try:
+            latest_master = await digest_service.get_latest_pending_master_digest(
+                tenant_key=tenant_key
+            )
+        except Exception as e:
+            logger.debug(f"Lỗi kiểm tra master digest: {e}")
 
     latest_draft = None
-    try:
-        latest_draft = await draft_service.get_latest_pending(msg.sender_id)
-    except Exception as e:
-        logger.debug(f"Lỗi kiểm tra pending draft: {e}")
+    if tenant_key:
+        try:
+            latest_draft = await draft_service.get_latest_pending(
+                msg.sender_id,
+                tenant_key=tenant_key,
+            )
+        except Exception as e:
+            logger.debug(f"Lỗi kiểm tra pending draft: {e}")
 
     user_name = getattr(msg, "user_name", "") or getattr(msg, "sender_name", "") or ""
 

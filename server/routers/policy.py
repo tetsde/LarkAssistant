@@ -14,7 +14,7 @@ router = APIRouter(prefix="/policy", tags=["Company Policy Sync"])
 
 @router.get("/status")
 async def get_policy_sync_status(
-    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (ISV Multi-Tenant)")
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (Custom App Multi-Tenant)")
 ) -> Dict[str, Any]:
     """
     Lấy trạng thái cấu hình và kết quả đồng bộ chính sách của MỘT doanh nghiệp.
@@ -63,7 +63,7 @@ async def get_policy_sync_status(
 @router.post("/sync")
 async def trigger_policy_sync(
     force: bool = Query(True, description="Bắt buộc đồng bộ kể cả khi danh sách token không đổi"),
-    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (ISV Multi-Tenant)"),
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (Custom App Multi-Tenant)"),
 ) -> Dict[str, Any]:
     """
     Kích hoạt quét bảng chính sách trên Lark Base và đồng bộ sang WeKnora.
@@ -87,7 +87,7 @@ async def trigger_policy_sync(
 @router.post("/interval")
 async def update_policy_interval(
     interval_seconds: int = Query(..., ge=60, le=604800, description="Chu kỳ quét định kỳ (giây)"),
-    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (ISV Multi-Tenant)"),
+    tenant_key: Optional[str] = Query(None, description="Mã định danh tenant (Custom App Multi-Tenant)"),
 ) -> Dict[str, Any]:
     """Cập nhật chu kỳ quét định kỳ chính sách cho một doanh nghiệp."""
     from database.db import get_current_tenant_key, get_tenants_collection

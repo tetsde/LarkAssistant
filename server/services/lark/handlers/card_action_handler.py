@@ -132,6 +132,20 @@ def parse_card_action_payload(payload: Dict[str, Any]) -> Tuple[str, str, Dict[s
     return open_id, message_id, action_val
 
 
+def _current_runtime_app_id(action_value: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    val_app = str((action_value or {}).get("app_id") or "").strip()
+    if val_app:
+        return val_app
+    try:
+        from services.lark.runtime import get_current_lark_service
+
+        rt_svc = get_current_lark_service(None)
+        rt_app = str(getattr(rt_svc, "app_id", "") or "").strip()
+        return rt_app or None
+    except Exception:
+        return None
+
+
 async def handle_card_action(
     open_id: str,
     message_id: str,
@@ -141,15 +155,21 @@ async def handle_card_action(
     Điều phối xử lý hành động khi bấm nút trên Thẻ tương tác có cô lập theo tenant_key.
     Trả về: (thành_công, thông_báo_toast, thẻ_cập_nhật_nếu_có)
     """
-    from database.db import async_tenant_context, get_current_tenant_key, get_tenants_collection
+    from database.db import (
+        async_tenant_context,
+        get_current_tenant_key,
+        get_tenants_collection,
+        resolve_tenant_by_admin_open_id,
+    )
 
     eff_tenant = action_value.get("tenant_key") or get_current_tenant_key()
     if not eff_tenant and open_id:
         try:
-            t_col = get_tenants_collection()
-            found_t = await t_col.find_one({"admin_open_id": open_id})
-            if found_t and found_t.get("tenant_key"):
-                eff_tenant = found_t["tenant_key"]
+            eff_tenant = await resolve_tenant_by_admin_open_id(
+                open_id,
+                app_id=_current_runtime_app_id(action_value),
+                tenants_collection=get_tenants_collection(),
+            )
         except Exception:
             pass
 
@@ -645,14 +665,16 @@ async def _do_execute_card_action(
     # 4. HÀNH ĐỘNG ĐIỀU PHỐI QUẢN TRỊ (EXECUTIVE CONTROL HUB)
     # =========================================================================
     if action == "view_owner_hub":
-        tenant_key = action_value.get("tenant_key")
-        if not tenant_key:
+        tenant_key = action_value.get("tenant_key") or tenant_key
+        if not tenant_key and open_id:
             try:
-                from database.db import get_tenants_collection
-                t_col = get_tenants_collection()
-                found_t = await t_col.find_one({"admin_open_id": open_id})
-                if found_t:
-                    tenant_key = found_t.get("tenant_key")
+                from database.db import get_tenants_collection, resolve_tenant_by_admin_open_id
+
+                tenant_key = await resolve_tenant_by_admin_open_id(
+                    open_id,
+                    app_id=_current_runtime_app_id(action_value),
+                    tenants_collection=get_tenants_collection(),
+                )
             except Exception:
                 pass
 
@@ -689,14 +711,16 @@ async def _do_execute_card_action(
         return True, "Bảng điều khiển quản trị", hub_card
 
     if action == "view_weknora_info":
-        tenant_key = action_value.get("tenant_key")
-        if not tenant_key:
+        tenant_key = action_value.get("tenant_key") or tenant_key
+        if not tenant_key and open_id:
             try:
-                from database.db import get_tenants_collection
-                t_col = get_tenants_collection()
-                found_t = await t_col.find_one({"admin_open_id": open_id})
-                if found_t:
-                    tenant_key = found_t.get("tenant_key")
+                from database.db import get_tenants_collection, resolve_tenant_by_admin_open_id
+
+                tenant_key = await resolve_tenant_by_admin_open_id(
+                    open_id,
+                    app_id=_current_runtime_app_id(action_value),
+                    tenants_collection=get_tenants_collection(),
+                )
             except Exception:
                 pass
 

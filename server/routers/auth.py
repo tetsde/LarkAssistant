@@ -14,6 +14,8 @@ Mục đích:
 
 from __future__ import annotations
 
+import html
+import json
 import logging
 from typing import Optional
 
@@ -22,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from core.config import settings
+from services.auth.token_service import mask_token_preview
 from services.auth_service import token_service
 
 logger = logging.getLogger("hilark.router.auth")
@@ -299,25 +302,8 @@ async def oauth_callback(
     if not code:
         raise HTTPException(status_code=400, detail="Thiếu tham số `code` trong callback URL!")
 
-    # 1.5 Luồng One-Click Setup được nhận diện bằng ĐÚNG prefix 'setup_' (task_id do
-    # setup sinh ra). Không dùng điều kiện "'setup' in state": state do server phát hành
-    # là chuỗi ngẫu nhiên, còn chuỗi do người dùng gửi lên có thể cố ý chứa 'setup' để
-    # đưa request vào thẳng pipeline cài đặt.
-    is_setup_source = bool(state and state.startswith("setup_"))
-    if is_setup_source:
-        import asyncio
-        from services.setup.one_click_setup_service import one_click_setup_service
-        claimed_task_id = await one_click_setup_service.claim_oauth_state(state)
-        if not claimed_task_id:
-            raise HTTPException(status_code=400, detail="OAuth state không hợp lệ hoặc đã được sử dụng.")
-        eff_task_id = claimed_task_id
-        logger.info("[ONE_CLICK_SETUP] callback_received task_id=%s", eff_task_id)
-        asyncio.create_task(
-            one_click_setup_service.run_setup_pipeline(task_id=eff_task_id, code=code, state=state)
-        )
-        return RedirectResponse(url=f"/setup?task_id={eff_task_id}")
-
-    # 2. Tiến hành đổi code lấy cặp token — nhưng chỉ với App đã phát hành `state`.
+    # 2. Mọi luồng OAuth (setup / wizard / user_oauth) ĐỀU đi qua oauth_state_service.consume(state)
+    # dùng một lần — không còn nhánh đoán prefix `setup_` cho phép bypass state store.
     from services.auth.oauth_state_service import OAuthStateError, oauth_state_service
     from services.tenancy.tenant_resolver import tenant_resolver
     from core.tenant_errors import TenantResolutionError
@@ -338,6 +324,32 @@ async def oauth_callback(
     state_tenant = state_doc["tenant_key"]
     state_app_id = state_doc["app_id"]
     state_purpose = state_doc.get("purpose") or ""
+
+    if state_purpose == "setup":
+        import asyncio
+        from services.setup.one_click_setup_service import one_click_setup_service
+
+        eff_task_id = await one_click_setup_service.resume_task_from_state(state_doc)
+        if not eff_task_id:
+            if wants_json:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "error": "oauth_state_invalid",
+                        "description": "Phiên One-Click Setup thiếu task_id hợp lệ.",
+                    },
+                )
+            return _oauth_error_page(
+                400,
+                "Phiên cài đặt không hợp lệ",
+                "OAuth state của setup thiếu task_id hợp lệ. Vui lòng bắt đầu lại từ /setup.",
+            )
+        logger.info("[ONE_CLICK_SETUP] callback_received task_id=%s", eff_task_id)
+        asyncio.create_task(
+            one_click_setup_service.run_setup_pipeline(task_id=eff_task_id, code=code, state=state)
+        )
+        return RedirectResponse(url=f"/setup?task_id={eff_task_id}")
 
     try:
         credentials = await tenant_resolver.resolve_credentials(state_tenant)
@@ -395,6 +407,35 @@ async def oauth_callback(
 </body></html>"""
         )
 
+    # Cổng Onboarding Gate (Phase 4): nếu tenant đang tạm dừng ở `awaiting_user_oauth`,
+    # kích hoạt tự động provisioning -> READY & gửi thẻ bàn giao.
+    try:
+        from services.tenancy.tenant_state import AWAITING_USER_OAUTH, tenant_state
+
+        tenant_doc = await tenant_state.get_status(state_tenant)
+        if isinstance(tenant_doc, dict) and tenant_doc.get("status") == AWAITING_USER_OAUTH:
+            from services.lark.handlers.tenant_lifecycle_handler import (
+                provision_tenant_and_send_handover,
+            )
+
+            eff_admin = (
+                (result.get("open_id") or "").strip()
+                or (tenant_doc.get("admin_open_id") or "").strip()
+                or None
+            )
+            await provision_tenant_and_send_handover(
+                tenant_key=state_tenant,
+                app_id=credentials.app_id,
+                admin_open_id=eff_admin,
+                raw_event_type="oauth_callback",
+            )
+    except Exception as prov_resume_err:
+        logger.warning(
+            "[AUTH_CALLBACK] oauth_provision_resume_failed tenant=%s err=%s",
+            state_tenant,
+            prov_resume_err,
+        )
+
     # Nếu caller yêu cầu JSON
     if format == "json" or (accept and "application/json" in accept):
         return JSONResponse(content=result)
@@ -405,6 +446,15 @@ async def oauth_callback(
     refresh_token = result.get("refresh_token", "")
     expires_at = result.get("expires_at_readable", "")
     refresh_expires_at = result.get("refresh_expires_at_readable", "")
+
+    safe_user_name = html.escape(str(user_name or "User"))
+    safe_open_id = html.escape(str(open_id or ""))
+    safe_expires_at = html.escape(str(expires_at or ""))
+    safe_refresh_expires_at = html.escape(str(refresh_expires_at or ""))
+    js_user_name = json.dumps(str(user_name or "User"), ensure_ascii=False).replace("<", "\\u003c")
+    js_open_id = json.dumps(str(open_id or ""), ensure_ascii=False).replace("<", "\\u003c")
+    masked_refresh_token = html.escape(mask_token_preview(refresh_token) or "Đã lưu an toàn")
+    masked_access_token = html.escape(mask_token_preview(access_token) or "Đã lưu an toàn")
 
     # 2.5 Nếu request đến từ Screen Guide Wizard (purpose của state, hoặc param source=wizard)
     is_wizard_source = bool(state_purpose == "wizard" or request.query_params.get("source") == "wizard")
@@ -460,7 +510,7 @@ async def oauth_callback(
         <div style="font-size: 48px; margin-bottom: 12px;">🎉</div>
         <h2 style="color: #34d399; margin-bottom: 8px;">Ủy Quyền Thành Công!</h2>
         <p style="color: #94a3b8; font-size: 14px; line-height: 1.5;">
-            Đã kết nối tài khoản đại diện <strong>{user_name}</strong>.<br/>
+            Đã kết nối tài khoản đại diện <strong>{safe_user_name}</strong>.<br/>
             Cửa sổ này sẽ tự đóng lại để quay về Trình thiết lập...
         </p>
         <button onclick="finishAuth()" class="btn">Quay lại Wizard</button>
@@ -471,8 +521,8 @@ async def oauth_callback(
                 try {{
                     window.opener.postMessage({{
                         type: 'LARK_AUTH_SUCCESS',
-                        user_name: '{user_name}',
-                        open_id: '{open_id}'
+                        user_name: {js_user_name},
+                        open_id: {js_open_id}
                     }}, '*');
                 }} catch (e) {{}}
                 window.close();
@@ -486,14 +536,14 @@ async def oauth_callback(
 </html>"""
         )
 
-    # 3. Trả về giao diện HTML hoàn chỉnh, rực rỡ với Refresh Token cho Sếp
+    # 3. Trả về giao diện HTML đã che giấu token nguyên văn (chỉ hiển thị preview & trạng thái)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HiLark — Kết nối Thành công &amp; Refresh Token</title>
+    <title>HiLark — Kết nối Thành công &amp; Đã Lưu Token</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -531,7 +581,7 @@ async def oauth_callback(
         }}
         h1 {{ font-size: 22px; font-weight: 700; color: #fff; margin-bottom: 8px; }}
         p.subtitle {{ color: #94a3b8; font-size: 14px; margin-bottom: 24px; }}
-        
+
         .section-title {{
             font-size: 12px;
             font-weight: 600;
@@ -560,21 +610,6 @@ async def oauth_callback(
             font-size: 13px;
             outline: none;
         }}
-        .copy-btn {{
-            background: rgba(99, 102, 241, 0.2);
-            color: #818cf8;
-            border: none;
-            padding: 0 16px;
-            font-weight: 600;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.2s;
-            border-left: 1px solid rgba(255, 255, 255, 0.1);
-        }}
-        .copy-btn:hover {{
-            background: #4f46e5;
-            color: #fff;
-        }}
         .meta-grid {{
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -589,7 +624,7 @@ async def oauth_callback(
         }}
         .meta-label {{ font-size: 11px; color: #64748b; margin-bottom: 4px; }}
         .meta-val {{ font-size: 13px; font-weight: 600; color: #f1f5f9; }}
-        
+
         .alert-box {{
             background: rgba(56, 189, 248, 0.1);
             border: 1px solid rgba(56, 189, 248, 0.2);
@@ -605,60 +640,45 @@ async def oauth_callback(
     <div class="card">
         <div class="success-icon">🎉</div>
         <h1>Kết nối Thành công &amp; Đã Lưu Token</h1>
-        <p class="subtitle">Tài khoản của Sếp đã được liên kết với HiLark Assistant. Hệ thống đã kích hoạt cơ chế tự động xoay vòng vĩnh viễn.</p>
+        <p class="subtitle">Tài khoản của Sếp đã được liên kết với HiLark Assistant. Hệ thống đã kích hoạt cơ chế tự động xoay vòng và mã hóa an toàn.</p>
 
         <div class="meta-grid">
             <div class="meta-item">
                 <div class="meta-label">Người dùng</div>
-                <div class="meta-val">{user_name}</div>
+                <div class="meta-val">{safe_user_name}</div>
             </div>
             <div class="meta-item">
                 <div class="meta-label">Open ID</div>
-                <div class="meta-val">{open_id}</div>
+                <div class="meta-val">{safe_open_id}</div>
             </div>
             <div class="meta-item">
                 <div class="meta-label">Hết hạn Access Token (~2 giờ)</div>
-                <div class="meta-val">{expires_at}</div>
+                <div class="meta-val">{safe_expires_at}</div>
             </div>
             <div class="meta-item">
                 <div class="meta-label">Hết hạn Refresh Token (~30 ngày)</div>
-                <div class="meta-val">{refresh_expires_at}</div>
+                <div class="meta-val">{safe_refresh_expires_at}</div>
             </div>
         </div>
 
         <div class="token-group">
-            <div class="section-title">🔑 Refresh Token của bạn (Dùng để duy trì và xoay vòng):</div>
+            <div class="section-title">Refresh Token (đã che giấu để bảo mật):</div>
             <div class="input-wrapper">
-                <input type="text" id="refreshTokenInput" class="token-input" value="{refresh_token}" readonly>
-                <button class="copy-btn" onclick="copyToken('refreshTokenInput', this)">📋 Copy</button>
+                <input type="text" id="refreshTokenPreview" class="token-input" value="{masked_refresh_token}" readonly>
             </div>
         </div>
 
         <div class="token-group">
-            <div class="section-title">⚡ User Access Token hiện tại (Tự động refresh trước khi hết hạn):</div>
+            <div class="section-title">User Access Token (đã che giấu để bảo mật):</div>
             <div class="input-wrapper">
-                <input type="text" id="accessTokenInput" class="token-input" value="{access_token}" readonly>
-                <button class="copy-btn" onclick="copyToken('accessTokenInput', this)">📋 Copy</button>
+                <input type="text" id="accessTokenPreview" class="token-input" value="{masked_access_token}" readonly>
             </div>
         </div>
 
         <div class="alert-box">
-            🛡️ <strong>Hệ thống đã tự động lưu:</strong> Toàn bộ cặp token này đã được lưu nguyên tử vào MongoDB collection <code>lark_auth</code> và nạp vào bộ nhớ RAM. Sếp không cần copy paste vào <code>.env</code> hay restart server nữa!
+            🛡️ <strong>Hệ thống đã tự động lưu &amp; mã hóa:</strong> Cặp token đã được mã hóa AES-256 Fernet vào MongoDB collection <code>lark_auth</code>. Hệ thống không hiển thị token nguyên văn trên trình duyệt để tránh lộ bí mật xác thực.
         </div>
     </div>
-
-    <script>
-        function copyToken(elementId, btn) {{
-            var copyText = document.getElementById(elementId);
-            copyText.select();
-            copyText.setSelectionRange(0, 99999);
-            navigator.clipboard.writeText(copyText.value).then(function() {{
-                var originalText = btn.innerText;
-                btn.innerText = '✅ Đã Copy!';
-                setTimeout(function() {{ btn.innerText = originalText; }}, 2000);
-            }});
-        }}
-    </script>
 </body>
 </html>"""
     return HTMLResponse(content=html_content)
@@ -716,9 +736,17 @@ async def exchange_code(payload: ExchangeCodeRequest):
 # =============================================================================
 
 @router.get("/status")
-async def token_status():
-    """Tra cứu trạng thái sống còn của Token trong MongoDB & RAM."""
-    return await token_service.get_token_status()
+async def token_status(
+    tenant_key: Optional[str] = Query(None, description="Mã doanh nghiệp (tenant_key) cần kiểm tra"),
+):
+    """Tra cứu trạng thái sống còn của Token trong MongoDB theo đúng tenant."""
+    from core.tenant_errors import TenantContextMissing
+    from database.db import get_current_tenant_key
+
+    eff_tenant = (tenant_key or "").strip() or get_current_tenant_key()
+    if not eff_tenant:
+        raise TenantContextMissing("Thiếu `tenant_key`: GET /auth/lark/status yêu cầu tenant_key.")
+    return await token_service.get_token_status(tenant_key=eff_tenant)
 
 
 # =============================================================================
@@ -726,10 +754,20 @@ async def token_status():
 # =============================================================================
 
 @router.post("/refresh")
-async def manual_refresh():
-    """Chủ động kích hoạt xoay vòng Token ngay lập tức để kiểm chứng logic."""
+async def manual_refresh(
+    tenant_key: Optional[str] = Query(None, description="Mã doanh nghiệp (tenant_key) cần làm mới token"),
+):
+    """Chủ động kích hoạt xoay vòng Token ngay lập tức cho đúng tenant."""
+    from core.tenant_errors import TenantContextMissing, TenantResolutionError, TokenUnavailable
+    from database.db import get_current_tenant_key
+
+    eff_tenant = (tenant_key or "").strip() or get_current_tenant_key()
+    if not eff_tenant:
+        raise TenantContextMissing("Thiếu `tenant_key`: POST /auth/lark/refresh yêu cầu tenant_key.")
     try:
-        return await token_service.refresh_user_token(force=True)
+        return await token_service.refresh_user_token(force=True, tenant_key=eff_tenant)
+    except (TenantResolutionError, TokenUnavailable):
+        raise
     except Exception as e:
         logger.error(f"Lỗi khi gọi manual refresh: {e}")
         raise HTTPException(status_code=400, detail=str(e))

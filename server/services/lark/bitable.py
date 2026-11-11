@@ -215,7 +215,7 @@ class LarkBaseService:
         eff_tenant = self._effective_tenant(tenant_key)
         return token_broker.get_token_sync(eff_tenant, "bot", force_refresh=force_refresh)
 
-    def _validate_config(self, use_tenant_token: bool = False, tenant_key: Optional[str] = None) -> None:
+    def _validate_config(self, use_tenant_token: bool = True, tenant_key: Optional[str] = None) -> None:
         """
         Kiểm tra điều kiện bắt buộc của một thao tác Base.
 
@@ -248,8 +248,8 @@ class LarkBaseService:
             logger.error(err_msg)
             raise TenantConfigIncomplete(self.tenant_key or "?", [m.split(" (")[0] for m in missing])
 
-    def _get_headers(self, use_tenant_token: bool = False, tenant_key: Optional[str] = None) -> Dict[str, str]:
-        """Tạo header xác thực bằng User Access Token hoặc Bot Tenant Access Token."""
+    def _get_headers(self, use_tenant_token: bool = True, tenant_key: Optional[str] = None) -> Dict[str, str]:
+        """Tạo header xác thực bằng Bot Tenant Access Token (mặc định) hoặc User Access Token."""
         self._validate_config(use_tenant_token=use_tenant_token, tenant_key=tenant_key)
         eff_tenant = self._effective_tenant(tenant_key)
         kind = "bot" if use_tenant_token else "user"
@@ -262,19 +262,29 @@ class LarkBaseService:
                 f"Không lấy được {kind}_access_token cho tenant '{eff_tenant}'."
             )
 
-        if not use_tenant_token:
-            # Giữ tương thích cho các chỗ đọc `self.user_access_token` (log, kiểm tra hạn).
-            self.user_access_token = token
-
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "HiLark-Base-Service/1.0",
         }
 
-    def check_token_status(self) -> Dict[str, Any]:
-        """Kiểm tra thời hạn và thông tin của User Access Token hiện tại."""
-        return inspect_bitable_token(self.user_access_token)
+    def check_token_status(
+        self,
+        token: Optional[str] = None,
+        tenant_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Kiểm tra thời hạn token theo tham số truyền vào hoặc broker của tenant."""
+        from database.db import get_current_tenant_key
+
+        target = (token or "").strip()
+        if not target:
+            eff_tenant = tenant_key or self.tenant_key or get_current_tenant_key()
+            if eff_tenant:
+                try:
+                    target = token_broker.get_token_sync(eff_tenant, "user") or ""
+                except Exception:
+                    target = ""
+        return inspect_bitable_token(target)
 
     # -------------------------------------------------------------------------
     # ERROR HANDLING & RESPONSE PARSER (GOM GỌN DÙNG CHUNG)
@@ -291,10 +301,9 @@ class LarkBaseService:
             token_info = self.check_token_status()
             exp_msg = f" (Hạn token: {token_info.get('expires_at')})" if token_info.get("expires_at") else ""
             raise PermissionError(
-                f"[Lark Base Error {code}] User Access Token đã hết hạn hoặc không hợp lệ{exp_msg}.\n"
+                f"[Lark Base Error {code}] Token xác thực Lark Base đã hết hạn hoặc không hợp lệ{exp_msg}.\n"
                 f"-> Chi tiết từ Lark: {msg}\n"
-                f"-> HƯỚNG XỬ LÝ: Vui lòng đăng nhập lại trên Lark Developer Console hoặc lấy User Access Token mới "
-                f"và cập nhật vào biến `access_token_user` trong file .env."
+                f"-> HƯỚNG XỬ LÝ: Kiểm tra cấu hình Bot App của tenant hoặc ủy quyền lại qua /auth/lark/login."
             )
 
         if code in (1254043, 1254044, 99991672, 1254041):
@@ -302,7 +311,7 @@ class LarkBaseService:
                 f"[Lark Base Error {code}] Không có quyền truy cập Lark Base ({self.app_token}).\n"
                 f"-> Chi tiết từ Lark: {msg}\n"
                 f"-> HƯỚNG XỬ LÝ:\n"
-                f"   1. Đảm bảo User sở hữu token đã được thêm quyền Xem hoặc Chỉnh sửa trong Bảng Base này.\n"
+                f"   1. Đảm bảo Bot hoặc Admin đã được cấp quyền Xem/Chỉnh sửa trong Bảng Base này.\n"
                 f"   2. Đảm bảo Ứng dụng Lark đã được cấp quyền Scope `bitable:app` hoặc `bitable:app:readonly`."
             )
 
@@ -381,7 +390,7 @@ class LarkBaseService:
         url: str,
         params: Optional[Dict[str, Any]] = None,
         json_data: Optional[Dict[str, Any]] = None,
-        use_tenant_token: bool = False,
+        use_tenant_token: bool = True,
         action_name: str = "Thao tác",
     ) -> Dict[str, Any]:
         """Thực thi HTTP request Đồng bộ (Sync) qua httpx.Client."""
@@ -409,7 +418,7 @@ class LarkBaseService:
         view_id: Optional[str] = None,
         user_id_type: str = "open_id",
         text_field_as_array: bool = False,
-        use_tenant_token: bool = False,
+        use_tenant_token: bool = True,
     ) -> Dict[str, Any]:
         """Lấy một trang bản ghi từ bảng Lark Base (Sync)."""
         params = self._build_record_params(
@@ -432,7 +441,7 @@ class LarkBaseService:
         field_names: Optional[List[str]] = None,
         view_id: Optional[str] = None,
         page_size: int = 100,
-        use_tenant_token: bool = False,
+        use_tenant_token: bool = True,
     ) -> List[LarkBaseRecord]:
         """Tự động duyệt phân trang để lấy toàn bộ bản ghi trong bảng (Sync)."""
         all_records: List[LarkBaseRecord] = []
@@ -468,16 +477,16 @@ class LarkBaseService:
 
         return all_records
 
-    def get_fields(self, view_id: Optional[str] = None, use_tenant_token: bool = False) -> List[LarkBaseField]:
+    def get_fields(self, view_id: Optional[str] = None, use_tenant_token: bool = True) -> List[LarkBaseField]:
         """Đọc danh sách và thông tin schema của các cột (Fields) trong bảng (Sync)."""
         params = {"view_id": view_id} if view_id else None
         data = self._request("GET", self._fields_url, params=params, use_tenant_token=use_tenant_token, action_name="Đọc fields")
         items = data.get("items", []) or []
         return [LarkBaseField.from_api_dict(item) for item in items]
 
-    def get_tables(self) -> List[Dict[str, Any]]:
+    def get_tables(self, use_tenant_token: bool = True) -> List[Dict[str, Any]]:
         """Lấy danh sách tất cả các bảng (tables) trong Base (Sync)."""
-        data = self._request("GET", self._tables_url, action_name="Đọc danh sách bảng")
+        data = self._request("GET", self._tables_url, use_tenant_token=use_tenant_token, action_name="Đọc danh sách bảng")
         return data.get("items", []) or []
 
     def read_all(
@@ -485,7 +494,7 @@ class LarkBaseService:
         max_records: Optional[int] = None,
         filter: Optional[str] = None,
         fetch_fields: bool = True,
-        use_tenant_token: bool = False,
+        use_tenant_token: bool = True,
     ) -> LarkBaseQueryResult:
         """Đọc toàn diện bảng Base: lấy toàn bộ records kèm cấu trúc schema cột (Sync)."""
         fields: List[LarkBaseField] = []
@@ -651,7 +660,12 @@ class LarkBaseService:
         )
         return self._record_from_data(data.get("record", {}), fallback_id=record_id)
 
-    def download_attachment(self, file_token: str, use_tenant_token: bool = True) -> bytes:
+    def download_attachment(
+        self,
+        file_token: str,
+        use_tenant_token: bool = True,
+        tenant_key: Optional[str] = None,
+    ) -> bytes:
         """
         Tải file đính kèm từ cột Attachment của Lark Base qua Drive Media Download API (Sync).
         Trả về nội dung nhị phân (bytes) của file để sẵn sàng upload sang WeKnora.
@@ -659,8 +673,20 @@ class LarkBaseService:
         if not file_token:
             raise ValueError("file_token không được để trống khi tải tệp đính kèm.")
 
+        eff_tenant = self._effective_tenant(tenant_key)
+        kind = "bot" if use_tenant_token else "user"
+        token = token_broker.get_token_sync(eff_tenant, kind)
+        if not token:
+            raise PermissionError(
+                f"Không lấy được {kind}_access_token cho tenant '{eff_tenant}'."
+            )
+
         url = f"{self.domain}/open-apis/drive/v1/medias/{file_token}/download"
-        headers = self._get_headers(use_tenant_token=use_tenant_token)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "HiLark-Base-Service/1.0",
+        }
 
         try:
             resp = self.sync_client.get(url, headers=headers, timeout=60.0)
@@ -853,6 +879,7 @@ def read_lark_base_records(
     clean: bool = True,
     max_records: Optional[int] = None,
     filter: Optional[str] = None,
+    use_tenant_token: bool = True,
 ) -> List[Dict[str, Any]]:
     """Hàm tiện ích nhanh nhất để đọc toàn bộ dữ liệu trong bảng Lark Base thành list of dicts (Sync)."""
     from database.db import get_current_tenant_key
@@ -865,9 +892,11 @@ def read_lark_base_records(
         app_token=app_token,
         table_id=table_id,
     )
-    if user_access_token:
-        svc.user_access_token = user_access_token
-    records = svc.get_all_records(max_records=max_records, filter=filter)
+    records = svc.get_all_records(
+        max_records=max_records,
+        filter=filter,
+        use_tenant_token=use_tenant_token,
+    )
     return [r.to_dict(clean=clean) for r in records]
 
 
@@ -883,31 +912,30 @@ async def aread_lark_base_records(*args, **kwargs) -> List[Dict[str, Any]]:
 def main():
     """Hàm thực thi độc lập khi chạy script bằng python server/services/larkbase.py."""
     parser = argparse.ArgumentParser(
-        description="HiLark - Script đọc dữ liệu hiện có trong Lark Base (Bitable) bằng User Access Token"
+        description="HiLark - Script đọc dữ liệu từ Lark Base (Bitable) qua Bot Tenant Token theo tenant"
     )
     parser.add_argument(
         "--tenant-key",
         type=str,
         default=None,
-        help="Tenant cần đọc (mặc định lấy theo biến môi trường HILARK_TENANT_KEY / ngữ cảnh đang chạy)",
+        help="Tenant cần đọc (mặc định lấy theo ngữ cảnh tenant đang chạy)",
     )
     parser.add_argument(
         "--app-token",
         type=str,
         default=None,
-        help="Lark Base App Token (mặc định lấy từ LARK_BASE_APP_TOKEN trong .env)",
+        help="Lark Base App Token (mặc định lấy từ MongoDB TenantResources)",
     )
     parser.add_argument(
         "--table-id",
         type=str,
         default=None,
-        help="Table ID cần đọc (mặc định lấy từ LARK_BASE_TABLE_ID trong .env)",
+        help="Table ID cần đọc (mặc định lấy từ MongoDB TenantResources)",
     )
     parser.add_argument(
-        "--token",
-        type=str,
-        default=None,
-        help="User Access Token (mặc định lấy từ access_token_user trong .env)",
+        "--use-user-token",
+        action="store_true",
+        help="Dùng User Access Token thay vì Bot Tenant Access Token mặc định",
     )
     parser.add_argument(
         "--limit",
@@ -945,36 +973,23 @@ def main():
         app_token=args.app_token,
         table_id=args.table_id,
     )
-    if args.token:
-        service.user_access_token = args.token
+    use_tenant_token = not getattr(args, "use_user_token", False)
 
     print("\n" + "=" * 70)
     print("🚀 HILARK - TRÌNH ĐỌC DỮ LIỆU LARK BASE (BITABLE)")
     print("=" * 70)
     print(f"📍 Domain endpoint : {service.domain}")
+    print(f"🏢 Tenant Key      : {resources.tenant_key}")
     print(f"📦 Lark Base App   : {service.app_token or '[CHƯA CẤU HÌNH]'}")
     print(f"📊 Table ID        : {service.table_id or '[CHƯA CẤU HÌNH]'}")
-
-    token_preview = (
-        service.user_access_token[:10] + "..." + service.user_access_token[-8:]
-        if len(service.user_access_token) > 20
-        else (service.user_access_token or "[CHƯA CẤU HÌNH]")
-    )
-    print(f"🔑 User Token      : {token_preview}")
-
-    token_status = service.check_token_status()
-    if token_status.get("status") == "expired":
-        print(f"⚠️  CẢNH BÁO TOKEN : ĐÃ HẾT HẠN vào lúc {token_status.get('expires_at')}")
-        print(f"    (Có thể gặp lỗi 99991663/20005 khi gọi API. Vui lòng lấy token mới nếu lỗi)")
-    elif token_status.get("status") == "valid":
-        print(f"✅ Trạng thái Token : Hợp lệ (Hết hạn lúc {token_status.get('expires_at')})")
+    print(f"🔑 Chế độ token    : {'Bot Tenant Token' if use_tenant_token else 'User Access Token'}")
     print("-" * 70)
 
     try:
         print("🔍 Đang đọc cấu trúc các cột (Fields Schema)...")
         fields = []
         try:
-            fields = service.get_fields()
+            fields = service.get_fields(use_tenant_token=use_tenant_token)
             print(f"   Tìm thấy {len(fields)} cột trong bảng:")
             for f in fields:
                 primary_tag = " [PRIMARY KEY]" if f.is_primary else ""
@@ -985,7 +1000,7 @@ def main():
         print("-" * 70)
 
         print(f"📥 Đang tải các bản ghi từ bảng {service.table_id}...")
-        records = service.get_all_records(max_records=args.limit)
+        records = service.get_all_records(max_records=args.limit, use_tenant_token=use_tenant_token)
 
         print("-" * 70)
         print(f"🎉 TỔNG KẾT: Đã đọc thành công {len(records)} bản ghi!")

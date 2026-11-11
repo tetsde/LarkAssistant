@@ -17,8 +17,8 @@ import logging
 import sys
 from typing import Optional
 
-from core.config import settings
 from core.tenant_errors import TenantResolutionError, TokenUnavailable
+from database.scoped_query import inject_tenant_filter
 from database.db import (
     get_staging_collection,
     promote_claims_by_message_id,
@@ -47,9 +47,12 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
     Điều phối tin nhắn thông thường của người dùng vào Staging và Chat Pipeline / Queue.
     """
     lark_service = _resolve_lark_service()
-    # Dùng danh tính và chức danh từ hồ sơ/cấu hình nếu có.
-    user_info = lark_service.get_current_user()
-    responder_name = user_info.get("name") or settings.LARK_USER_NAME or None
+    # Dùng danh tính và chức danh theo đúng tenant từ DB (không vay biến toàn cục .env).
+    try:
+        user_info = lark_service.get_current_user(tenant_key=msg.tenant_key)
+    except TypeError:
+        user_info = lark_service.get_current_user()
+    responder_name = (user_info.get("name") if isinstance(user_info, dict) else None) or None
 
     # Nhận diện tên đích danh người hỏi
     target_user_name = None
@@ -66,7 +69,10 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 break
 
     if not target_user_name and msg.sender_id:
-        sender_real_name = lark_service.get_user_name(msg.sender_id)
+        try:
+            sender_real_name = lark_service.get_user_name(msg.sender_id, tenant_key=msg.tenant_key)
+        except TypeError:
+            sender_real_name = lark_service.get_user_name(msg.sender_id)
         if sender_real_name:
             target_user_name = sender_real_name
 
@@ -106,7 +112,8 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
         if msg.parent_id:
             parent_text: Optional[str] = None
             try:
-                parent_doc = await get_staging_collection().find_one({"message_id": msg.parent_id})
+                staging_query = inject_tenant_filter({"message_id": msg.parent_id}, msg.tenant_key)
+                parent_doc = await get_staging_collection().find_one(staging_query)
                 if parent_doc and parent_doc.get("text"):
                     parent_text = parent_doc["text"]
             except Exception as e:
@@ -114,7 +121,10 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
 
             if not parent_text:
                 try:
-                    res = lark_service.get_message(msg.parent_id)
+                    try:
+                        res = lark_service.get_message(msg.parent_id, as_user=False, tenant_key=msg.tenant_key)
+                    except TypeError:
+                        res = lark_service.get_message(msg.parent_id)
                     if res.get("success") and res.get("data"):
                         data_obj = res["data"]
                         items = getattr(data_obj, "items", None) or [data_obj]
@@ -169,12 +179,19 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
 
                 if decision == "APPROVE_AS_IS":
                     # FAST-LANE: 0 TOKEN LLM, 0ms latency, 0% regex!
-                    promoted = await promote_claims_by_message_id(msg.parent_id, approver_info=approver_info)
+                    promoted = await promote_claims_by_message_id(
+                        msg.parent_id,
+                        approver_info=approver_info,
+                        tenant_key=msg.tenant_key,
+                    )
                     logger.info("[THREAD] msg=%s decision=APPROVE_AS_IS promoted=%d", msg.message_id, promoted)
                     return
 
                 elif decision == "REJECT":
-                    rejected = await reject_claims_by_message_id(msg.parent_id)
+                    rejected = await reject_claims_by_message_id(
+                        msg.parent_id,
+                        tenant_key=msg.tenant_key,
+                    )
                     logger.info("[THREAD] msg=%s decision=REJECT rejected=%d", msg.message_id, rejected)
                     return
 
@@ -197,7 +214,7 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
                 reply_to_lark=False,
                 user_name=target_user_name,
                 responder_name=responder_name,
-                role=settings.LARK_USER_ROLE or None,
+                role=None,
                 is_owner=True,
                 tenant_key=msg.tenant_key,
             )
@@ -247,5 +264,5 @@ async def handle_member_message(msg: LarkMessage, is_owner: bool = False) -> Non
             msg=msg,
             user_name=target_user_name,
             responder_name=responder_name,
-            role=settings.LARK_USER_ROLE or None,
+            role=None,
         )

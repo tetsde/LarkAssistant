@@ -68,7 +68,7 @@ class PendingDraft(BaseModel):
     status: str = Field(default="pending", description="Trạng thái: pending, sent, discarded, failed")
     approved_content: Optional[str] = Field(default=None, description="Nội dung thực tế sau khi duyệt/sửa")
     bot_reply_message_id: Optional[str] = Field(default=None, description="Message ID của tin nhắn reply Bot gửi vào nhóm")
-    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Multi-Tenant ISV)")
+    tenant_key: Optional[str] = Field(default=None, description="Mã định danh doanh nghiệp (Custom App Multi-Tenant)")
     last_error: Optional[str] = Field(default=None, description="Lỗi gần nhất nếu gửi thất bại")
     created_at: str = Field(default_factory=get_vietnam_now_iso)
     updated_at: str = Field(default_factory=get_vietnam_now_iso)

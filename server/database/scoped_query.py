@@ -14,11 +14,15 @@ Chịu trách nhiệm:
 from __future__ import annotations
 
 import contextvars
+import inspect
+import logging
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Dict, List, Optional, Union
 from motor.motor_asyncio import AsyncIOMotorCollection
 
 from core.config import settings
+
+logger = logging.getLogger("hilark.database.scoped_query")
 
 # Biến ngữ cảnh tenant hiện tại cho async task
 _current_tenant_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -152,4 +156,95 @@ def get_scoped_collection(
 ) -> TenantScopedCollection:
     """Hàm tiện ích tạo nhanh TenantScopedCollection."""
     return TenantScopedCollection(raw_collection, tenant_key)
+
+
+async def resolve_tenant_by_admin_open_id(
+    open_id: Optional[str],
+    *,
+    app_id: Optional[str] = None,
+    tenants_collection: Any = None,
+) -> Optional[str]:
+    """
+    Tra cứu `tenant_key` theo `admin_open_id` một cách fail-closed.
+
+    - Luôn lọc thêm `app_id` khi caller đã xác định được runtime App.
+    - Nếu khớp duy nhất 1 tenant có `tenant_key` hợp lệ -> trả về `tenant_key`.
+    - Nếu khớp >= 2 tenant (trùng `admin_open_id` đa doanh nghiệp) -> log cảnh báo và
+      trả về `None` (fail-closed, tuyệt đối không chọn ngẫu nhiên một tenant).
+    """
+    clean_open_id = str(open_id or "").strip()
+    if not clean_open_id or clean_open_id in ("ou_default_admin", "ou_admin_fallback"):
+        return None
+
+    query: Dict[str, Any] = {"admin_open_id": clean_open_id}
+    clean_app_id = str(app_id or "").strip()
+    if clean_app_id:
+        query["app_id"] = clean_app_id
+
+    try:
+        if tenants_collection is None:
+            from database.db import get_tenants_collection
+
+            tenants_collection = get_tenants_collection()
+
+        docs: Optional[List[Dict[str, Any]]] = None
+        find_fn = getattr(tenants_collection, "find", None)
+        if callable(find_fn):
+            cursor = find_fn(query)
+            if inspect.isawaitable(cursor):
+                awaited = await cursor
+                if isinstance(awaited, list):
+                    docs = awaited[:2]
+            elif isinstance(cursor, list):
+                docs = cursor[:2]
+            elif cursor is not None:
+                limit_fn = getattr(cursor, "limit", None)
+                limited = limit_fn(2) if callable(limit_fn) else cursor
+                to_list_fn = getattr(limited, "to_list", None)
+                if callable(to_list_fn):
+                    res_list = to_list_fn(2)
+                    if inspect.isawaitable(res_list):
+                        awaited = await res_list
+                        if isinstance(awaited, list):
+                            docs = awaited[:2]
+                    elif isinstance(res_list, list):
+                        docs = res_list[:2]
+
+        if docs is None:
+            # Tương thích mock collection tối giản trong test chỉ stub `find_one`
+            find_one_fn = getattr(tenants_collection, "find_one", None)
+            if not callable(find_one_fn):
+                return None
+            found = find_one_fn(query)
+            if inspect.isawaitable(found):
+                found = await found
+            docs = [found] if isinstance(found, dict) else []
+
+        valid_tenants: List[str] = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            tk = str(doc.get("tenant_key") or "").strip()
+            if tk:
+                valid_tenants.append(tk)
+
+        if len(valid_tenants) == 1:
+            return valid_tenants[0]
+        if len(valid_tenants) >= 2:
+            logger.warning(
+                "[TENANCY] admin_open_id_collision open_id=%s app_id=%s matched_count=%d action=fail_closed",
+                clean_open_id,
+                clean_app_id or "-",
+                len(valid_tenants),
+            )
+            return None
+        return None
+    except Exception as exc:
+        logger.debug(
+            "[TENANCY] resolve_tenant_by_admin_open_id_failed open_id=%s app_id=%s error=%s",
+            clean_open_id,
+            clean_app_id or "-",
+            exc,
+        )
+        return None
 

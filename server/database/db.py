@@ -26,6 +26,7 @@ from database.scoped_query import (
     inject_tenant_filter,
     get_current_tenant_key,
     set_current_tenant_key,
+    resolve_tenant_by_admin_open_id,
     TenantScopedCollection,
 )
 
@@ -178,12 +179,6 @@ def get_system_config_collection() -> AsyncIOMotorCollection:
     """Collection lưu trữ Cấu hình Hệ thống, Bitable App Token & Table IDs."""
     db = get_async_db()
     return db[getattr(settings, "MONGO_SYSTEM_CONFIG_COLLECTION", "system_config")]
-
-
-def get_isv_auth_collection() -> AsyncIOMotorCollection:
-    """Collection lưu trữ app_ticket và token xác thực ISV / Lark Store App."""
-    db = get_async_db()
-    return db[getattr(settings, "MONGO_ISV_AUTH_COLLECTION", "isv_auth")]
 
 
 def get_tenants_collection() -> AsyncIOMotorCollection:
@@ -489,6 +484,7 @@ async def promote_claims_by_ids(
 async def promote_claims_by_message_id(
     message_id: str,
     approver_info: Optional[Dict[str, Any]] = None,
+    tenant_key: Optional[str] = None,
 ) -> int:
     """
     Thăng hạng các claims PROPOSED phát sinh từ một message_id cụ thể thành CURRENT.
@@ -498,13 +494,16 @@ async def promote_claims_by_message_id(
         return 0
     col = get_claims_collection()
     now_iso = get_vietnam_now_iso()
-    query = {
-        "status": FactStatus.PROPOSED.value,
-        "$or": [
-            {"source.message_id": message_id},
-            {"source_message_id": message_id},
-        ],
-    }
+    query = inject_tenant_filter(
+        {
+            "status": FactStatus.PROPOSED.value,
+            "$or": [
+                {"source.message_id": message_id},
+                {"source_message_id": message_id},
+            ],
+        },
+        tenant_key,
+    )
     update_fields: Dict[str, Any] = {
         "status": FactStatus.CURRENT.value,
         "updated_at": now_iso,
@@ -637,7 +636,10 @@ async def promote_all_proposed_claims(
 
 
 
-async def reject_claims_by_message_id(message_id: str) -> int:
+async def reject_claims_by_message_id(
+    message_id: str,
+    tenant_key: Optional[str] = None,
+) -> int:
     """
     Đánh dấu rejected/superseded cho các claims PROPOSED phát sinh từ một message_id cụ thể.
     """
@@ -645,13 +647,16 @@ async def reject_claims_by_message_id(message_id: str) -> int:
         return 0
     col = get_claims_collection()
     now_iso = get_vietnam_now_iso()
-    query = {
-        "status": FactStatus.PROPOSED.value,
-        "$or": [
-            {"source.message_id": message_id},
-            {"source_message_id": message_id},
-        ],
-    }
+    query = inject_tenant_filter(
+        {
+            "status": FactStatus.PROPOSED.value,
+            "$or": [
+                {"source.message_id": message_id},
+                {"source_message_id": message_id},
+            ],
+        },
+        tenant_key,
+    )
     result = await col.update_many(
         query,
         {

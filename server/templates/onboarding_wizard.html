@@ -629,12 +629,6 @@
             color: var(--accent);
         }
 
-        .tag.isv {
-            background: var(--warn-light);
-            border-color: var(--warn-border);
-            color: var(--warn);
-        }
-
         .guide-nav {
             display: flex;
             gap: 10px;
@@ -1557,7 +1551,7 @@
             <div id="eventGroups"></div>
 
             <div class="callout warn">
-                Mỗi sự kiện cần có quyền đi kèm — bạn đã import ở Bước 4. Sự kiện <code class="inline">app_ticket</code> chỉ dành cho ISV/Store App, <b>không cần</b> với Custom App.
+                Mỗi sự kiện cần có quyền đi kèm — bạn đã import ở Bước 4. Hãy bật đúng các sự kiện bên trên cho Custom App để đồng bộ tin nhắn, thẻ tương tác và dữ liệu Base.
             </div>
         </section>
 
@@ -2000,10 +1994,9 @@
         {
             title: "4. Vòng đời doanh nghiệp (Lifecycle)",
             events: [
-                { code: "app_status_change", name: "App status change", scope: "Custom App / Store App", purpose: "Biết khi app được kích hoạt hoặc tạm dừng." },
-                { code: "app_uninstalled", name: "App uninstalled", scope: "Custom App / Store App", purpose: "Tự động dọn dẹp kết nối khi doanh nghiệp gỡ app." },
-                { code: "open_app", name: "App first opened", scope: "Custom App / Store App", purpose: "Kích hoạt màn hình chào mừng (Onboarding)." },
-                { code: "app_ticket", name: "App ticket update", scope: "Chỉ ISV / Store App", purpose: "Nhận ticket cấp phép token của Lark Marketplace. Không cần với Custom App.", tag: "isv", tagText: "Chỉ ISV" }
+                { code: "app_status_change", name: "App status change", scope: "Custom App", purpose: "Biết khi Custom App được kích hoạt hoặc tạm dừng." },
+                { code: "app_uninstalled", name: "App uninstalled", scope: "Custom App", purpose: "Tự động dọn dẹp kết nối khi doanh nghiệp gỡ app." },
+                { code: "open_app", name: "App first opened", scope: "Custom App", purpose: "Kích hoạt màn hình chào mừng (Onboarding)." }
             ]
         }
     ];
